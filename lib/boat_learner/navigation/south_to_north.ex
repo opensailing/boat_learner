@@ -12,7 +12,22 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
   @impl true
   def train do
-    {_velocity_model, _q, _rho, _x, y, _angle, _random_key} = Enum.reduce_while(0..200, {velocity_model, q, rho, x, y, angle, random_key}, &iteration/2)
+    possible_angles = 180 # 180 degrees with 1 degree resolution
+    possible_xs = 1000 # -50 to 50 with 0.1 step
+    num_actions = 2 # turn left or turn right
+    q = Nx.zeros({possible_angles, possible_xs, num_actions})
+    rho = 0 # avg reward initialized to 0
+    velocity_model = BoatLearner.Simulator.init()
+
+    Enum.map_reduce(0..1000, {rho, q, random_key}, fn _, acc -> episode(velocity_model, acc) end)
+  end
+
+  defnp episode(velocity_model, {rho, q, random_key}) do
+    {x, random_key} = Nx.Random.uniform(random_key, -50, 50)
+    y = 0
+    angle = 0
+    {_velocity_model, q, rho, _x, y, _angle, random_key} = Enum.reduce_while(0..200, {velocity_model, q, rho, x, y, angle, random_key}, &iteration/2)
+    {y, {rho, q, random_key}}
   end
 
   defn iteration(_, state) do
@@ -72,11 +87,11 @@ defmodule BoatLearner.Navigation.SouthToNorth do
   end
 
   # We'll treat angles with 1 degree resolution
-  defnp angle_to_state(angle), do: Nx.round(angle)
+  defnp angle_to_state(angle), do: Nx.abs(Nx.floor(angle))
 
   # The grid will have 0.1m resolution
   defnp x_to_state(x) do
-    Nx.round(x * 10) / 10
+    Nx.round(x * 10) / 10 + 500
   end
 
   # velocity is {angle, speed}
