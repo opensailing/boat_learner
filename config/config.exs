@@ -7,6 +7,11 @@
 # General application configuration
 import Config
 
+config :nx,
+  default_backend: EXLA.Backend,
+  global_default_backend: EXLA.Backend,
+  default_defn_options: [compiler: EXLA]
+
 config :boat_learner,
   ecto_repos: [BoatLearner.Repo]
 

@@ -11,5 +11,6 @@ defmodule BoatLearner.Navigation do
           epoch: integer
         }
 
-  @callback train :: t()
+  @callback train(trajectory_callback :: ({Nx.Tensor.t(), Nx.Tensor.t(), Nx.Tensor.t()} -> any)) ::
+              t()
 end

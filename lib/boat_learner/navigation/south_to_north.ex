@@ -10,8 +10,17 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
   @dt 0.1
 
+  def plot_trajectory({episode, num_points, trajectory}) do
+    episode = Nx.to_number(episode)
+    num_points = Nx.to_number(num_points)
+
+    Nx.slice(trajectory, [0, 0], [num_points, 2])
+    |> Nx.reduce_max(axes: [0])
+    |> IO.inspect(label: "Episode #{episode}")
+  end
+
   @impl true
-  def train do
+  def train(trajectory_callback) do
     # 180 degrees with 5 degree resolution
     possible_angles = 30
     # -50 to 50 with 1 step
@@ -24,16 +33,32 @@ defmodule BoatLearner.Navigation.SouthToNorth do
     velocity_model = BoatLearner.Simulator.init()
     random_key = Nx.Random.key(System.system_time())
 
-    {y, result} =
-      Enum.map_reduce(0..200, {rho, q, random_key}, fn i, acc ->
-        IO.puts("[#{NaiveDateTime.utc_now()}] Starting episode #{i}")
-        {y, _} = result = episode(velocity_model, acc)
-        IO.inspect(y, label: "y[#{i}]")
+    run_ep_fn = Nx.Defn.jit(&run_episodes/4, hooks: %{plot_trajectory: trajectory_callback})
 
-        result
-      end)
+    {_, y, _rho, q, _random_key, _velocity_model} = run_ep_fn.(velocity_model, rho, q, random_key)
 
-    {result, y}
+    {y, q}
+  end
+
+  defnp run_episodes(velocity_model, rho, q, random_key) do
+    while {i = 0, y = Nx.tensor(0.0, type: :f64), rho, q, random_key, velocity_model},
+          i < 25_000 do
+      i =
+        hook(i, fn i ->
+          IO.puts("[#{NaiveDateTime.utc_now()}] Starting episode #{Nx.to_number(i)}")
+        end)
+
+      {curr_y, trajectory, num_points, {rho, q, random_key}} =
+        episode(velocity_model, {rho, q, random_key})
+
+      token = create_token()
+      {token, _} = hook_token(token, {i, num_points, trajectory}, :plot_trajectory)
+
+      y = Nx.max(curr_y, y)
+      y = attach_token(token, y)
+
+      {i + 1, y, rho, q, random_key, velocity_model}
+    end
   end
 
   defnp episode(velocity_model, {rho, q, random_key}) do
@@ -41,17 +66,30 @@ defmodule BoatLearner.Navigation.SouthToNorth do
     angle = Nx.tensor(0, type: :f64)
     y = Nx.broadcast(Nx.tensor(0, type: :f64), x)
     state = {velocity_model, q, rho, x, y, angle, random_key}
+    max_iter = 200
 
-    {_i, _continue, {_velocity_model, q, rho, _x, y, _angle, random_key}} =
-      while {i = 0, continue = Nx.tensor(1, type: :u8), state},
-            i < 200 and continue do
-        {_velocity_model, _q, _rho, x, _y, _angle, _random_key} = next_state = iteration(state)
+    trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f64), {max_iter, 2})
+
+    {i, _continue, trajectory, {_velocity_model, q, rho, _x, last_y, _angle, random_key}} =
+      while {i = 0, continue = Nx.tensor(1, type: :u8), trajectory, state},
+            i < max_iter and continue do
+        {_velocity_model, _q, _rho, x, y, _angle, _random_key} = next_state = iteration(state)
         continue = x > -50 and x < 50
 
-        {i + 1, continue, next_state}
+        idx_template =
+          Nx.tensor([
+            [0, 0],
+            [0, 1]
+          ])
+
+        index = idx_template + Nx.stack([i, 0])
+
+        trajectory = Nx.indexed_put(trajectory, index, Nx.stack([x, y]))
+
+        {i + 1, continue, trajectory, next_state}
       end
 
-    {y, {rho, q, random_key}}
+    {last_y, trajectory, i, {rho, q, random_key}}
   end
 
   defn iteration({velocity_model, q, rho, x, y, angle, random_key}) do

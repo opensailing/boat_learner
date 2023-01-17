@@ -7,6 +7,8 @@ defmodule BoatLearner.Application do
 
   @impl true
   def start(_type, _args) do
+    :ets.new(:q_values, [:bag, :named_table, :public])
+
     children = [
       # Start the Ecto repository
       BoatLearner.Repo,
