@@ -5,6 +5,8 @@ defmodule BoatLearner.Simulator do
   """
   import Nx.Defn
 
+  @pi :math.pi()
+
   @r_by_tws %{
     6 => [4.4, 5.1, 5.59, 5.99, 6.2, 6.37, 6.374, 6.25, 6.02, 5.59, 4.82, 4.11, 3.57, 3.22, 3.08],
     8 => [
@@ -98,12 +100,13 @@ defmodule BoatLearner.Simulator do
   # The grid will be represented in meters
   @kts_to_meters_per_sec 0.514444
 
-  defn init, do: init(Nx.tensor(@r), Nx.tensor(@theta))
+  defn init, do: init(Nx.tensor(@r), Nx.tensor(@theta) * @pi / 180)
 
   @doc """
   Returns the `model` tuple for prediction of interpolated TWS
   """
   defn init(r, theta) do
+    # theta is in rad!
     r = Nx.as_type(r, :f64) * @kts_to_meters_per_sec
     theta = Nx.as_type(theta, :f64)
 
@@ -131,7 +134,8 @@ defmodule BoatLearner.Simulator do
 
   defn speed({linear_model, spline_model_polar, cutoff_angle}, angle) do
     # Change algorithms where the spline ends at the lower end
-    angle = angle + Nx.as_type(1.0e-12, :f64)
+    angle = Nx.abs(angle) + Nx.as_type(1.0e-12, :f64)
+    angle = Nx.select(angle > @pi, 2 * @pi - angle, angle)
 
     linear_pred = Scholar.Interpolation.Linear.predict(linear_model, angle)
     spline_pred = Scholar.Interpolation.BezierSpline.predict(spline_model_polar, angle)
@@ -147,6 +151,7 @@ defmodule BoatLearner.Simulator do
     r = Nx.slice_along_axis(velocity, 0, 1, axis: 1)
     theta = Nx.slice_along_axis(velocity, 1, 1, axis: 1)
 
-    current_position + dt * r * Nx.concatenate([Nx.sin(theta), Nx.cos(theta)], axis: 1)
+    current_position +
+      dt * r * Nx.concatenate([Nx.sin(theta), Nx.cos(theta)], axis: 1)
   end
 end

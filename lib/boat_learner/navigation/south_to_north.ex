@@ -8,7 +8,13 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
   @behaviour BoatLearner.Navigation
 
-  @dt 0.1
+  @dt 1
+  @pi :math.pi()
+
+  @left_wall -10
+  @right_wall 10
+
+  @d_angle_rad 0.1
 
   def plot_trajectory({episode, num_points, trajectory}) do
     episode = Nx.to_number(episode)
@@ -21,10 +27,10 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
   @impl true
   def train(trajectory_callback) do
-    # 180 degrees with 5 degree resolution
+    # pi rad with pi/30 rad  resolution
     possible_angles = 30
-    # -50 to 50 with 1 step
-    possible_xs = 100
+    # @left_wall to @right_wall with 1 step
+    possible_xs = @right_wall - @left_wall + 1
     # turn left or turn right
     num_actions = 2
     q = Nx.broadcast(Nx.tensor(0, type: :f64), {possible_angles, possible_xs, num_actions})
@@ -42,7 +48,7 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
   defnp run_episodes(velocity_model, rho, q, random_key) do
     while {i = 0, y = Nx.tensor(0.0, type: :f64), rho, q, random_key, velocity_model},
-          i < 25_000 do
+          i < 20_000 do
       i =
         hook(i, fn i ->
           IO.puts("[#{NaiveDateTime.utc_now()}] Starting episode #{Nx.to_number(i)}")
@@ -62,19 +68,19 @@ defmodule BoatLearner.Navigation.SouthToNorth do
   end
 
   defnp episode(velocity_model, {rho, q, random_key}) do
-    {x, random_key} = Nx.Random.uniform(random_key, -50, 50, type: :f64)
+    {x, random_key} = Nx.Random.uniform(random_key, @left_wall, @right_wall, type: :f64)
     angle = Nx.tensor(0, type: :f64)
     y = Nx.broadcast(Nx.tensor(0, type: :f64), x)
     state = {velocity_model, q, rho, x, y, angle, random_key}
-    max_iter = 200
+    max_iter = 250
 
     trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f64), {max_iter, 2})
 
     {i, _continue, trajectory, {_velocity_model, q, rho, _x, last_y, _angle, random_key}} =
       while {i = 0, continue = Nx.tensor(1, type: :u8), trajectory, state},
             i < max_iter and continue do
-        {_velocity_model, _q, _rho, x, y, _angle, _random_key} = next_state = iteration(state)
-        continue = x > -50 and x < 50
+        {_velocity_model, _q, _rho, x, y, _angle, _random_key} = next_state = iteration(state, i)
+        continue = x > @left_wall and x < @right_wall
 
         idx_template =
           Nx.tensor([
@@ -92,7 +98,7 @@ defmodule BoatLearner.Navigation.SouthToNorth do
     {last_y, trajectory, i, {rho, q, random_key}}
   end
 
-  defn iteration({velocity_model, q, rho, x, y, angle, random_key}) do
+  defn iteration({velocity_model, q, rho, x, y, angle, random_key}, iter) do
     state = angle_to_state(angle)
     x_state = x_to_state(x)
 
@@ -102,25 +108,25 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
     # random choice: will be contributed to nx afterwards
     {action, random_key} = choice(random_key, Nx.iota({2}, type: :s64), action_probabilities)
-    d_angle = Nx.select(action, -5, 5)
+    d_angle = Nx.select(action, -@d_angle_rad, @d_angle_rad)
 
-    next_angle = Nx.as_type(state + d_angle, :f64)
+    next_angle = Nx.as_type(angle + d_angle, :f64)
     next_state = angle_to_state(next_angle)
 
     v = velocity(velocity_model, next_angle) |> Nx.new_axis(0)
 
-    next_xy = BoatLearner.Simulator.update_position(Nx.stack([x, y]), v, @dt)
+    next_xy = BoatLearner.Simulator.update_position(Nx.stack([x, y]), v, @dt) |> print_expr()
     next_x = Nx.slice_along_axis(next_xy, 0, 1, axis: 1) |> Nx.reshape({})
     next_y = Nx.slice_along_axis(next_xy, 1, 1, axis: 1) |> Nx.reshape({})
 
     next_x_state = x_to_state(next_x)
 
-    # Grid has a lateral bounding on [-50, 50]
+    # Grid has a lateral bounding on [@left_wall, @right_wall]
 
-    reward = reward(velocity_model, next_angle)
+    reward = reward(velocity_model, next_angle, iter)
 
     delta =
-      if next_x < -50 or next_x > 50 do
+      if next_x < @left_wall or next_x > @right_wall do
         # out of bounds, terminal case
         -10
       else
@@ -146,22 +152,22 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
   # We'll treat angles with 30 degree resolution
   defnp angle_to_state(angle) do
-    out = 30 * Nx.remainder((angle + 180) / 360, 1)
+    out = 30 * Nx.remainder((angle + @pi) / (2 * @pi), 1)
     Nx.as_type(out, :s64)
   end
 
   # The grid will have 0.1m resolution
   defnp x_to_state(x) do
-    Nx.as_type(50 * ((x + 50) / 100), :s64)
+    Nx.as_type(2 * (@right_wall - @left_wall) * ((x + @left_wall) / (@right_wall - @left_wall)), :s64)
   end
 
-  # velocity is {angle, speed}
+  # velocity is {speed, angle}
   defnp velocity(model, angle) do
     speed = BoatLearner.Simulator.speed(model, angle)
-    Nx.stack([angle, speed], axis: -1)
+    Nx.stack([speed, angle], axis: -1)
   end
 
-  defnp reward(model, angle) do
+  defnp reward(model, angle, iter) do
     velocity = velocity(model, angle)
 
     r = Nx.slice_along_axis(velocity, 0, 1, axis: -1)

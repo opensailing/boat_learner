@@ -52,7 +52,9 @@ defmodule BoatLearner.MixProject do
       {:nx, "~> 0.4", github: "elixir-nx/nx", sparse: "nx", override: true},
       {:exla, "~> 0.4", github: "elixir-nx/nx", sparse: "exla", override: true},
       {:scholar, github: "elixir-nx/scholar"},
-      {:axon, github: "elixir-nx/axon"}
+      {:axon, github: "elixir-nx/axon"},
+      {:kino, "0.8.0"},
+      {:kino_vega_lite, "0.1.7"}
     ]
   end
 
