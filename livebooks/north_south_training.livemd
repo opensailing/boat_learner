@@ -53,19 +53,20 @@ defmodule MyServer do
 
   defp new_layer(x, y, episode) do
     Vl.new()
-    |> Vl.data_from_values(%{x: x, y: y})
+    |> Vl.data_from_values(%{x: x, y: y, sequence: Enum.with_index(x, fn _, idx -> idx end)})
     |> Vl.mark(:line,
       stroke_opacity: 0.5,
       opacity: 0.5,
       color: Enum.at(@colors, rem(episode, 10)),
-      tooltip: "Episode #{episode}"
+      tooltip: true
     )
-    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [-50, 50]])
+    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [-10, 10]])
     |> Vl.encode_field(:y, "y", type: :quantitative, scale: [domain: [0, 200]])
+    |> Vl.encode_field(:order, "sequence")
   end
 
-  def draw do
-    layers = get_layers() |> Enum.take(500)
+  def draw(n) do
+    layers = get_layers() |> Enum.take(n)
 
     @base_plot |> Vl.layers(layers)
   end
@@ -108,13 +109,28 @@ end
 
 ```elixir
 MyServer.reset()
-BoatLearner.Navigation.SouthToNorth.train(plot_trajectory)
+{t, _} = :timer.tc(fn -> BoatLearner.Navigation.SouthToNorth.train(plot_trajectory) end)
+
+"#{t / 1_000} ms"
 ```
 
 ```elixir
-MyServer.draw()
+MyServer.draw(20)
 ```
 
 ```elixir
+x = Enum.map(0..360, &((&1 - 180) * :math.pi() / 180)) |> Nx.tensor()
 
+Vl.new()
+|> Vl.data_from_values(%{
+  y: BoatLearner.Simulator.speed(BoatLearner.Simulator.init(), x) |> Nx.to_flat_list(),
+  x: Nx.to_flat_list(x)
+})
+|> Vl.encode_field(:x, "x", type: :quantitative)
+|> Vl.encode_field(:y, "y", type: :quantitative)
+|> Vl.mark(:line, tooltip: true, order: [field: "x"])
+```
+
+```elixir
+2.1 * 180 / :math.pi()
 ```

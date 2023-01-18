@@ -48,7 +48,7 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
   defnp run_episodes(velocity_model, rho, q, random_key) do
     while {i = 0, y = Nx.tensor(0.0, type: :f64), rho, q, random_key, velocity_model},
-          i < 20_000 do
+          i < 5_000 do
       i =
         hook(i, fn i ->
           IO.puts("[#{NaiveDateTime.utc_now()}] Starting episode #{Nx.to_number(i)}")
@@ -108,7 +108,7 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
     # random choice: will be contributed to nx afterwards
     {action, random_key} = choice(random_key, Nx.iota({2}, type: :s64), action_probabilities)
-    d_angle = Nx.select(action, -@d_angle_rad, @d_angle_rad)
+    d_angle = Nx.select(action == 0, -@d_angle_rad, @d_angle_rad)
 
     next_angle = Nx.as_type(angle + d_angle, :f64)
     next_state = angle_to_state(next_angle)
@@ -123,7 +123,7 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
     # Grid has a lateral bounding on [@left_wall, @right_wall]
 
-    reward = reward(velocity_model, next_angle, iter)
+    reward = reward(velocity_model, next_angle, iter, next_y)
 
     delta =
       if next_x < @left_wall or next_x > @right_wall do
@@ -151,23 +151,26 @@ defmodule BoatLearner.Navigation.SouthToNorth do
   end
 
   # We'll treat angles with 30 degree resolution
-  defnp angle_to_state(angle) do
+  defn angle_to_state(angle) do
     out = 30 * Nx.remainder((angle + @pi) / (2 * @pi), 1)
     Nx.as_type(out, :s64)
   end
 
   # The grid will have 0.1m resolution
-  defnp x_to_state(x) do
-    Nx.as_type(2 * (@right_wall - @left_wall) * ((x + @left_wall) / (@right_wall - @left_wall)), :s64)
+  defn x_to_state(x) do
+    Nx.as_type(
+      2 * (@right_wall - @left_wall) * ((x - @left_wall) / (@right_wall - @left_wall)),
+      :s64
+    )
   end
 
   # velocity is {speed, angle}
-  defnp velocity(model, angle) do
+  defn velocity(model, angle) do
     speed = BoatLearner.Simulator.speed(model, angle)
     Nx.stack([speed, angle], axis: -1)
   end
 
-  defnp reward(model, angle, iter) do
+  defn reward(model, angle, iter, y) do
     velocity = velocity(model, angle)
 
     r = Nx.slice_along_axis(velocity, 0, 1, axis: -1)
@@ -193,6 +196,11 @@ defmodule BoatLearner.Navigation.SouthToNorth do
     #   [0]
     # )
 
-    r * Nx.cos(theta)
+    # r = 1 - Nx.exp(-angle ** 2 / (@pi / 12))
+    # Nx.new_axis(r)
+
+    # Nx.cos(theta) + Nx.atan(y) / (@pi / 2)
+
+    (Nx.atan(y) / (@pi / 2)) |> Nx.new_axis(0)
   end
 end
