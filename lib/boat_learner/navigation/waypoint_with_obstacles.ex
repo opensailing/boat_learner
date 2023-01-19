@@ -18,7 +18,7 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
   @max_iter 250
 
   @impl true
-  def train(obstacles_tensor, trajectory_callback) do
+  def train(obstacles_tensor, trajectory_callback, opts \\ []) do
     # obstacles_tensor is {n, 4} where each row is [min_x, max_x, min_y, max_y]
 
     # pi rad with pi/30 rad  resolution
@@ -33,9 +33,15 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     velocity_model = BoatLearner.Simulator.init()
     random_key = Nx.Random.key(System.system_time())
 
-    run_ep_fn = Nx.Defn.jit(&run_episodes/5, hooks: %{plot_trajectory: trajectory_callback})
+    num_episodes = opts[:num_episodes] || 10000
 
-    {_, y, _rho, q, _random_key, _velocity_model} = run_ep_fn.(velocity_model, rho, q, random_key)
+    run_ep_fn =
+      Nx.Defn.jit(&run_episodes(&1, &2, &3, &4, &5, num_episodes: num_episodes),
+        hooks: %{plot_trajectory: trajectory_callback}
+      )
+
+    {_, y, _rho, q, _random_key, _velocity_model} =
+      run_ep_fn.(velocity_model, obstacles_tensor, rho, q, random_key)
 
     {y, q}
   end
@@ -62,10 +68,10 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     |> Nx.all(axes: [1], keep_axes: opts[:keep_axes])
   end
 
-  defnp run_episodes(velocity_model, obstacles_tensor, rho, q, random_key) do
+  defnp run_episodes(velocity_model, obstacles_tensor, rho, q, random_key, opts \\ []) do
     while {i = 0, y = Nx.tensor(0.0, type: :f64), rho, q, random_key, velocity_model,
            obstacles_tensor},
-          i < 15_000 do
+          i < opts[:num_episodes] do
       i =
         hook(i, fn i ->
           IO.puts("[#{NaiveDateTime.utc_now()}] Starting episode #{Nx.to_number(i)}")

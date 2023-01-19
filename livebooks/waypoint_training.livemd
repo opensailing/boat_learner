@@ -17,18 +17,49 @@ Mix.install(
 ```elixir
 alias VegaLite, as: Vl
 
+obstacles =
+  Nx.tensor([
+    [-10, -2, 40, 100],
+    [2, 10, 40, 100],
+    [-20, -9, 100, 110]
+  ])
+
+obstacles_data =
+  obstacles
+  |> Nx.to_flat_list()
+  |> Enum.chunk_every(4)|
+  |> Enum.flat_map(fn [x, x2, y, y2] -> [{:x, x}, {:x2, x2}, {:y, y}, {:y2, y2}] end)
+  |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+min_x = -20
+max_x = 20
+
+min_y = 0
+max_y = 250
+
 widget =
   Vl.new(width: 600, height: 600)
-  |> Vl.mark(:line, opacity: 0.75)
-  |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [-20, 20]])
-  |> Vl.encode_field(:y, "y", type: :quantitative, scale: [domain: [0, 250]])
-  |> Vl.encode_field(:color, "episode", type: :nominal, legend: false)
-  |> Vl.encode_field(:order, "index")
+  |> Vl.layers([
+    Vl.new()
+    |> Vl.data(name: "trajectory")
+    |> Vl.mark(:line, opacity: 0.75, tooltip: [content: "data"])
+    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x]])
+    |> Vl.encode_field(:y, "y", type: :quantitative, scale: [domain: [min_y, max_y]])
+    |> Vl.encode_field(:color, "episode", type: :nominal, scale: [scheme: "blues"], legend: false)
+    |> Vl.encode_field(:order, "index"),
+    Vl.new()
+    |> Vl.data_from_values(obstacles_data)
+    |> Vl.mark(:rect, color: "grey", grid: true)
+    |> Vl.encode_field(:x, "x", type: :quantitative)
+    |> Vl.encode_field(:x2, "x2", type: :quantitative)
+    |> Vl.encode_field(:y, "y", type: :quantitative)
+    |> Vl.encode_field(:y2, "y2", type: :quantitative)
+  ])
   |> Kino.VegaLite.new()
   |> Kino.render()
 
 # 250 max_iter * 15 episodes
-max_points = 250 * 15
+max_points = 250 * 50
 
 plot_trajectory = fn {episode, num_points, trajectory} ->
   episode = Nx.to_number(episode)
@@ -43,14 +74,20 @@ plot_trajectory = fn {episode, num_points, trajectory} ->
       |> Enum.zip_with(fn [x, y] -> %{x: x, y: y, episode: episode} end)
       |> Enum.with_index(fn m, idx -> Map.put(m, :index, idx) end)
 
-    Kino.VegaLite.push_many(widget, points, window: max_points)
+    Kino.VegaLite.push_many(widget, points, window: max_points, dataset: "trajectory")
   end
 end
 ```
 
 ```elixir
-Kino.VegaLite.clear(widget)
-{t, _} = :timer.tc(fn -> BoatLearner.Navigation.SouthToNorth.train(plot_trajectory) end)
+Kino.VegaLite.clear(widget, dataset: "trajectory")
+
+{t, _} =
+  :timer.tc(fn ->
+    BoatLearner.Navigation.WaypointWithObstacles.train(obstacles, plot_trajectory,
+      num_episodes: 10_000
+    )
+  end)
 
 "#{t / 1_000} ms"
 ```
