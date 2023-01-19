@@ -15,6 +15,7 @@ defmodule BoatLearner.Navigation.SouthToNorth do
   @right_wall 10
 
   @d_angle_rad 0.1
+  @max_iter 250
 
   def plot_trajectory({episode, num_points, trajectory}) do
     episode = Nx.to_number(episode)
@@ -48,7 +49,7 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
   defnp run_episodes(velocity_model, rho, q, random_key) do
     while {i = 0, y = Nx.tensor(0.0, type: :f64), rho, q, random_key, velocity_model},
-          i < 5_000 do
+          i < 15_000 do
       i =
         hook(i, fn i ->
           IO.puts("[#{NaiveDateTime.utc_now()}] Starting episode #{Nx.to_number(i)}")
@@ -72,13 +73,12 @@ defmodule BoatLearner.Navigation.SouthToNorth do
     angle = Nx.tensor(0, type: :f64)
     y = Nx.broadcast(Nx.tensor(0, type: :f64), x)
     state = {velocity_model, q, rho, x, y, angle, random_key}
-    max_iter = 250
 
-    trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f64), {max_iter, 2})
+    trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f64), {@max_iter, 2})
 
     {i, _continue, trajectory, {_velocity_model, q, rho, _x, last_y, _angle, random_key}} =
       while {i = 0, continue = Nx.tensor(1, type: :u8), trajectory, state},
-            i < max_iter and continue do
+            i < @max_iter and continue do
         {_velocity_model, _q, _rho, x, y, _angle, _random_key} = next_state = iteration(state, i)
         continue = x > @left_wall and x < @right_wall
 
@@ -201,6 +201,9 @@ defmodule BoatLearner.Navigation.SouthToNorth do
 
     # Nx.cos(theta) + Nx.atan(y) / (@pi / 2)
 
-    (Nx.atan(y) / (@pi / 2)) |> Nx.new_axis(0)
+    # Axon.Activations.sigmoid(y * (1 - iter / @max_iter))
+    # Axon.Activations.sigmoid(r)
+    (Axon.Activations.sigmoid(r / (2 * 12)) + Axon.Activations.sigmoid(y * (1 - iter / @max_iter)))
+    |> Nx.reshape({:auto})
   end
 end

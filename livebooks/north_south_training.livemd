@@ -54,13 +54,14 @@ defmodule MyServer do
   defp new_layer(x, y, episode) do
     Vl.new()
     |> Vl.data_from_values(%{x: x, y: y, sequence: Enum.with_index(x, fn _, idx -> idx end)})
+    |> Vl.transform(calculate: "#{episode}", as: "episode")
     |> Vl.mark(:line,
       stroke_opacity: 0.5,
       opacity: 0.5,
       color: Enum.at(@colors, rem(episode, 10)),
-      tooltip: true
+      tooltip: [content: "data"]
     )
-    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [-10, 10]])
+    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [-20, 20]])
     |> Vl.encode_field(:y, "y", type: :quantitative, scale: [domain: [0, 200]])
     |> Vl.encode_field(:order, "sequence")
   end
@@ -115,7 +116,7 @@ MyServer.reset()
 ```
 
 ```elixir
-MyServer.draw(20)
+MyServer.draw(50)
 ```
 
 ```elixir
