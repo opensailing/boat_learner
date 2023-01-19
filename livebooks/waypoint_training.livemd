@@ -1,0 +1,56 @@
+# Reinforcement Learning
+
+```elixir
+my_app_root = Path.join(__DIR__, "..")
+
+Mix.install(
+  [
+    {:boat_learner, path: my_app_root, env: :dev}
+  ],
+  config_path: Path.join(my_app_root, "config/config.exs"),
+  lockfile: Path.join(my_app_root, "mix.lock")
+)
+```
+
+## Section
+
+```elixir
+alias VegaLite, as: Vl
+
+widget =
+  Vl.new(width: 600, height: 600)
+  |> Vl.mark(:line, opacity: 0.75)
+  |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [-20, 20]])
+  |> Vl.encode_field(:y, "y", type: :quantitative, scale: [domain: [0, 250]])
+  |> Vl.encode_field(:color, "episode", type: :nominal, legend: false)
+  |> Vl.encode_field(:order, "index")
+  |> Kino.VegaLite.new()
+  |> Kino.render()
+
+# 250 max_iter * 15 episodes
+max_points = 250 * 15
+
+plot_trajectory = fn {episode, num_points, trajectory} ->
+  episode = Nx.to_number(episode)
+  num_points = Nx.to_number(num_points)
+
+  if num_points > 0 and rem(episode, 50) == 0 do
+    x = Nx.to_flat_list(trajectory[[0..(num_points - 1), 0]])
+    y = Nx.to_flat_list(trajectory[[0..(num_points - 1), 1]])
+
+    points =
+      [x, y]
+      |> Enum.zip_with(fn [x, y] -> %{x: x, y: y, episode: episode} end)
+      |> Enum.with_index(fn m, idx -> Map.put(m, :index, idx) end)
+
+    Kino.VegaLite.push_many(widget, points, window: max_points)
+  end
+end
+```
+
+```elixir
+Kino.VegaLite.clear(widget)
+{t, _} = :timer.tc(fn -> BoatLearner.Navigation.SouthToNorth.train(plot_trajectory) end)
+
+"#{t / 1_000} ms"
+```
