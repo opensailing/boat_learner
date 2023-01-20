@@ -8,42 +8,199 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
 
   @behaviour BoatLearner.Navigation
 
-  @dt 1
+  @dt 0.5
   @pi :math.pi()
 
   @left_wall -20
   @right_wall 20
+  @max_y 300
 
-  @d_angle_rad 0.1
-  @max_iter 250
+  @d_angle_rad 5 * @pi / 180
+  @max_iter 4000
 
-  @impl true
-  def train(obstacles_tensor, trajectory_callback, opts \\ []) do
+  @learning_rate 1.0e-4
+  @adamw_decay 0.01
+
+  @state_vector_size 5
+  @experience_replay_buffer_num_entries 50
+
+  def train(obstacles_tensor, target_waypoint, trajectory_callback, opts \\ []) do
     # obstacles_tensor is {n, 4} where each row is [min_x, max_x, min_y, max_y]
+    # target_waypoint is {2} [target_x, target_y]
 
-    # pi rad with pi/30 rad  resolution
-    possible_angles = 30
+    # 2pi rad with pi/90 resolution
+    possible_angles = ceil(2 * @pi / @d_angle_rad)
     # @left_wall to @right_wall with 1 step
     possible_xs = @right_wall - @left_wall + 1
+    possible_ys = @max_y + 1
     # turn left or turn right
     num_actions = 2
-    q = Nx.broadcast(Nx.tensor(0, type: :f64), {possible_angles, possible_xs, num_actions})
-    # avg reward initialized to 0
-    rho = Nx.tensor(0, type: :f64)
-    velocity_model = BoatLearner.Simulator.init()
-    random_key = Nx.Random.key(System.system_time())
 
+    # This is fixed on {angle, x, y, vel_x, vel_x}
+    # num_observations = 5
+
+    policy_net = dqn(@state_vector_size, num_actions)
+    target_net = dqn(@state_vector_size, num_actions)
+
+    {policy_init_fn, policy_predict_fn} = Axon.build(policy_net, seed: 0)
+    {target_init_fn, target_predict_fn} = Axon.build(target_net, seed: 1)
+
+    random_key = Nx.Random.key(System.system_time())
     num_episodes = opts[:num_episodes] || 10000
 
-    run_ep_fn =
-      Nx.Defn.jit(&run_episodes(&1, &2, &3, &4, &5, num_episodes: num_episodes),
-        hooks: %{plot_trajectory: trajectory_callback}
+    initial_state =
+      {random_key, obstacles_tensor, target_waypoint, policy_init_fn, target_init_fn}
+
+    loop = Axon.Loop.loop(&run_iteration/2, &init/2)
+
+    loop
+    |> Axon.Loop.handle(:iteration_completed, &check_terminate_episode/1)
+    |> Axon.Loop.handle(:epoch_halted, &plot_trajectory(&1, trajectory_callback))
+    |> Axon.Loop.run(Stream.cycle([Nx.tensor(1)]), initial_state,
+      iterations: @max_iter,
+      epochs: num_episodes
+    )
+  end
+
+  defn init(_, initial_state), do: init(initial_state)
+
+  defn init({random_key, obstacles_tensor, target_waypoint, policy_init_fn, target_init_fn}) do
+    velocity_model = BoatLearner.Simulator.init()
+
+    q_policy = policy_init_fn.(Nx.template({1, @state_vector_size}, type: :f64))
+    q_target = target_init_fn.(Nx.template({1, @state_vector_size}, type: :f64))
+
+    {optimizer_init_fn, optimizer_update_fn} =
+      Axon.Optimizers.adamw(@learning_rate, decay: @adamw_decay)
+
+    q_policy_optimizer_state = optimizer_init_fn.(q_policy)
+    q_target_optimizer_state = optimizer_init_fn.(q_target)
+
+    x = y = angle = Nx.tensor(0, type: :f64)
+
+    experience_replay_buffer_index = Nx.tensor(0, type: :s64)
+
+    trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f64), {@max_iter, 2})
+
+    # s_i = Nx.stack([x, y, angle, velocity_x, velocity_y])
+    # action_i
+    # action_i -> reward_(i+1)
+    # action_i -> s_(i+1)
+
+    # {@experience_replay_buffer_num_entries, 2 * @state_vector_size + 2}
+    # buffer entry: Nx.concatenate([state_vector, Nx.new_axis(action, 0), Nx.new_axis(reward, 0), next_state_vector])
+    experience_replay_buffer =
+      Nx.broadcast(
+        Nx.tensor(:nan, type: :f64),
+        {@experience_replay_buffer_num_entries, 2 * @state_vector_size + 2}
       )
 
-    {_, y, _rho, q, _random_key, _velocity_model} =
-      run_ep_fn.(velocity_model, obstacles_tensor, rho, q, random_key)
+    %{
+      velocity_model: velocity_model,
+      obstacles_tensor: obstacles_tensor,
+      target_waypoint: target_waypoint,
+      q_policy: q_policy,
+      q_target: q_target,
+      q_policy_optimizer_state: q_policy_optimizer_state,
+      q_target_optimizer_state: q_target_optimizer_state,
+      x: x,
+      y: y,
+      angle: angle,
+      random_key: random_key,
+      trajectory: trajectory,
+      experience_replay_buffer: experience_replay_buffer,
+      experience_replay_buffer_index: experience_replay_buffer_index
+    }
+  end
 
-    {y, q}
+  # {experience_replay_buffer, experience_replay_buffer_index} =
+  #   update_experience_replay_buffer(
+  #     experience_replay_buffer,
+  #     experience_replay_buffer_index,
+  #     state_vector,
+  #     action,
+  #     reward,
+  #     next_state_vector
+  #   )
+
+  defn update_experience_replay_buffer(
+         experience_replay_buffer,
+         experience_replay_buffer_index,
+         state_vector,
+         action,
+         reward,
+         next_state_vector
+       ) do
+    idx = Nx.stack([[experience_replay_buffer_index, 0]])
+
+    shape = {Nx.size(state_vector), 1}
+    index_template = Nx.concatenate([Nx.broadcast(0, shape), Nx.iota(shape, axis: 0)], axis: 1)
+
+    updates = Nx.concatenate([state_vector, Nx.stack([action, reward]), next_state_vector])
+
+    updated = Nx.indexed_put(experience_replay_buffer, idx + index_template, updates)
+
+    {updated, experience_replay_buffer_index + 1}
+  end
+
+  defnp select_action(state) do
+    
+  end
+
+  defn run_iteration(_axon_inputs, state) do
+
+    {action, state} = select_action(state)
+    # select action from the softmax distribution
+    # q has shape {*, *, 2} so this will return {2}
+    action_probabilities = Axon.Activations.softmax(q[[state, x_state, y_state]])
+
+    # random choice: will be contributed to nx afterwards
+    {action, random_key} = choice(random_key, Nx.iota({2}, type: :s64), action_probabilities)
+    d_angle = Nx.select(action == 0, -@d_angle_rad, @d_angle_rad)
+
+    next_angle = Nx.as_type(angle + d_angle, :f64)
+    next_state = angle_to_state(next_angle)
+
+    v = velocity(velocity_model, next_angle) |> Nx.new_axis(0)
+
+    next_xy = BoatLearner.Simulator.update_position(Nx.stack([x, y]), v, @dt)
+    next_x = Nx.slice_along_axis(next_xy, 0, 1, axis: 1) |> Nx.reshape({})
+    next_y = Nx.slice_along_axis(next_xy, 1, 1, axis: 1) |> Nx.reshape({})
+
+    next_x_state = x_to_state(next_x)
+    next_y_state = y_to_state(next_y)
+
+    reward =
+      reward(velocity_model, next_angle, iter, next_x, next_y, obstacles_tensor, target_waypoint)
+
+    delta =
+      cond do
+        reached_target(x, y, target_waypoint) ->
+          10000
+
+        y > @max_y or next_x < @left_wall or next_x > @right_wall or
+            Nx.any(all_collisions(obstacles_tensor, next_x, next_y)) ->
+          # out of bounds, terminal case
+          -10 * (@max_iter - iter) + reward
+
+        # -100
+
+        true ->
+          reward - rho + Nx.reduce_max(q[[next_state, next_x_state, next_y_state]]) -
+            q[[state, x_state, y_state, action]]
+      end
+
+    next_rho = rho + 0.1 * (reward - rho)
+
+    next_q =
+      Nx.indexed_add(
+        q,
+        Nx.stack([state, x_state, y_state, action]) |> Nx.new_axis(0),
+        0.1 * delta
+      )
+
+    {velocity_model, obstacles_tensor, target_waypoint, next_q, Nx.reshape(next_rho, {}), next_x,
+     next_y, Nx.reshape(next_angle, {}), random_key}
   end
 
   @doc """
@@ -68,108 +225,6 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     |> Nx.all(axes: [1], keep_axes: opts[:keep_axes])
   end
 
-  defnp run_episodes(velocity_model, obstacles_tensor, rho, q, random_key, opts \\ []) do
-    while {i = 0, y = Nx.tensor(0.0, type: :f64), rho, q, random_key, velocity_model,
-           obstacles_tensor},
-          i < opts[:num_episodes] do
-      i =
-        hook(i, fn i ->
-          IO.puts("[#{NaiveDateTime.utc_now()}] Starting episode #{Nx.to_number(i)}")
-        end)
-
-      {curr_y, trajectory, num_points, {rho, q, random_key}} =
-        episode(velocity_model, obstacles_tensor, {rho, q, random_key})
-
-      token = create_token()
-      {token, _} = hook_token(token, {i, num_points, trajectory}, :plot_trajectory)
-
-      y = Nx.max(curr_y, y)
-      y = attach_token(token, y)
-
-      {i + 1, y, rho, q, random_key, velocity_model, obstacles_tensor}
-    end
-  end
-
-  defnp episode(velocity_model, obstacles_tensor, {rho, q, random_key}) do
-    {x, random_key} = Nx.Random.uniform(random_key, @left_wall, @right_wall, type: :f64)
-    angle = Nx.tensor(0, type: :f64)
-    y = Nx.broadcast(Nx.tensor(0, type: :f64), x)
-    state = {velocity_model, obstacles_tensor, q, rho, x, y, angle, random_key}
-
-    trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f64), {@max_iter, 2})
-
-    {i, _continue, trajectory,
-     {_velocity_model, _obstacles_tensor, q, rho, _x, last_y, _angle, random_key}} =
-      while {i = 0, continue = Nx.tensor(1, type: :u8), trajectory, state},
-            i < @max_iter and continue do
-        {_velocity_model, obstacles_tensor, _q, _rho, x, y, _angle, _random_key} =
-          next_state = iteration(state, i)
-
-        continue =
-          x > @left_wall and x < @right_wall and
-            not Nx.any(all_collisions(obstacles_tensor, x, y))
-
-        idx_template =
-          Nx.tensor([
-            [0, 0],
-            [0, 1]
-          ])
-
-        index = idx_template + Nx.stack([i, 0])
-
-        trajectory = Nx.indexed_put(trajectory, index, Nx.stack([x, y]))
-
-        {i + 1, continue, trajectory, next_state}
-      end
-
-    {last_y, trajectory, i, {rho, q, random_key}}
-  end
-
-  defn iteration({velocity_model, obstacles_tensor, q, rho, x, y, angle, random_key}, iter) do
-    state = angle_to_state(angle)
-    x_state = x_to_state(x)
-
-    # select action from the softmax distribution
-    # q has shape {*, *, 2} so this will return {2}
-    action_probabilities = Axon.Activations.softmax(q[[state, x_state]])
-
-    # random choice: will be contributed to nx afterwards
-    {action, random_key} = choice(random_key, Nx.iota({2}, type: :s64), action_probabilities)
-    d_angle = Nx.select(action == 0, -@d_angle_rad, @d_angle_rad)
-
-    next_angle = Nx.as_type(angle + d_angle, :f64)
-    next_state = angle_to_state(next_angle)
-
-    v = velocity(velocity_model, next_angle) |> Nx.new_axis(0)
-
-    next_xy = BoatLearner.Simulator.update_position(Nx.stack([x, y]), v, @dt) |> print_expr()
-    next_x = Nx.slice_along_axis(next_xy, 0, 1, axis: 1) |> Nx.reshape({})
-    next_y = Nx.slice_along_axis(next_xy, 1, 1, axis: 1) |> Nx.reshape({})
-
-    next_x_state = x_to_state(next_x)
-
-    # Grid has a lateral bounding on [@left_wall, @right_wall]
-
-    reward = reward(velocity_model, next_angle, iter, next_y)
-
-    delta =
-      if next_x < @left_wall or next_x > @right_wall or
-           Nx.any(all_collisions(obstacles_tensor, next_x, next_y)) do
-        # out of bounds, terminal case
-        -10
-      else
-        reward - rho + Nx.reduce_max(q[[next_state, next_x_state]]) -
-          q[[state, x_state, action]]
-      end
-
-    next_rho = rho + 0.1 * (reward - rho)
-
-    next_q = Nx.indexed_add(q, Nx.stack([state, x_state, action]) |> Nx.new_axis(0), 0.1 * delta)
-
-    {velocity_model, obstacles_tensor, next_q, Nx.reshape(next_rho, {}), next_x, next_y,
-     Nx.reshape(next_angle, {}), random_key}
-  end
-
   defn choice(key, target, probabilities) do
     p_cumulative = Nx.cumulative_sum(probabilities)
     {value, key} = Nx.Random.uniform(key, shape: Nx.shape(target))
@@ -180,7 +235,7 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
 
   # We'll treat angles with 30 degree resolution
   defn angle_to_state(angle) do
-    out = 30 * Nx.remainder((angle + @pi) / (2 * @pi), 1)
+    out = 2 * @pi / @d_angle_rad * Nx.remainder((angle + @pi) / (2 * @pi), 1)
     Nx.as_type(out, :s64)
   end
 
@@ -192,46 +247,65 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     )
   end
 
+  defn y_to_state(y) do
+    Nx.as_type(Nx.floor(y), :s64)
+  end
+
   # velocity is {speed, angle}
   defn velocity(model, angle) do
     speed = BoatLearner.Simulator.speed(model, angle)
     Nx.stack([speed, angle], axis: -1)
   end
 
-  defn reward(model, angle, iter, y) do
+  defn reward(model, angle, iter, x, y, obstacles_tensor, target_waypoint) do
     velocity = velocity(model, angle)
 
     r = Nx.slice_along_axis(velocity, 0, 1, axis: -1)
     theta = Nx.slice_along_axis(velocity, 1, 1, axis: -1)
 
-    # This could be written as just r * Nx.cos(theta)
-    # but writing it like this will enable us to change
-    # targets more easily in the future
+    distance_to_target = distance(x, y, target_waypoint)
 
-    # velocity_vector = r * Nx.stack([Nx.cos(theta), Nx.sin(theta)], axis: 1)
-    # target_direction_vector = Nx.tensor([[1, 0]]) |> Nx.broadcast(velocity_vector)
+    # distance_score = Axon.Activations.tanh(distance_to_target)
+    distance_score = -distance_to_target
 
-    # # batched projection of velocity_vector onto target_direction_vector
-    # # We want to maximize the velocity in the direction of the target,
-    # # so taking our velocity's projection onto the target direction does
-    # # the trick
-    # Nx.dot(
-    #   target_direction_vector / Nx.LinAlg.norm(target_direction_vector, axes: [1]),
-    #   [1],
-    #   [0],
-    #   velocity_vector,
-    #   [1],
-    #   [0]
-    # )
+    velocity_vector = Nx.reshape(velocity, {2})
+    target_direction_vector = Nx.stack([x, y]) - target_waypoint
+    target_direction_vector = target_direction_vector / Nx.LinAlg.norm(target_direction_vector)
 
-    # r = 1 - Nx.exp(-angle ** 2 / (@pi / 12))
-    # Nx.new_axis(r)
+    projected_speed = Nx.dot(target_direction_vector, velocity_vector)
+    # speed_score = Axon.Activations.tanh(projected_speed)
+    speed_score = 0
+    iter_score = 0
 
-    # Nx.cos(theta) + Nx.atan(y) / (@pi / 2)
+    obstacle_score =
+      -Nx.sum(
+        all_collisions(obstacles_tensor, x * 1.15, y) +
+          all_collisions(obstacles_tensor, x * 0.85, y) +
+          all_collisions(obstacles_tensor, x, y * 1.15) +
+          all_collisions(obstacles_tensor, x, y * 0.85)
+      )
+      |> Axon.Activations.tanh()
 
-    # Axon.Activations.sigmoid(y * (1 - iter / @max_iter))
-    # Axon.Activations.sigmoid(r)
-    (Axon.Activations.sigmoid(r / (2 * 12)) + Axon.Activations.sigmoid(y * (1 - iter / @max_iter)))
-    |> Nx.reshape({:auto})
+    Nx.reshape(speed_score + distance_score + iter_score + obstacle_score, {:auto})
+  end
+
+  defn distance(x, y, target) do
+    # normalization_factor = Nx.tensor([@right_wall - @left_wall, @max_y]) |> print_value()
+    # pos = Nx.stack([x, y]) / normalization_factor
+    pos = Nx.stack([x, y])
+    # Scholar.Metrics.Distance.euclidean(target / normalization_factor, pos)
+    max_distance = Nx.sqrt(((@right_wall - @left_wall) / 2) ** 2 + @max_y ** 2)
+
+    Scholar.Metrics.Distance.euclidean(target, pos)
+  end
+
+  defnp reached_target(x, y, target_waypoint), do: Nx.all(distance(x, y, target_waypoint) < 2.5)
+
+  def dqn(num_observations, num_actions) do
+    # shape is currently ignored
+    Axon.input("state", shape: {nil, num_observations})
+    |> Axon.dense(128, activation: :relu)
+    |> Axon.dense(128, activation: :relu)
+    |> Axon.dense(num_actions)
   end
 end

@@ -19,15 +19,19 @@ alias VegaLite, as: Vl
 
 obstacles =
   Nx.tensor([
-    [-10, -2, 40, 100],
-    [2, 10, 40, 100],
-    [-20, -9, 100, 110]
+    [-20, 20, 220, 250],
+    [-20, -2, 0, 180],
+    [8, 20, 0, 180]
+    # [2, 10, 40, 100],
+    # [-20, -9, 100, 110]
   ])
+
+target_waypoint = Nx.tensor([4, 160])
 
 obstacles_data =
   obstacles
   |> Nx.to_flat_list()
-  |> Enum.chunk_every(4)|
+  |> Enum.chunk_every(4)
   |> Enum.flat_map(fn [x, x2, y, y2] -> [{:x, x}, {:x2, x2}, {:y, y}, {:y2, y2}] end)
   |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
@@ -53,19 +57,32 @@ widget =
     |> Vl.encode_field(:x, "x", type: :quantitative)
     |> Vl.encode_field(:x2, "x2", type: :quantitative)
     |> Vl.encode_field(:y, "y", type: :quantitative)
-    |> Vl.encode_field(:y2, "y2", type: :quantitative)
+    |> Vl.encode_field(:y2, "y2", type: :quantitative),
+    Vl.new()
+    |> Vl.data_from_values(%{
+      x: [Nx.to_number(target_waypoint[0])],
+      y: [Nx.to_number(target_waypoint[1])]
+    })
+    |> Vl.mark(:circle,
+      color: "red",
+      opacity: 1,
+      grid: true,
+      size: [expr: "height * 10 * 10 * #{:math.pi()} /#{max_y - min_y}"]
+    )
+    |> Vl.encode_field(:x, "x", type: :quantitative)
+    |> Vl.encode_field(:y, "y", type: :quantitative)
   ])
   |> Kino.VegaLite.new()
   |> Kino.render()
 
 # 250 max_iter * 15 episodes
-max_points = 250 * 50
+max_points = 250 * 15
 
 plot_trajectory = fn {episode, num_points, trajectory} ->
   episode = Nx.to_number(episode)
   num_points = Nx.to_number(num_points)
 
-  if num_points > 0 and rem(episode, 50) == 0 do
+  if num_points > 0 and rem(episode, 500) == 0 do
     x = Nx.to_flat_list(trajectory[[0..(num_points - 1), 0]])
     y = Nx.to_flat_list(trajectory[[0..(num_points - 1), 1]])
 
@@ -84,8 +101,11 @@ Kino.VegaLite.clear(widget, dataset: "trajectory")
 
 {t, _} =
   :timer.tc(fn ->
-    BoatLearner.Navigation.WaypointWithObstacles.train(obstacles, plot_trajectory,
-      num_episodes: 10_000
+    BoatLearner.Navigation.WaypointWithObstacles.train(
+      obstacles,
+      target_waypoint,
+      plot_trajectory,
+      num_episodes: 10_000_000
     )
   end)
 
