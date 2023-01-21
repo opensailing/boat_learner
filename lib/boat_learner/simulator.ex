@@ -149,15 +149,7 @@ defmodule BoatLearner.Simulator do
     Nx.select(angle <= cutoff_angle, linear_pred, spline_pred)
   end
 
-  @doc """
-  Receives a batched tensor in which the last dim is `[x, y]`
-  and updates given compatible-shaped tensors of `[speed, angle]` and `[dt]`
-  """
-  defn update_position(current_position, velocity, dt) do
-    r = Nx.slice_along_axis(velocity, 0, 1, axis: 1)
-    theta = Nx.slice_along_axis(velocity, 1, 1, axis: 1)
-
-    current_position +
-      dt * r * Nx.concatenate([Nx.sin(theta), Nx.cos(theta)], axis: 1)
+  defn update_position(x, y, speed, angle, dt) do
+    {x + dt * speed * Nx.sin(angle), y + dt * speed * Nx.cos(angle)}
   end
 end
