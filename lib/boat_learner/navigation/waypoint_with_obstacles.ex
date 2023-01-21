@@ -18,11 +18,17 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
   @d_angle_rad 5 * @pi / 180
   @max_iter 4000
 
+  @state_vector_size 6
+  @experience_replay_buffer_num_entries 50
+
+  @eps_start 0.9
+  @eps_end 0.05
+  @eps_decay 1000
+  @gamma 0.99
+  @batch_size 128
+  @tau = 0.005
   @learning_rate 1.0e-4
   @adamw_decay 0.01
-
-  @state_vector_size 5
-  @experience_replay_buffer_num_entries 50
 
   def train(obstacles_tensor, target_waypoint, trajectory_callback, opts \\ []) do
     # obstacles_tensor is {n, 4} where each row is [min_x, max_x, min_y, max_y]
@@ -49,12 +55,14 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     num_episodes = opts[:num_episodes] || 10000
 
     initial_state =
-      {random_key, obstacles_tensor, target_waypoint, policy_init_fn, target_init_fn}
+      {random_key, obstacles_tensor, target_waypoint, policy_init_fn, policy_predict_fn,
+       target_init_fn, target_predict_fn}
 
     loop = Axon.Loop.loop(&run_iteration/2, &init/2)
 
     loop
-    |> Axon.Loop.handle(:iteration_completed, &check_terminate_episode/1)
+    |> Axon.Loop.handle(:epoch_started, &epoch_started_handler/1)
+    |> Axon.Loop.handle(:iteration_completed, &iteration_completed_handler/1)
     |> Axon.Loop.handle(:epoch_halted, &plot_trajectory(&1, trajectory_callback))
     |> Axon.Loop.run(Stream.cycle([Nx.tensor(1)]), initial_state,
       iterations: @max_iter,
@@ -62,11 +70,24 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     )
   end
 
+  defn epoch_started_handler(state) do
+    # Reset state
+    reset_variable_state(state)
+  end
+
+  defn iteration_completed_handler(state) do
+    # TO-DO: check episode termination conditions
+
+    new_state = %{state | iteration: state.iteration + 1}
+    {:continue, new_state}
+  end
+
   defn init(_, initial_state), do: init(initial_state)
 
-  defn init({random_key, obstacles_tensor, target_waypoint, policy_init_fn, target_init_fn}) do
-    velocity_model = BoatLearner.Simulator.init()
-
+  defn init(
+         {random_key, obstacles, target_waypoint, policy_init_fn, policy_predict_fn,
+          target_init_fn, target_predict_fn}
+       ) do
     q_policy = policy_init_fn.(Nx.template({1, @state_vector_size}, type: :f64))
     q_target = target_init_fn.(Nx.template({1, @state_vector_size}, type: :f64))
 
@@ -76,13 +97,32 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     q_policy_optimizer_state = optimizer_init_fn.(q_policy)
     q_target_optimizer_state = optimizer_init_fn.(q_target)
 
+    reset_variable_state(%{
+      random_key: random_key,
+      obstacles: obstacles,
+      target_waypoint: target_waypoint,
+      q_policy_optimizer_state: q_policy_optimizer_state,
+      q_target_optimizer_state: q_target_optimizer_state,
+      optimizer_update_fn: optimizer_update_fn,
+      q_policy: q_policy,
+      policy_predict_fn: policy_predict_fn,
+      q_target: q_target,
+      target_predict_fn: target_predict_fn
+    })
+  end
+
+  defnp reset_variable_state(current_state) do
+    velocity_model = BoatLearner.Simulator.init()
+
+    # TO-DO: initialize to random values
     x = y = angle = Nx.tensor(0, type: :f64)
 
-    experience_replay_buffer_index = Nx.tensor(0, type: :s64)
+    # these should always start at 0
+    iteration = experience_replay_buffer_index = Nx.tensor(0, type: :s64)
 
     trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f64), {@max_iter, 2})
 
-    # s_i = Nx.stack([x, y, angle, velocity_x, velocity_y])
+    # s_i = Nx.stack([x, y, angle, target_x, target_y, speed])
     # action_i
     # action_i -> reward_(i+1)
     # action_i -> s_(i+1)
@@ -95,22 +135,16 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
         {@experience_replay_buffer_num_entries, 2 * @state_vector_size + 2}
       )
 
-    %{
+    Map.merge(current_state, %{
+      iteration: iteration,
       velocity_model: velocity_model,
-      obstacles_tensor: obstacles_tensor,
-      target_waypoint: target_waypoint,
-      q_policy: q_policy,
-      q_target: q_target,
-      q_policy_optimizer_state: q_policy_optimizer_state,
-      q_target_optimizer_state: q_target_optimizer_state,
       x: x,
       y: y,
       angle: angle,
-      random_key: random_key,
       trajectory: trajectory,
       experience_replay_buffer: experience_replay_buffer,
       experience_replay_buffer_index: experience_replay_buffer_index
-    }
+    })
   end
 
   # {experience_replay_buffer, experience_replay_buffer_index} =
@@ -144,11 +178,43 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
   end
 
   defnp select_action(state) do
-    
+    %{random_key: random_key, iteration: iteration} = state
+
+    {sample, new_key} = Nx.Random.uniform(random_key)
+
+    eps_threshold = @eps_end + (@eps_start - @eps_end) * Nx.exp(-1 * iteration / @eps_decay)
+
+    {action, new_key} =
+      if sample > eps_threshold do
+        action =
+          q_policy
+          |> policy_predict_fn.(%{"state" => as_state_vector(state)})
+          |> Nx.argmax()
+
+        {action, new_key}
+      else
+        Nx.Random.randint(new_key, 0, @num_actions, type: :s64)
+      end
+
+    new_state = %{state | random_key: new_key}
+    {action, new_state}
+  end
+
+  defnp as_state_vector(%{
+          x: x,
+          y: y,
+          angle: angle,
+          velocity_model: velocity_model,
+          target_waypoint: target_waypoint
+        }) do
+    # TO-DO: model obstacles as an unwrapped vector for the input as well
+
+    speed = BoatLearner.Simulator.speed(velocity_model, angle)
+
+    Nx.stack([x, y, angle, speed, target_waypoint[0], target_waypoint[1]])
   end
 
   defn run_iteration(_axon_inputs, state) do
-
     {action, state} = select_action(state)
     # select action from the softmax distribution
     # q has shape {*, *, 2} so this will return {2}
