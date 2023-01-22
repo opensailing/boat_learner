@@ -107,8 +107,8 @@ defmodule BoatLearner.Simulator do
   """
   defn init(r, theta) do
     # theta is in rad!
-    r = Nx.as_type(r, :f64) * @kts_to_meters_per_sec
-    theta = Nx.as_type(theta, :f64)
+    r = Nx.as_type(r, :f32) * @kts_to_meters_per_sec
+    theta = Nx.as_type(theta, :f32)
 
     spline_model = Scholar.Interpolation.BezierSpline.fit(theta, r)
 
@@ -141,7 +141,7 @@ defmodule BoatLearner.Simulator do
       |> Nx.phase()
 
     # change the limits to [-pi, pi] and get the abs value, avoiding 0
-    angle = Nx.select(angle > @pi, 2 * @pi - angle, angle) + Nx.as_type(1.0e-12, :f64)
+    angle = Nx.select(angle > @pi, 2 * @pi - angle, angle) + Nx.as_type(1.0e-12, :f32)
 
     linear_pred = Scholar.Interpolation.Linear.predict(linear_model, angle)
     spline_pred = Scholar.Interpolation.BezierSpline.predict(spline_model_polar, angle)
