@@ -20,8 +20,8 @@ alias VegaLite, as: Vl
 obstacles =
   Nx.tensor([
     [-20, 20, 220, 250],
-    [-20, -2, 0, 180],
-    [8, 20, 0, 180]
+    [-20, -18, 0, 180],
+    [18, 20, 0, 180]
     # [2, 10, 40, 100],
     # [-20, -9, 100, 110]
   ])
@@ -97,6 +97,22 @@ end
 ```
 
 ```elixir
+reward_callback = fn state_vector ->
+  x = state_vector[0]
+  y = state_vector[1]
+  angle = state_vector[2]
+  speed = state_vector[3]
+  target_x = state_vector[4]
+  target_y = state_vector[5]
+
+  distance = Scholar.Metrics.Distance.euclidean(Nx.stack([x, y]), Nx.stack([target_x, target_y]))
+  projected_speed = Nx.sin(angle) |> Nx.multiply(speed)
+
+  Axon.Activations.tanh(Nx.divide(projected_speed, Nx.add(distance, 1.0e-7)))
+end
+```
+
+```elixir
 Kino.VegaLite.clear(widget, dataset: "trajectory")
 
 {t, _} =
@@ -105,6 +121,7 @@ Kino.VegaLite.clear(widget, dataset: "trajectory")
       obstacles,
       target_waypoint,
       plot_trajectory,
+      1,
       num_episodes: 10_000_000
     )
   end)

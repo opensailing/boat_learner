@@ -6,13 +6,11 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
   """
   import Nx.Defn
 
-  @behaviour BoatLearner.Navigation
-
   @dt 0.5
   @pi :math.pi()
 
-  @left_wall -20
-  @right_wall 20
+  @min_x -20
+  @max_x 20
   @max_y 300
 
   @max_iter 4000
@@ -40,12 +38,6 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
   def train(obstacles_tensor, target_waypoint, trajectory_callback, reward_callback, opts \\ []) do
     # obstacles_tensor is {n, 4} where each row is [min_x, max_x, min_y, max_y]
     # target_waypoint is {2} [target_x, target_y]
-
-    # 2pi rad with pi/90 resolution
-    possible_angles = ceil(2 * @pi / @d_angle_rad)
-    # @left_wall to @right_wall with 1 step
-    possible_xs = @right_wall - @left_wall + 1
-    possible_ys = @max_y + 1
 
     # This is fixed on {angle, x, y, vel_x, vel_x}
     # num_observations = 5
@@ -250,7 +242,22 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     Nx.stack([x, y, angle, speed, target_waypoint[0], target_waypoint[1]])
   end
 
-  defnp reward_for_state(state), do: state.reward_callback.(state)
+  defnp reward_for_state(state) do
+    %{x: x, y: y, angle: angle} = state
+
+    speed = BoatLearner.Simulator.speed(state.velocity_model, angle)
+
+    pos = Nx.stack([x, y])
+
+    diff_vector = state.target_waypoint - pos
+    diff_vector_complex = Nx.complex(diff_vector[0], diff_vector[1])
+    distance = Nx.abs(diff_vector_complex)
+    angle_to_destination = Nx.phase(diff_vector_complex)
+
+    projected_speed = angle_to_destination |> Nx.sin() |> Nx.multiply(speed)
+
+    Axon.Activations.tanh(Nx.divide(projected_speed, Nx.add(distance, 1.0e-7)))
+  end
 
   defnp optimize_model(state) do
     if state.iteration > @batch_size and state.experience_replay_buffer_index == 0 do
@@ -274,22 +281,36 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     next_state_batch =
       Nx.slice_along_axis(batch, @state_vector_size + 2, @state_vector_size, axis: 1)
 
-    non_final_mask = not is_terminal_state(state_batch)
+    non_final_mask = not is_terminal_state(state_batch, state.obstacles)
 
-    state_action_values =
-      state.q_policy
-      |> state.policy_predict_fn.(state_batch)
-      |> Nx.take(action_batch)
+    {_loss, gradient} =
+      value_and_grad(state.q_policy, fn q_policy ->
+        state_action_values =
+          q_policy
+          |> state.policy_predict_fn.(state_batch)
+          |> Nx.take(action_batch)
 
-    next_state_values =
-      Nx.select(non_final_mask, state.target_predict_fn.(state.q_target, next_state_batch), 0)
+        next_state_values =
+          Nx.select(non_final_mask, state.target_predict_fn.(state.q_target, next_state_batch), 0)
 
-    expected_state_action_values = next_state_values * @gamma + reward_batch
+        expected_state_action_values = next_state_values * @gamma + reward_batch
 
-    # compute smooth l1 loss
-    loss = Axon.Losses.soft_margin(expected_state_action_values, state_action_values)
+        huber_loss(state_action_values, expected_state_action_values)
+      end)
 
-    state.q_policy_optimizer_state.()
+    {scaled_updates, optimizer_state} =
+      state.optimizer_update_fn.(gradient, state.q_policy_optimizer_state, state.q_policy)
+
+    q_policy = Axon.Updates.apply_updates(state.q_policy, scaled_updates)
+    %{state | q_policy: q_policy, q_policy_optimizer_state: optimizer_state}
+  end
+
+  defnp huber_loss(y_pred, y_true, opts \\ [beta: 1.0, reduction_fn: &Nx.mean/1]) do
+    abs_diff = Nx.abs(y_pred - y_true)
+
+    abs_diff
+    |> Nx.select(0.5 * abs_diff ** 2 / opts[:beta], abs_diff - 0.5 * opts[:beta])
+    |> then(opts[:reduction_fn])
   end
 
   defnp soft_update_target_network(state) do
@@ -358,7 +379,7 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
         ]
       >
   """
-  defnp all_collisions(obstacles, x, y, opts \\ []) do
+  defn all_collisions(obstacles, x, y, opts \\ []) do
     pos = Nx.stack([x, x, y, y]) |> Nx.new_axis(0)
     min_mask = Nx.tensor([[1, 0, 1, 0]]) |> Nx.broadcast(obstacles)
 
