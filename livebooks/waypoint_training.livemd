@@ -74,26 +74,6 @@ widget =
   ])
   |> Kino.VegaLite.new()
   |> Kino.render()
-
-# 250 max_iter * 15 episodes
-max_points = 250 * 15
-
-plot_trajectory = fn {episode, num_points, trajectory} ->
-  episode = Nx.to_number(episode)
-  num_points = Nx.to_number(num_points)
-
-  if num_points > 0 and rem(episode, 500) == 0 do
-    x = Nx.to_flat_list(trajectory[[0..(num_points - 1), 0]])
-    y = Nx.to_flat_list(trajectory[[0..(num_points - 1), 1]])
-
-    points =
-      [x, y]
-      |> Enum.zip_with(fn [x, y] -> %{x: x, y: y, episode: episode} end)
-      |> Enum.with_index(fn m, idx -> Map.put(m, :index, idx) end)
-
-    Kino.VegaLite.push_many(widget, points, window: max_points, dataset: "trajectory")
-  end
-end
 ```
 
 ```elixir
@@ -113,6 +93,32 @@ end
 ```
 
 ```elixir
+# 250 max_iter * 15 episodes
+max_points = 250 * 15
+
+plot_trajectory = fn axon_state ->
+  episode = axon_state.epoch
+  num_points = Nx.to_number(axon_state.step_state.iteration)
+
+  trajectory = axon_state.step_state.trajectory
+
+  if num_points > 0 and rem(episode, 500) == 0 do
+    x = Nx.to_flat_list(trajectory[[0..(num_points - 1), 0]])
+    y = Nx.to_flat_list(trajectory[[0..(num_points - 1), 1]])
+
+    points =
+      [x, y]
+      |> Enum.zip_with(fn [x, y] -> %{x: x, y: y, episode: episode} end)
+      |> Enum.with_index(fn m, idx -> Map.put(m, :index, idx) end)
+
+    Kino.VegaLite.push_many(widget, points, window: max_points, dataset: "trajectory")
+  end
+
+  axon_state
+end
+```
+
+```elixir
 Kino.VegaLite.clear(widget, dataset: "trajectory")
 
 {t, _} =
@@ -121,8 +127,8 @@ Kino.VegaLite.clear(widget, dataset: "trajectory")
       obstacles,
       target_waypoint,
       plot_trajectory,
-      1,
-      num_episodes: 10_000_000
+      &BoatLearner.Navigation.WaypointWithObstacles.reward_for_state/1,
+      num_episodes: 10_000
     )
   end)
 
