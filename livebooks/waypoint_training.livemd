@@ -19,14 +19,14 @@ alias VegaLite, as: Vl
 
 obstacles =
   Nx.tensor([
-    [-20, 20, 220, 250],
-    [-20, -12, 0, 180],
-    [12, 20, 0, 180]
+    [-20, 20, 300, 301]
+    # [-20, -12, 0, 180],
+    # [12, 20, 0, 180]
     # [2, 10, 40, 100],
     # [-20, -9, 100, 110]
   ])
 
-target_waypoint = Nx.tensor([0, 160])
+target_waypoint = Nx.tensor([-5, 160])
 
 obstacles_data =
   obstacles
@@ -39,7 +39,7 @@ min_x = -20
 max_x = 20
 
 min_y = 0
-max_y = 250
+max_y = 300
 
 widget =
   Vl.new(width: 600, height: 600)
@@ -86,11 +86,22 @@ reward_callback = fn state_vector ->
   speed = state_vector[3]
   target_x = state_vector[4]
   target_y = state_vector[5]
+  min_x = state_vector[6]
+  max_x = state_vector[7]
+  min_y = state_vector[8]
+  max_y = state_vector[9]
+
+  out_of_bounds =
+    Nx.less(x, min_x)
+    |> Nx.logical_or(Nx.greater(x, max_x))
+    |> Nx.logical_or(Nx.greater(y, max_y))
+    |> Nx.logical_or(Nx.less(y, min_y))
 
   has_collided =
     obstacles
     |> BoatLearner.Navigation.WaypointWithObstacles.all_collisions(x, y)
     |> Nx.any()
+    |> Nx.logical_or(out_of_bounds)
 
   pos = Nx.stack([x, y])
   target = Nx.stack([target_x, target_y])
@@ -101,9 +112,9 @@ reward_callback = fn state_vector ->
   velocity = Nx.multiply(speed, Nx.complex(Nx.sin(angle), Nx.cos(angle)))
   projected_speed = Nx.dot(velocity, dist) |> Nx.divide(distance)
 
-  score = Nx.tanh(Nx.divide(1, Nx.add(distance, 1.0e-7))) |> Nx.add(projected_speed)
+  score = Nx.sigmoid(1 / Nx.add(distance, 1.0e-12))
 
-  Nx.select(has_collided, -100, score)
+  Nx.select(has_collided, score - 10000, score)
 end
 ```
 
@@ -113,22 +124,24 @@ max_points = 250
 
 plot_trajectory = fn axon_state ->
   episode = axon_state.epoch
-  num_points = Nx.to_number(axon_state.step_state.iteration)
 
   trajectory = axon_state.step_state.trajectory
 
-  IO.inspect("Episode #{episode} ended")
+  if rem(episode, 10) == 0 do
+    num_points = Nx.to_number(axon_state.step_state.iteration)
 
-  if num_points > 0 do
-    x = Nx.to_flat_list(trajectory[[0..(num_points - 1), 0]])
-    y = Nx.to_flat_list(trajectory[[0..(num_points - 1), 1]])
+    if num_points > 0 do
+      IO.inspect("Episode #{episode} ended")
+      x = Nx.to_flat_list(trajectory[[0..(num_points - 1), 0]])
+      y = Nx.to_flat_list(trajectory[[0..(num_points - 1), 1]])
 
-    points =
-      [x, y]
-      |> Enum.zip_with(fn [x, y] -> %{x: x, y: y, episode: episode} end)
-      |> Enum.with_index(fn m, idx -> Map.put(m, :index, idx) end)
+      points =
+        [x, y]
+        |> Enum.zip_with(fn [x, y] -> %{x: x, y: y, episode: episode} end)
+        |> Enum.with_index(fn m, idx -> Map.put(m, :index, idx) end)
 
-    Kino.VegaLite.push_many(widget, points, window: max_points, dataset: "trajectory")
+      Kino.VegaLite.push_many(widget, points, window: max_points, dataset: "trajectory")
+    end
   end
 
   %{axon_state | epoch: episode + 1}

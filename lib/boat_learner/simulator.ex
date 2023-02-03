@@ -132,16 +132,17 @@ defmodule BoatLearner.Simulator do
     {linear_model, spline_model, cutoff_angle}
   end
 
+  defn unwrap_phase(angle) do
+    z = Nx.complex(Nx.cos(angle), Nx.sin(angle))
+    phase = Nx.phase(z)
+    Nx.select(phase > @pi, phase - 2 * @pi, phase)
+  end
+
   defn speed({linear_model, spline_model_polar, cutoff_angle}, angle) do
     # Change algorithms where the spline ends at the lower end
 
-    # get the angle limited to [0, 2pi]
-    angle =
-      Nx.complex(Nx.cos(angle), Nx.sin(angle))
-      |> Nx.phase()
-
-    # change the limits to [-pi, pi] and get the abs value, avoiding 0
-    angle = Nx.select(angle > @pi, 2 * @pi - angle, angle) + Nx.as_type(1.0e-12, :f32)
+    # change the limits to [-pi, pi] get the abs value
+    angle = angle |> unwrap_phase() |> Nx.abs()
 
     linear_pred = Scholar.Interpolation.Linear.predict(linear_model, angle)
     spline_pred = Scholar.Interpolation.BezierSpline.predict(spline_model_polar, angle)
