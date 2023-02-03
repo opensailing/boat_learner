@@ -20,13 +20,13 @@ alias VegaLite, as: Vl
 obstacles =
   Nx.tensor([
     [-20, 20, 220, 250],
-    [-20, -18, 0, 180],
-    [18, 20, 0, 180]
+    [-20, -12, 0, 180],
+    [12, 20, 0, 180]
     # [2, 10, 40, 100],
     # [-20, -9, 100, 110]
   ])
 
-target_waypoint = Nx.tensor([4, 160])
+target_waypoint = Nx.tensor([0, 160])
 
 obstacles_data =
   obstacles
@@ -74,6 +74,8 @@ widget =
   ])
   |> Kino.VegaLite.new()
   |> Kino.render()
+
+nil
 ```
 
 ```elixir
@@ -85,16 +87,29 @@ reward_callback = fn state_vector ->
   target_x = state_vector[4]
   target_y = state_vector[5]
 
-  distance = Scholar.Metrics.Distance.euclidean(Nx.stack([x, y]), Nx.stack([target_x, target_y]))
-  projected_speed = Nx.sin(angle) |> Nx.multiply(speed)
+  has_collided =
+    obstacles
+    |> BoatLearner.Navigation.WaypointWithObstacles.all_collisions(x, y)
+    |> Nx.any()
 
-  Axon.Activations.tanh(Nx.divide(projected_speed, Nx.add(distance, 1.0e-7)))
+  pos = Nx.stack([x, y])
+  target = Nx.stack([target_x, target_y])
+
+  dist = Nx.subtract(target, pos)
+  distance = Nx.LinAlg.norm(dist)
+
+  velocity = Nx.multiply(speed, Nx.complex(Nx.sin(angle), Nx.cos(angle)))
+  projected_speed = Nx.dot(velocity, dist) |> Nx.divide(distance)
+
+  score = Nx.tanh(Nx.divide(1, Nx.add(distance, 1.0e-7))) |> Nx.add(projected_speed)
+
+  Nx.select(has_collided, -100, score)
 end
 ```
 
 ```elixir
 # 250 max_iter * 15 episodes
-max_points = 250 * 15
+max_points = 250
 
 plot_trajectory = fn axon_state ->
   episode = axon_state.epoch
@@ -102,7 +117,9 @@ plot_trajectory = fn axon_state ->
 
   trajectory = axon_state.step_state.trajectory
 
-  if num_points > 0 and rem(episode, 500) == 0 do
+  IO.inspect("Episode #{episode} ended")
+
+  if num_points > 0 do
     x = Nx.to_flat_list(trajectory[[0..(num_points - 1), 0]])
     y = Nx.to_flat_list(trajectory[[0..(num_points - 1), 1]])
 
@@ -114,7 +131,7 @@ plot_trajectory = fn axon_state ->
     Kino.VegaLite.push_many(widget, points, window: max_points, dataset: "trajectory")
   end
 
-  axon_state
+  %{axon_state | epoch: episode + 1}
 end
 ```
 

@@ -49,7 +49,7 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     experience_replay_buffer_index: Nx.template({}, :s64)
   ]
 
-  @dt 0.5
+  @dt 1
   @pi :math.pi()
 
   @min_x -20
@@ -122,10 +122,9 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
 
     loop
     |> Axon.Loop.handle(:epoch_started, &epoch_started_handler/1)
-    |> Axon.Loop.handle(:iteration_completed, &iteration_completed_handler/1)
-    |> Axon.Loop.handle(:epoch_halted, fn s -> {:continue, trajectory_callback.(s)} end)
+    |> Axon.Loop.handle(:epoch_completed, fn s -> {:continue, trajectory_callback.(s)} end)
     |> Axon.Loop.run(Stream.cycle([Nx.tensor(1)]), initial_state,
-      iterations: @max_iter,
+      iterations: 1,
       epochs: num_episodes
     )
   end
@@ -133,35 +132,6 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
   defp epoch_started_handler(loop_state) do
     # Reset state
     {:continue, %{loop_state | step_state: reset_variable_state(loop_state.step_state)}}
-  end
-
-  defp iteration_completed_handler(loop_state) do
-    state = loop_state.step_state
-
-    terminated =
-      state
-      |> as_state_vector()
-      |> Nx.new_axis(0)
-      |> is_terminal_state(state.obstacles_tensor)
-      |> Nx.reshape({})
-
-    idx =
-      Nx.tensor([
-        [0, 0],
-        [0, 1]
-      ])
-
-    idx = Nx.add(idx, Nx.stack([state.iteration, 0]) |> Nx.new_axis(0))
-
-    trajectory = Nx.indexed_put(state.trajectory, idx, Nx.stack([state.x, state.y]))
-
-    new_state = %{state | trajectory: trajectory, iteration: Nx.add(state.iteration, 1)}
-
-    if Nx.to_number(terminated) == 1 do
-      {:halt_epoch, loop_state}
-    else
-      {:continue, %{loop_state | step_state: new_state}}
-    end
   end
 
   defn init(_, initial_state), do: init(initial_state)
@@ -179,19 +149,53 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
          target_predict_fn,
          optimizer_update_fn
        ) do
-    {action, next_state} = select_action_and_update_state(prev_state, policy_predict_fn)
+    {state, _, _} =
+      while {prev_state, i = 0, is_terminal = Nx.tensor(0, type: :u8)},
+            i < @max_iter and not is_terminal do
+        {action, next_state} = select_action_and_update_state(prev_state, policy_predict_fn)
 
-    reward = reward_fn.(next_state)
+        reward = reward_fn.(next_state)
 
-    prev_state
-    |> record_observation(action, reward, next_state)
-    |> optimize_model(policy_predict_fn, target_predict_fn, optimizer_update_fn)
-    |> soft_update_target_network()
+        next_state =
+          prev_state
+          |> record_observation(action, reward, next_state)
+          |> optimize_model(policy_predict_fn, target_predict_fn, optimizer_update_fn)
+          |> soft_update_target_network()
+          |> persist_trajectory()
+
+        is_terminal =
+          next_state
+          |> as_state_vector()
+          |> Nx.new_axis(0)
+          |> is_terminal_state(next_state.obstacles_tensor)
+          |> Nx.reshape({})
+
+        {next_state, i + 1, is_terminal}
+      end
+
+    state
+  end
+
+  defnp persist_trajectory(state) do
+    idx =
+      Nx.tensor([
+        [0, 0],
+        [0, 1]
+      ])
+
+    idx = idx + Nx.new_axis(Nx.stack([state.iteration, 0]), 0)
+
+    trajectory = Nx.indexed_put(state.trajectory, idx, Nx.stack([state.x, state.y]))
+
+    %{state | trajectory: trajectory, iteration: state.iteration + 1}
   end
 
   defnp reset_variable_state(current_state) do
     # TO-DO: initialize to random values
-    x = y = angle = Nx.tensor(0, type: :f32)
+    y = Nx.tensor(0, type: :f32)
+
+    {x, random_key} = Nx.Random.uniform(current_state.random_key, -2, 2)
+    {angle, random_key} = Nx.Random.uniform(random_key, -5 * @d_angle_rad, 5 * @d_angle_rad)
 
     # these should always start at 0
     iteration = Nx.tensor(0, type: :s64)
@@ -204,7 +208,8 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
         x: x,
         y: y,
         angle: angle,
-        trajectory: trajectory
+        trajectory: trajectory,
+        random_key: random_key
     }
     |> reset_experience_replay_buffer()
   end
@@ -245,14 +250,7 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
   end
 
   defnp next_angle_from_action(angle, action) do
-    cond do
-      action == 0 ->
-        angle - @d_angle_rad
-
-      true ->
-        angle + @d_angle_rad
-    end
-    |> Nx.as_type(:f32)
+    Nx.select(action, angle + @d_angle_rad, angle - @d_angle_rad)
   end
 
   defnp select_action(state, policy_predict_fn) do
@@ -384,7 +382,7 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     {record_entry_probability, new_key} = Nx.Random.uniform(state.random_key)
 
     {experience_replay_buffer, experience_replay_buffer_index} =
-      if record_entry_probability > @record_observation_probability do
+      if prev_state.iteration < 250 or record_entry_probability > @record_observation_probability do
         update_experience_replay_buffer(
           state.experience_replay_buffer,
           state.experience_replay_buffer_index,
@@ -459,7 +457,8 @@ defmodule BoatLearner.Navigation.WaypointWithObstacles do
     # shape is currently ignored
     Axon.input("state", shape: {nil, num_observations})
     |> Axon.dense(128, activation: :relu)
-    |> Axon.dense(128, activation: :relu)
+    |> Axon.dense(64, activation: :relu)
+    |> Axon.dense(32, activation: :relu)
     |> Axon.dense(num_actions)
   end
 
