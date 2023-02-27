@@ -138,6 +138,9 @@ defmodule BoatLearner.Simulator do
     Nx.select(phase > @pi, phase - 2 * @pi, phase)
   end
 
+  @doc """
+  Returns the speed-through-water for the boat
+  """
   defn speed({linear_model, spline_model_polar, cutoff_angle}, angle) do
     # Change algorithms where the spline ends at the lower end
 
@@ -150,7 +153,31 @@ defmodule BoatLearner.Simulator do
     Nx.select(angle <= cutoff_angle, linear_pred, spline_pred)
   end
 
-  defn update_position(x, y, speed, angle, dt) do
-    {x + dt * speed * Nx.sin(angle), y + dt * speed * Nx.cos(angle)}
+  defn update_state(speed_model, x, y, previous_angle, angle, dt, momentum_factor) do
+    # Calculate the velocity vector based on the current speed and heading
+    previous_speed = speed(speed_model, previous_angle)
+    velocity_y = previous_speed * Nx.cos(angle)
+    velocity_x = previous_speed * Nx.sin(angle)
+
+    # Calculate the expected velocity based on the expected speed and heading
+    expected_speed = speed(speed_model, angle)
+    expected_velocity_y = expected_speed * Nx.cos(angle)
+    expected_velocity_x = expected_speed * Nx.sin(angle)
+
+    # Update the velocity vector based on the expected velocity and the momentum factor
+    velocity_x = velocity_x + (expected_velocity_x - velocity_x) * (1 - momentum_factor)
+    velocity_y = velocity_y + (expected_velocity_y - velocity_y) * (1 - momentum_factor)
+
+    # Update the speed based on the velocity vector
+    velocity = Nx.complex(velocity_y, velocity_x)
+
+    # Update the position based on the velocity vector and elapsed time
+    x = x + velocity_x * dt
+    y = y + velocity_y * dt
+
+    speed = Nx.abs(velocity)
+    actual_heading = Nx.phase(velocity)
+
+    {x, y, speed, actual_heading}
   end
 end

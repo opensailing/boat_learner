@@ -54,7 +54,8 @@ defmodule BoatLearner.MixProject do
       {:scholar, github: "elixir-nx/scholar"},
       {:axon, github: "elixir-nx/axon"},
       {:kino, "0.8.0"},
-      {:kino_vega_lite, "0.1.7"}
+      {:kino_vega_lite, "0.1.7"},
+      {:table_rex, "~> 3.1.1", optional: true}
     ]
   end
 

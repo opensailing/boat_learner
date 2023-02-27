@@ -20,6 +20,18 @@ if System.get_env("PHX_SERVER") do
   config :boat_learner, BoatLearnerWeb.Endpoint, server: true
 end
 
+client =
+  if System.get_env("XLA_TARGET", "") =~ ~r"cuda" do
+    :cuda
+  else
+    :host
+  end
+
+config :nx,
+  default_backend: {EXLA.Backend, client: client},
+  global_default_backend: {EXLA.Backend, client: client},
+  default_defn_options: [compiler: EXLA, client: client]
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
