@@ -11,7 +11,9 @@ defmodule BoatLearner.Environments.Gridworld do
              :target_y,
              :grid,
              :obstacles,
-             :reward_stage
+             :reward,
+             :reward_stage,
+             :is_terminal
            ],
            keep: []}
   defstruct [
@@ -23,7 +25,9 @@ defmodule BoatLearner.Environments.Gridworld do
     :target_y,
     :grid,
     :obstacles,
-    :reward_stage
+    :reward,
+    :reward_stage,
+    :is_terminal
   ]
 
   @type t :: %__MODULE__{}
@@ -46,7 +50,7 @@ defmodule BoatLearner.Environments.Gridworld do
   @num_actions 4
   def num_actions, do: @num_actions
 
-  @type state :: BoatLearner.Navigation.t()
+  @type state :: ReinforcementLearning.t()
   @type tensor :: Nx.Tensor.t()
 
   @spec init(random_key :: tensor, obstacles :: tensor, possible_targets :: tensor) ::
@@ -66,7 +70,7 @@ defmodule BoatLearner.Environments.Gridworld do
   @spec reset(random_key :: tensor, possible_targets :: tensor, t()) ::
           {t(), random_key :: tensor}
   def reset(random_key, possible_targets, %__MODULE__{} = state) do
-    y = Nx.tensor(0, type: :f32)
+    reward = y = Nx.tensor(0, type: :f32)
     {x, random_key} = Nx.Random.randint(random_key, -5, 5)
 
     # possible_targets is a {n, 2} tensor that contains targets that we want to sample from
@@ -85,7 +89,9 @@ defmodule BoatLearner.Environments.Gridworld do
         prev_y: y,
         target_x: target[0],
         target_y: target[1],
-        reward_stage: reward_stage
+        reward: reward,
+        reward_stage: reward_stage,
+        is_terminal: Nx.tensor(0, type: :u8)
     }
 
     {state, random_key}
@@ -168,10 +174,12 @@ defmodule BoatLearner.Environments.Gridworld do
 
     new_env = %{env | x: new_x, y: new_y, prev_x: x, prev_y: y}
 
-    is_terminal = is_terminal_state(new_env)
+    updated_env =
+      new_env
+      |> is_terminal_state()
+      |> calculate_reward()
 
-    {reward, reward_stage, updated_env} = calculate_reward(new_env)
-    {reward, reward_stage, is_terminal, %{state | environment_state: updated_env}}
+    %{state | environment_state: updated_env}
   end
 
   defnp calculate_reward(env) do
@@ -214,17 +222,18 @@ defmodule BoatLearner.Environments.Gridworld do
           distance_reward + progress_reward
       end
 
-    {reward, reward_stage, %{env | reward_stage: reward_stage}}
+    %{env | reward_stage: reward_stage, reward: reward}
   end
 
   defnp distance(x, target_x, y, target_y), do: Nx.sqrt((x - target_x) ** 2 + (y - target_y) ** 2)
 
-  defnp is_terminal_state(%{x: x, y: y, target_x: target_x, target_y: target_y, grid: grid}) do
+  defnp is_terminal_state(%{x: x, y: y, target_x: target_x, target_y: target_y, grid: grid} = env) do
     x_clipped = clip_to_grid(x, @min_x, @max_x)
     y_clipped = clip_to_grid(y, @min_y, @max_y)
 
     # terminates on collision or if reached target
-    (target_x == x and target_y == y) or grid[x_clipped][y_clipped] != 0
+    is_terminal = (target_x == x and target_y == y) or grid[x_clipped][y_clipped] != 0
+    %{env | is_terminal: is_terminal}
   end
 
   defnp clip_to_grid(coord, min, max) do

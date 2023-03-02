@@ -1,7 +1,7 @@
-defmodule BoatLearner.Agents.DQN do
+defmodule ReinforcementLearning.Agents.DQN do
   import Nx.Defn
 
-  @type state :: BoatLearner.Navigation.t()
+  @type state :: ReinforcementLearning.t()
   @type tensor :: Nx.Tensor.t()
 
   @learning_rate 1.0e-4
@@ -117,7 +117,7 @@ defmodule BoatLearner.Agents.DQN do
         ) ::
           {action :: tensor, state :: state}
   defn select_action(
-         %BoatLearner.Navigation{random_key: random_key, agent_state: agent_state} = state,
+         %ReinforcementLearning{random_key: random_key, agent_state: agent_state} = state,
          iteration,
          as_state_vector_fn
        ) do

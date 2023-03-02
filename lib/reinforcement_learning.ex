@@ -1,16 +1,18 @@
-defmodule BoatLearner.Navigation do
+defmodule ReinforcementLearning do
   @moduledoc """
-  Behaviour for different navigation strategies and objectives
+  Reinforcement Learning training (to-do: and inference) framework
   """
 
   @derive {Nx.Container,
-           containers: [:agent_state, :environment_state, :random_key], keep: [:trajectory]}
+           containers: [:agent_state, :environment_state, :random_key, :iteration],
+           keep: [:trajectory]}
   defstruct [
     :agent,
     :agent_state,
     :environment,
     :environment_state,
     :random_key,
+    :iteration,
     :trajectory
   ]
 
@@ -18,9 +20,9 @@ defmodule BoatLearner.Navigation do
 
   ## Examples
 
-      iex> BoatLearner.Navigation.train(
+      iex> ReinforcementLearning.train(
       ...>  BoatLearner.Environments.Gridworld,
-      ...>  BoatLearner.Agents.DQN,
+      ...>  ReinforcementLearning.Agents.DQN,
       ...>  &IO.puts(inspect(&1)),
       ...>  2,
       ...>  Nx.tensor([[-5, 10], [5, 20], [3, 10], [-2, 15]]),
@@ -83,7 +85,8 @@ defmodule BoatLearner.Navigation do
       environment: environment,
       environment_state: environment_state,
       random_key: random_key,
-      trajectory: []
+      trajectory: [],
+      iteration: Nx.tensor(0, type: :s64)
     }
 
     loop(
@@ -102,7 +105,7 @@ defmodule BoatLearner.Navigation do
     num_episodes = Keyword.fetch!(opts, :num_episodes)
     max_iter = Keyword.fetch!(opts, :max_iter)
 
-    loop = Axon.Loop.loop(&batch_step(&1, &2, agent, environment, max_iter))
+    loop = Axon.Loop.loop(&batch_step(&1, &2, agent, environment))
 
     loop
     |> Axon.Loop.handle(
@@ -116,8 +119,20 @@ defmodule BoatLearner.Navigation do
       loop_state = tap(loop_state, epoch_completed_callback)
       {:continue, loop_state}
     end)
+    |> Axon.Loop.handle(:iteration_completed, fn loop_state ->
+      is_terminal = Nx.to_number(loop_state.step_state.environment_state.is_terminal)
+
+      if is_terminal == 1 do
+        {:halt_epoch, loop_state}
+      else
+        {:continue, loop_state}
+      end
+    end)
+    |> Axon.Loop.handle(:epoch_halted, fn loop_state ->
+      {:halt_epoch, loop_state}
+    end)
     |> Axon.Loop.run(Stream.cycle([Nx.tensor(1)]), initial_state,
-      iterations: 1,
+      iterations: max_iter,
       epochs: num_episodes
     )
   end
@@ -142,48 +157,41 @@ defmodule BoatLearner.Navigation do
       | agent_state: agent_state,
         environment_state: environment_state,
         random_key: random_key,
-        trajectory: []
+        trajectory: [],
+        iteration: Nx.tensor(0, type: :s64)
     }
   end
 
   defp batch_step(
          _inputs,
-         initial_state,
+         prev_state,
          agent,
-         environment,
-         max_iter
+         environment
        ) do
-    Enum.reduce_while(1..max_iter, initial_state, fn
-      iter, prev_state ->
-        {action, state} = agent.select_action(prev_state, iter, &environment.as_state_vector/1)
-        {reward, _reward_stage, is_terminal, state} = environment.apply_action(state, action)
+    # Enum.reduce_while(1..max_iter, initial_state, fn
+    # iter, prev_state ->
+    {action, state} =
+      agent.select_action(prev_state, prev_state.iteration, &environment.as_state_vector/1)
 
-        state =
-          prev_state
-          |> agent.record_observation(
-            action,
-            reward,
-            is_terminal,
-            state,
-            &environment.as_state_vector/1
-          )
-          |> agent.optimize_model()
+    %{environment_state: %{reward: reward, is_terminal: is_terminal}} =
+      state = environment.apply_action(state, action)
 
-        # |> persist_trajectory(iter)
+    state =
+      prev_state
+      |> agent.record_observation(
+        action,
+        reward,
+        is_terminal,
+        state,
+        &environment.as_state_vector/1
+      )
+      |> agent.optimize_model()
 
-        # is_terminal = Nx.to_number(is_terminal) == 1
-
-        # if is_terminal do
-        #   {:halt, state}
-        # else
-        #   {:cont, state}
-        # end
-        {:cont, state}
-    end)
+    %{state | iteration: Nx.add(state.iteration, 1)}
   end
 
-  defp persist_trajectory(state, iter) do
-    %{x: x, y: y} = state.environment_state
-    %{state | trajectory: [{Nx.to_number(x), Nx.to_number(y), iter} | state.trajectory]}
-  end
+  # defp persist_trajectory(state, iter) do
+  #   %{x: x, y: y} = state.environment_state
+  #   %{state | trajectory: [x, y, iter} | state.trajectory]}
+  # end
 end
