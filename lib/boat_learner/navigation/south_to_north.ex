@@ -6,8 +6,6 @@ defmodule BoatLearner.Navigation.SouthToNorth do
   """
   import Nx.Defn
 
-  @behaviour BoatLearner.Navigation
-
   @dt 1
   @pi :math.pi()
 
@@ -26,7 +24,6 @@ defmodule BoatLearner.Navigation.SouthToNorth do
     |> IO.inspect(label: "Episode #{episode}")
   end
 
-  @impl true
   def train(trajectory_callback) do
     # pi rad with pi/30 rad  resolution
     possible_angles = 30
@@ -174,7 +171,7 @@ defmodule BoatLearner.Navigation.SouthToNorth do
     velocity = velocity(model, angle)
 
     r = Nx.slice_along_axis(velocity, 0, 1, axis: -1)
-    theta = Nx.slice_along_axis(velocity, 1, 1, axis: -1)
+    # theta = Nx.slice_along_axis(velocity, 1, 1, axis: -1)
 
     # This could be written as just r * Nx.cos(theta)
     # but writing it like this will enable us to change
