@@ -18,10 +18,12 @@ Mix.install(
 alias VegaLite, as: Vl
 
 obstacles = [
-  [-250, 250, 475, 500]
-  # [100, 250, 0, 450],
-  # [-250, -100, 0, 450],
-  # [0, 250, 100, 125]
+  [-250, 250, 475, 500],
+  [100, 250, 0, 450],
+  [-250, -100, 0, 450]
+  # [-50, 50, 150, 175],
+  # [-50, -40, 150, 250]
+  # [-250, 250, 0450]
   # [-100, 100, 125, 150],
   # [-200, -175, 250, 400],
   # [175, 200, 250, 400],
@@ -30,10 +32,7 @@ obstacles = [
   # [-20, -9, 100, 110]
 ]
 
-target_waypoint = Nx.tensor([0, 200])
 target_waypoint = Nx.tensor([-50, 100])
-target_waypoint = Nx.tensor([50, 250])
-target_waypoint = Nx.tensor([-50, 250])
 
 obstacles_data =
   obstacles
@@ -148,7 +147,7 @@ defmodule Reward do
   @max_y 500
   @min_y 0
   @max_distance :math.sqrt((@max_x - @min_x) ** 2 + (@max_y - @min_y) ** 2)
-  @max_iteration 4000
+  @max_iteration 500
 
   @k 1
 
@@ -156,68 +155,42 @@ defmodule Reward do
     %{
       x: x,
       y: y,
-      angle: angle,
-      reward_stage: reward_stage,
       previous_x: prev_x,
-      previous_y: prev_y
+      previous_y: prev_y,
+      target_waypoint: target_waypoint,
+      reward_stage: reward_stage
     } = state
 
-    {grid, _} =
-      BoatLearner.Navigation.WaypointWithObstacles.as_visibility_grid(state, standardize: false)
+    {grid, _} = BoatLearner.Navigation.GridWorld.as_visibility_grid(state, standardize: false)
+    distance = distance(x, y, target_waypoint)
+    prev_distance = distance(prev_x, prev_y, target_waypoint)
 
-    prev_distance =
-      Nx.sqrt((state.target_waypoint[0] - prev_x) ** 2 + (state.target_waypoint[1] - prev_y) ** 2)
+    avoid_obstacles_reward = 10 * (1 - Nx.sum(grid) / Nx.size(grid))
+    # time_to_target_reward = 1 - state.iteration / @max_iteration
 
-    distance = Nx.sqrt((state.target_waypoint[0] - x) ** 2 + (state.target_waypoint[1] - y) ** 2)
+    # do not add reward for going off-target, but not penalize if this is necessary
+    # for avoiding an obstacle
 
-    reward_stage =
-      if reward_stage == 0 and distance <= 50 do
-        1
-      else
-        reward_stage
-      end
+    distance_score = 1 - distance / @max_distance
 
-    avg_change =
-      state.headings_history[[0..-2//1]]
-      |> Nx.subtract(state.headings_history[[1..-1//1]])
-      |> Nx.abs()
-      |> Nx.mean()
+    distance_reward =
+      Nx.select(
+        distance <= prev_distance,
+        10 * distance_score,
+        -0.1
+      )
 
-    tacking_penalty = 4 * @k * Nx.abs(Nx.tanh(avg_change))
+    cond do
+      distance < 2 and reward_stage == 0 ->
+        {10_000, 1}
 
-    reward =
-      cond do
-        # reward_stage == 1 and distance < 50 ->
-        #   # if we are close, we want to maintain the current distance
-        #   # this presumes there are no obstacles near the waypoint by definition
-        #   @k ** 2
+      true ->
+        {distance_reward + avoid_obstacles_reward, reward_stage}
+    end
+  end
 
-        reward_stage == 1 ->
-          progress_reward = Nx.select(distance < prev_distance, 100, 0)
-
-        true ->
-          time_to_target_reward =
-            if reward_stage == 0 do
-              # we want to reach second stage as soon as possible
-              @k * (1 - state.iteration / @max_iteration)
-            else
-              # then we want to incentivize staying alive
-              @k * state.iteration / @max_iteration
-            end
-
-          close_obstacles = Nx.sum(grid)
-          avoid_obstacles_reward = @k * (1 - close_obstacles / Nx.size(grid))
-
-          # positive reward if previous distance is greater than the current distance
-          progress_reward = Nx.select(distance < prev_distance, 10 * @k, 0)
-
-          distance_reward = @k * (1 - distance / @max_distance)
-
-          progress_reward + time_to_target_reward + distance_reward + avoid_obstacles_reward -
-            tacking_penalty
-      end
-
-    {reward, reward_stage}
+  defnp distance(x, y, target) do
+    Nx.sqrt((x - target[0]) ** 2 + (y - target[1]) ** 2)
   end
 end
 ```
@@ -273,11 +246,10 @@ end
 ```
 
 ```elixir
-filename = "/Users/paulo.valente/Desktop/dqn_results_1.bin"
+filename = "/Users/paulo.valente/Desktop/gridword_1.bin"
 
 {
   q_policy,
-  q_target,
   experience_replay_buffer_index,
   persisted_experience_replay_buffer_entries,
   experience_replay_buffer,
@@ -291,25 +263,23 @@ filename = "/Users/paulo.valente/Desktop/dqn_results_1.bin"
 
     %{
       q_policy: q_policy,
-      q_target: q_target,
       experience_replay_buffer_index: experience_replay_buffer_index,
       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
       experience_replay_buffer: exp_replay_buffer
     } = Nx.deserialize(serialized)
 
-    {q_policy, q_target, experience_replay_buffer_index,
-     persisted_experience_replay_buffer_entries, exp_replay_buffer, total_episodes}
+    {q_policy, experience_replay_buffer_index, persisted_experience_replay_buffer_entries,
+     exp_replay_buffer, total_episodes}
   rescue
     File.Error ->
-      {%{}, %{}, 0, 0, nil, 0}
+      {%{}, 0, 0, nil, 0}
   end
 
-# q_policy = %{}
-# q_target = %{}
-# total_episodes = 0
-# experience_replay_buffer = nil
-# persisted_experience_replay_buffer_entries = 0
-# experience_replay_buffer_index = 0
+q_policy = %{}
+total_episodes = 0
+experience_replay_buffer = nil
+persisted_experience_replay_buffer_entries = 0
+experience_replay_buffer_index = 0
 total_episodes
 ```
 
@@ -318,19 +288,15 @@ q_policy
 ```
 
 ```elixir
-q_target
-```
-
-```elixir
 Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 400
+episodes = 10000
 
 {t, result} =
   :timer.tc(fn ->
-    BoatLearner.Navigation.WaypointWithObstacles.train(
+    BoatLearner.Navigation.GridWorld.train(
       obstacles,
       target_waypoint,
       plot_trajectory,
@@ -338,7 +304,6 @@ episodes = 400
       &Reward.run/1,
       num_episodes: episodes,
       q_policy: q_policy,
-      q_target: q_target,
       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
       experience_replay_buffer_index: experience_replay_buffer_index,
       experience_replay_buffer: experience_replay_buffer
@@ -350,7 +315,6 @@ serialized =
   Nx.serialize(
     Map.take(result.step_state, [
       :q_policy,
-      :q_target,
       :experience_replay_buffer_index,
       :experience_replay_buffer,
       :persisted_experience_replay_buffer_entries
@@ -367,8 +331,4 @@ File.write!(filename, contents)
 
 ```elixir
 result.step_state.q_policy
-```
-
-```elixir
-result.step_state.q_target
 ```
