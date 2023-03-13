@@ -33,34 +33,22 @@ defmodule ReinforcementLearning do
       #Axon.Loop<>
   """
   @spec train(
-          environment :: module,
-          agent :: module,
+          {environment :: module, init_opts :: keyword()},
+          {agent :: module, init_opts :: keyword},
           epoch_completed_callback :: (map() -> :ok),
-          num_episodes :: pos_integer(),
-          possible_targets :: Nx.Tensor.t(),
-          obstacles :: Nx.Tensor.t(),
           opts :: keyword()
         ) :: Axon.Loop.t()
   def train(
-        environment,
-        agent,
+        {environment, environment_init_opts},
+        {agent, agent_init_opts},
         epoch_completed_callback,
-        num_episodes,
-        possible_targets,
-        obstacles,
         opts \\ []
       ) do
-    opts =
-      Keyword.validate!(opts, [
-        :random_key,
-        :agent_init_opts,
-        :max_iter
-      ])
+    opts = Keyword.validate!(opts, [:random_key, :max_iter, num_episodes: 100])
 
     random_key = opts[:random_key] || Nx.Random.key(System.system_time())
     max_iter = opts[:max_iter]
-
-    agent_init_opts = Keyword.fetch!(opts, :agent_init_opts)
+    num_episodes = opts[:num_episodes]
 
     {agent_state, random_key} =
       agent.init(
@@ -70,7 +58,7 @@ defmodule ReinforcementLearning do
         agent_init_opts
       )
 
-    {environment_state, random_key} = environment.init(random_key, obstacles, possible_targets)
+    {environment_state, random_key} = environment.init(random_key, environment_init_opts)
 
     initial_state = %__MODULE__{
       agent: agent,
@@ -85,7 +73,6 @@ defmodule ReinforcementLearning do
     loop(
       agent,
       environment,
-      possible_targets,
       initial_state,
       epoch_completed_callback: epoch_completed_callback,
       num_episodes: num_episodes,
@@ -93,7 +80,7 @@ defmodule ReinforcementLearning do
     )
   end
 
-  defp loop(agent, environment, possible_targets, initial_state, opts) do
+  defp loop(agent, environment, initial_state, opts) do
     epoch_completed_callback = Keyword.fetch!(opts, :epoch_completed_callback)
     num_episodes = Keyword.fetch!(opts, :num_episodes)
     max_iter = Keyword.fetch!(opts, :max_iter)
@@ -103,8 +90,7 @@ defmodule ReinforcementLearning do
     loop
     |> Axon.Loop.handle(
       :epoch_started,
-      &{:continue,
-       %{&1 | step_state: reset_state(&1.step_state, agent, environment, possible_targets)}}
+      &{:continue, %{&1 | step_state: reset_state(&1.step_state, agent, environment)}}
     )
     |> Axon.Loop.handle(:epoch_completed, fn loop_state ->
       loop_state = tap(loop_state, epoch_completed_callback)
@@ -136,13 +122,11 @@ defmodule ReinforcementLearning do
            random_key: random_key
          } = loop_state,
          agent,
-         environment,
-         possible_targets
+         environment
        ) do
     {agent_state, random_key} = agent.reset(random_key, agent_state)
 
-    {environment_state, random_key} =
-      environment.reset(random_key, possible_targets, environment_state)
+    {environment_state, random_key} = environment.reset(random_key, environment_state)
 
     %{
       loop_state

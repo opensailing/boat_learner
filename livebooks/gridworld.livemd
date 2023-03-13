@@ -258,20 +258,16 @@ max_iter = 200
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
-      BoatLearner.Environments.Gridworld,
-      ReinforcementLearning.Agents.DQN,
+      {BoatLearner.Environments.Gridworld, possible_targets: possible_targets},
+      {ReinforcementLearning.Agents.DQN,
+       eps_max_iter: 1,
+       q_policy: q_policy,
+       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
+       experience_replay_buffer_index: experience_replay_buffer_index,
+       experience_replay_buffer: experience_replay_buffer},
       plot_fn,
-      episodes,
-      possible_targets,
-      [],
-      max_iter: max_iter,
-      agent_init_opts: [
-        eps_max_iter: 1,
-        q_policy: q_policy,
-        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
-        experience_replay_buffer_index: experience_replay_buffer_index,
-        experience_replay_buffer: experience_replay_buffer
-      ]
+      num_episodes: episodes,
+      max_iter: max_iter
     )
   end)
 

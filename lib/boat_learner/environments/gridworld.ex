@@ -12,7 +12,8 @@ defmodule BoatLearner.Environments.Gridworld do
              :grid,
              :reward,
              :reward_stage,
-             :is_terminal
+             :is_terminal,
+             :possible_targets
            ],
            keep: [:obstacles]}
   defstruct [
@@ -26,7 +27,8 @@ defmodule BoatLearner.Environments.Gridworld do
     :obstacles,
     :reward,
     :reward_stage,
-    :is_terminal
+    :is_terminal,
+    :possible_targets
   ]
 
   @type t :: %__MODULE__{}
@@ -35,11 +37,6 @@ defmodule BoatLearner.Environments.Gridworld do
   @max_x 10
   @min_y 0
   @max_y 10
-
-  @x_tol (@max_x - @min_x) * 0.01
-  @y_tol (@max_y - @min_y) * 0.01
-
-  @max_distance :math.sqrt((@max_x - @min_x) ** 2 + (@max_y - @min_y) ** 2)
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
@@ -54,34 +51,43 @@ defmodule BoatLearner.Environments.Gridworld do
   @type state :: ReinforcementLearning.t()
   @type tensor :: Nx.Tensor.t()
 
-  @spec init(random_key :: tensor, obstacles :: tensor, possible_targets :: tensor) ::
-          {t(), random_key :: tensor}
-  def init(random_key, obstacles, possible_targets) do
+  @spec init(random_key :: tensor, opts :: keyword()) :: {t(), random_key :: tensor}
+  def init(random_key, opts) do
+    opts = Keyword.validate!(opts, [:obstacles, :possible_targets])
+
+    obstacles = opts[:obstacles]
+
+    possible_targets =
+      opts[:possible_targets] || raise ArgumentError, "missing option :possible_targets"
+
     grid =
-      if obstacles == [] do
-        empty_grid()
-      else
+      if obstacles do
         obstacles
         |> to_obstacles_indices()
         |> build_grid()
+      else
+        empty_grid()
       end
 
-    reset(random_key, possible_targets, %__MODULE__{
+    reset(random_key, %__MODULE__{
+      possible_targets: possible_targets,
       obstacles: obstacles,
       grid: grid
     })
   end
 
-  @spec reset(random_key :: tensor, possible_targets :: tensor, t()) ::
+  @spec reset(random_key :: tensor, t()) ::
           {t(), random_key :: tensor}
-  def reset(random_key, possible_targets, %__MODULE__{} = state) do
+  def reset(random_key, %__MODULE__{} = state) do
     reward = Nx.tensor(0, type: :f32)
     {x, random_key} = Nx.Random.randint(random_key, @min_x, @max_x)
 
     # possible_targets is a {n, 2} tensor that contains targets that we want to sample from
     # this is so we avoid retraining every episode on the same target, which can lead to
     # overfitting
-    {target, random_key} = Nx.Random.choice(random_key, possible_targets, samples: 1, axis: 0)
+    {target, random_key} =
+      Nx.Random.choice(random_key, state.possible_targets, samples: 1, axis: 0)
+
     target = Nx.reshape(target, {2})
 
     reward_stage = y = Nx.tensor(0, type: :s64)
@@ -164,7 +170,6 @@ defmodule BoatLearner.Environments.Gridworld do
     Nx.indexed_put(grid, idx, updates)
   end
 
-  @neg_1 -1
   @spec apply_action(state :: state, action :: tensor) ::
           {reward :: tensor, reward_stage :: tensor, is_terminal :: tensor, state :: state}
   defn apply_action(state, action) do
@@ -202,8 +207,6 @@ defmodule BoatLearner.Environments.Gridworld do
       y: y,
       target_x: target_x,
       target_y: target_y,
-      prev_x: prev_x,
-      prev_y: prev_y,
       is_terminal: is_terminal,
       reward_stage: reward_stage
     } = env
@@ -223,9 +226,7 @@ defmodule BoatLearner.Environments.Gridworld do
     %{env | reward_stage: reward_stage, reward: reward}
   end
 
-  defnp distance(x, target_x, y, target_y), do: Nx.sqrt((x - target_x) ** 2 + (y - target_y) ** 2)
-
-  defnp is_terminal_state(%{x: x, y: y, target_x: target_x, target_y: target_y, grid: grid} = env) do
+  defnp is_terminal_state(%{x: x, y: y, target_x: target_x, target_y: target_y} = env) do
     is_terminal =
       (Nx.abs(target_x - x) <= 1.5 and Nx.abs(target_y - y) <= 1.5) or x < @min_x or x > @max_x or
         y < @min_y or
