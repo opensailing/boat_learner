@@ -4,20 +4,18 @@ defmodule ReinforcementLearning.Agents.DQN do
   @type state :: ReinforcementLearning.t()
   @type tensor :: Nx.Tensor.t()
 
-  @learning_rate 1.0e-4
+  @learning_rate 1.0e-5
   @adamw_decay 1.0e-2
   @eps 1.0e-7
   @experience_replay_buffer_num_entries 10_000
 
   @eps_start 0.996
   @eps_end 0.01
-  # eps_max_iter determines in how many iters we achieve eps_end
-  @eps_max_iter 100
 
   @train_every_steps 64
   @adamw_decay 0.01
 
-  @batch_size 128
+  @batch_size 256
 
   @gamma 0.99
 
@@ -29,7 +27,8 @@ defmodule ReinforcementLearning.Agents.DQN do
              :experience_replay_buffer,
              :experience_replay_buffer_index,
              :persisted_experience_replay_buffer_entries,
-             :total_reward
+             :total_reward,
+             :eps_max_iter
            ],
            keep: [:optimizer_update_fn, :policy_predict_fn, :state_vector_size, :num_actions]}
   defstruct [
@@ -43,7 +42,8 @@ defmodule ReinforcementLearning.Agents.DQN do
     :experience_replay_buffer_index,
     :persisted_experience_replay_buffer_entries,
     :loss,
-    :total_reward
+    :total_reward,
+    :eps_max_iter
   ]
 
   @type t :: %__MODULE__{}
@@ -60,7 +60,8 @@ defmodule ReinforcementLearning.Agents.DQN do
         :q_policy,
         :experience_replay_buffer,
         :experience_replay_buffer_index,
-        :persisted_experience_replay_buffer_entries
+        :persisted_experience_replay_buffer_entries,
+        :eps_max_iter
       ])
 
     policy_net = dqn(state_vector_size, num_actions)
@@ -76,12 +77,14 @@ defmodule ReinforcementLearning.Agents.DQN do
     input = %{"state" => Nx.template({1, state_vector_size}, :f32)}
 
     initial_q_policy_state = opts[:q_policy] || raise "missing initial q_policy"
+    eps_max_iter = opts[:eps_max_iter] || raise "missing :eps_max_iter"
 
     q_policy = policy_init_fn.(input, initial_q_policy_state)
 
     q_policy_optimizer_state = optimizer_init_fn.(q_policy)
 
     reset(random_key, %__MODULE__{
+      eps_max_iter: eps_max_iter,
       state_vector_size: state_vector_size,
       num_actions: num_actions,
       q_policy: q_policy,
@@ -121,12 +124,16 @@ defmodule ReinforcementLearning.Agents.DQN do
          iteration,
          as_state_vector_fn
        ) do
-    %{q_policy: q_policy, policy_predict_fn: policy_predict_fn, num_actions: num_actions} =
-      agent_state
+    %{
+      q_policy: q_policy,
+      policy_predict_fn: policy_predict_fn,
+      num_actions: num_actions,
+      eps_max_iter: eps_max_iter
+    } = agent_state
 
     {sample, random_key} = Nx.Random.uniform(random_key)
 
-    eps_threshold = @eps_end + (@eps_start - @eps_end) * Nx.exp(-5 * iteration / @eps_max_iter)
+    eps_threshold = @eps_end + (@eps_start - @eps_end) * Nx.exp(-5 * iteration / eps_max_iter)
 
     {action, random_key} =
       if sample > eps_threshold do
@@ -201,7 +208,9 @@ defmodule ReinforcementLearning.Agents.DQN do
           state.agent_state
           | experience_replay_buffer: experience_replay_buffer,
             experience_replay_buffer_index: experience_replay_buffer_index,
-            persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries
+            persisted_experience_replay_buffer_entries:
+              persisted_experience_replay_buffer_entries,
+            total_reward: state.agent_state.total_reward + reward
         }
     }
   end
@@ -212,7 +221,7 @@ defmodule ReinforcementLearning.Agents.DQN do
       state.agent_state
 
     if persisted_experience_replay_buffer_entries > @batch_size and
-         rem(persisted_experience_replay_buffer_entries, @train_every_steps) do
+         rem(persisted_experience_replay_buffer_entries, @train_every_steps) == 0 do
       do_optimize_model(state)
     else
       state
@@ -303,7 +312,7 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     if entries < @experience_replay_buffer_num_entries do
       t = Nx.iota({@experience_replay_buffer_num_entries})
-      idx = Nx.select(t < entries, t, 0)
+      idx = Nx.select(t <= entries, t, 0)
       Nx.take(experience_replay_buffer, idx)
     else
       experience_replay_buffer
@@ -322,10 +331,10 @@ defmodule ReinforcementLearning.Agents.DQN do
 
   def dqn(num_observations, num_actions) do
     Axon.input("state", shape: {nil, num_observations})
-    |> Axon.dense(256, activation: :relu)
-    |> Axon.dropout(rate: 0.5)
-    |> Axon.dense(256, activation: :relu)
-    |> Axon.dropout(rate: 0.5)
+    |> Axon.dense(64, activation: :relu)
+    |> Axon.dense(64, activation: :relu)
     |> Axon.dense(num_actions)
   end
 end
+
+7 * 64 * 64 * 4

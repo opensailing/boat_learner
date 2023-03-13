@@ -3,9 +3,11 @@ defmodule ReinforcementLearning do
   Reinforcement Learning training (to-do: and inference) framework
   """
 
+  import Nx.Defn
+
   @derive {Nx.Container,
-           containers: [:agent_state, :environment_state, :random_key, :iteration],
-           keep: [:trajectory]}
+           containers: [:agent_state, :environment_state, :random_key, :iteration, :trajectory],
+           keep: []}
   defstruct [
     :agent,
     :agent_state,
@@ -28,7 +30,7 @@ defmodule ReinforcementLearning do
       ...>  Nx.tensor([[-5, 10], [5, 20], [3, 10], [-2, 15]]),
       ...>  Nx.tensor([[-25, -25, 0, 0]])
       ...>  )
-      #<Axon.Loop>
+      #Axon.Loop<>
   """
   @spec train(
           environment :: module,
@@ -51,30 +53,21 @@ defmodule ReinforcementLearning do
     opts =
       Keyword.validate!(opts, [
         :random_key,
-        :q_policy,
-        :experience_replay_buffer,
-        :experience_replay_buffer_index,
-        :persisted_experience_replay_buffer_entries,
+        :agent_init_opts,
         :max_iter
       ])
 
     random_key = opts[:random_key] || Nx.Random.key(System.system_time())
     max_iter = opts[:max_iter]
 
-    agent_opts =
-      Keyword.take(opts, [
-        :q_policy,
-        :experience_replay_buffer,
-        :experience_replay_buffer_index,
-        :persisted_experience_replay_buffer_entries
-      ])
+    agent_init_opts = Keyword.fetch!(opts, :agent_init_opts)
 
     {agent_state, random_key} =
       agent.init(
         random_key,
         environment.state_vector_size(),
         environment.num_actions(),
-        agent_opts
+        agent_init_opts
       )
 
     {environment_state, random_key} = environment.init(random_key, obstacles, possible_targets)
@@ -85,7 +78,7 @@ defmodule ReinforcementLearning do
       environment: environment,
       environment_state: environment_state,
       random_key: random_key,
-      trajectory: [],
+      trajectory: Nx.broadcast(Nx.tensor(:nan, type: :f32), {3, max_iter}),
       iteration: Nx.tensor(0, type: :s64)
     }
 
@@ -114,8 +107,6 @@ defmodule ReinforcementLearning do
        %{&1 | step_state: reset_state(&1.step_state, agent, environment, possible_targets)}}
     )
     |> Axon.Loop.handle(:epoch_completed, fn loop_state ->
-      loop_state = %{loop_state | epoch: loop_state.epoch + 1}
-
       loop_state = tap(loop_state, epoch_completed_callback)
       {:continue, loop_state}
     end)
@@ -129,6 +120,7 @@ defmodule ReinforcementLearning do
       end
     end)
     |> Axon.Loop.handle(:epoch_halted, fn loop_state ->
+      loop_state = tap(loop_state, epoch_completed_callback)
       {:halt_epoch, loop_state}
     end)
     |> Axon.Loop.run(Stream.cycle([Nx.tensor(1)]), initial_state,
@@ -157,7 +149,7 @@ defmodule ReinforcementLearning do
       | agent_state: agent_state,
         environment_state: environment_state,
         random_key: random_key,
-        trajectory: [],
+        trajectory: Nx.broadcast(Nx.tensor(:nan, type: :f32), loop_state.trajectory),
         iteration: Nx.tensor(0, type: :s64)
     }
   end
@@ -176,22 +168,29 @@ defmodule ReinforcementLearning do
     %{environment_state: %{reward: reward, is_terminal: is_terminal}} =
       state = environment.apply_action(state, action)
 
-    state =
-      prev_state
-      |> agent.record_observation(
-        action,
-        reward,
-        is_terminal,
-        state,
-        &environment.as_state_vector/1
-      )
-      |> agent.optimize_model()
-
-    %{state | iteration: Nx.add(state.iteration, 1)}
+    prev_state
+    |> agent.record_observation(
+      action,
+      reward,
+      is_terminal,
+      state,
+      &environment.as_state_vector/1
+    )
+    |> agent.optimize_model()
+    |> persist_trajectory()
   end
 
-  # defp persist_trajectory(state, iter) do
-  #   %{x: x, y: y} = state.environment_state
-  #   %{state | trajectory: [x, y, iter} | state.trajectory]}
-  # end
+  defnp persist_trajectory(%{trajectory: trajectory, iteration: iteration} = step_state) do
+    %{x: x, y: y} = step_state.environment_state
+
+    idx =
+      Nx.tensor([
+        [0, 0],
+        [1, 0],
+        [2, 0]
+      ]) + Nx.new_axis(Nx.stack([0, iteration]), 0)
+
+    trajectory = Nx.indexed_put(trajectory, idx, Nx.stack([iteration, x, y]))
+    %{step_state | trajectory: trajectory, iteration: iteration + 1}
+  end
 end

@@ -17,80 +17,81 @@ Mix.install(
 ```elixir
 alias VegaLite, as: Vl
 
-obstacles = [
-  [-250, 250, 475, 500],
-  [100, 250, 0, 450],
-  [-250, -100, 0, 450]
-  # [-50, 50, 150, 175],
-  # [-50, -40, 150, 250]
-  # [-250, 250, 0450]
-  # [-100, 100, 125, 150],
-  # [-200, -175, 250, 400],
-  # [175, 200, 250, 400],
-  # [-175, -150, 0, 200],
-  # [150, 175, 0, 200]
-  # [-20, -9, 100, 110]
-]
+obstacles = []
 
-target_waypoint = Nx.tensor([-50, 100])
+{min_x, max_x, min_y, max_y} = BoatLearner.Environments.Gridworld.bounding_box()
+
+possible_targets_l = [[div(min_x + max_x, 2), max_y - 2]]
+# possible_targets_l = 
+#   for x <- min_x+2..max_x-2, y <- 2..max_y do
+#     [x, y]
+# end
+
+possible_targets = Nx.tensor(Enum.shuffle(possible_targets_l))
 
 obstacles_data =
   obstacles
   |> Enum.flat_map(fn [x, x2, y, y2] -> [{:x, x}, {:x2, x2}, {:y, y}, {:y2, y2}] end)
   |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
-min_x = -250
-max_x = 250
-
-min_y = 0
-max_y = 500
-
 width = 600
 height = 600
+
+obstacles_layer =
+  if obstacles != [] do
+    [
+      Vl.new()
+      |> Vl.data_from_values(obstacles_data)
+      |> Vl.mark(:rect, color: "grey", grid: true)
+      |> Vl.encode_field(:x, "x", type: :quantitative)
+      |> Vl.encode_field(:x2, "x2", type: :quantitative)
+      |> Vl.encode_field(:y, "y", type: :quantitative)
+      |> Vl.encode_field(:y2, "y2", type: :quantitative)
+    ]
+  else
+    []
+  end
 
 grid_widget =
   Vl.new(width: width, height: height)
   |> Vl.layers([
+    # Vl.new()
+    # |> Vl.data(name: "target")
+    # |> Vl.mark(:point,
+    #   color: "red",
+    #   fill: "red",
+    #   grid: true,
+    #   size: [expr: "height * 10 * 10 * #{:math.pi()} /#{max_y - min_y}"]
+    # )
+    # |> Vl.encode_field(:x, "x", type: :quantitative)
+    # |> Vl.encode_field(:y, "y", type: :quantitative),
     Vl.new()
-    |> Vl.data_from_values(%{
-      x: [Nx.to_number(target_waypoint[0])],
-      y: [Nx.to_number(target_waypoint[1])]
-    })
+    |> Vl.data(name: "target")
     |> Vl.mark(:point,
-      color: "red",
-      fill: "red",
+      fill: true,
+      tooltip: [content: "data"],
       grid: true,
-      size: [expr: "height * 10 * 10 * #{:math.pi()} /#{max_y - min_y}"]
+      size: [expr: "height * 4 * #{:math.pi()} / #{max_y - min_y}"]
     )
     |> Vl.encode_field(:x, "x", type: :quantitative)
-    |> Vl.encode_field(:y, "y", type: :quantitative),
-    Vl.new()
-    |> Vl.data_from_values(%{
-      x: [Nx.to_number(target_waypoint[0])],
-      y: [Nx.to_number(target_waypoint[1])]
-    })
-    |> Vl.mark(:point,
-      color: "black",
-      fill: "black",
-      grid: true,
-      size: [expr: "height * 1 * 1 * #{:math.pi()} /#{max_y - min_y}"]
-    )
-    |> Vl.encode_field(:x, "x", type: :quantitative)
-    |> Vl.encode_field(:y, "y", type: :quantitative),
+    |> Vl.encode_field(:y, "y", type: :quantitative)
+    |> Vl.encode_field(:color, "episode",
+      type: :nominal,
+      scale: [scheme: "blues"],
+      legend: false
+    ),
     Vl.new()
     |> Vl.data(name: "trajectory")
-    |> Vl.mark(:line, opacity: 0.75, tooltip: [content: "data"])
+    |> Vl.mark(:line, opacity: 1, tooltip: [content: "data"])
     |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x], clamp: true])
     |> Vl.encode_field(:y, "y", type: :quantitative, scale: [domain: [min_y, max_y], clamp: true])
-    |> Vl.encode_field(:color, "episode", type: :nominal, scale: [scheme: "blues"], legend: false)
-    |> Vl.encode_field(:order, "index"),
-    Vl.new()
-    |> Vl.data_from_values(obstacles_data)
-    |> Vl.mark(:rect, color: "grey", grid: true)
-    |> Vl.encode_field(:x, "x", type: :quantitative)
-    |> Vl.encode_field(:x2, "x2", type: :quantitative)
-    |> Vl.encode_field(:y, "y", type: :quantitative)
-    |> Vl.encode_field(:y2, "y2", type: :quantitative)
+    |> Vl.encode_field(:color, "episode",
+      type: :nominal,
+      scale: [scheme: "blues"],
+      legend: false
+    )
+    |> Vl.encode_field(:order, "index")
+    | obstacles_layer
   ])
   |> Kino.VegaLite.new()
   |> Kino.render()
@@ -130,7 +131,7 @@ reward_widget =
     ]
   )
   |> Vl.encode_field(:order, "episode")
-  |> Vl.encode_field(:color, "reward_sign", type: :nominal, legend: true)
+  |> Vl.encode_field(:color, "reward_sign", type: :nominal, scheme: "blues", legend: true)
   |> Kino.VegaLite.new()
   |> Kino.render()
 
@@ -138,115 +139,74 @@ nil
 ```
 
 ```elixir
-defmodule Reward do
-  import Nx.Defn
-
-  @pi :math.pi()
-  @max_x 250
-  @min_x -250
-  @max_y 500
-  @min_y 0
-  @max_distance :math.sqrt((@max_x - @min_x) ** 2 + (@max_y - @min_y) ** 2)
-  @max_iteration 500
-
-  @k 1
-
-  defn run(state) do
-    %{
-      x: x,
-      y: y,
-      previous_x: prev_x,
-      previous_y: prev_y,
-      target_waypoint: target_waypoint,
-      reward_stage: reward_stage
-    } = state
-
-    {grid, _} = BoatLearner.Navigation.GridWorld.as_visibility_grid(state, standardize: false)
-    distance = distance(x, y, target_waypoint)
-    prev_distance = distance(prev_x, prev_y, target_waypoint)
-
-    avoid_obstacles_reward = 10 * (1 - Nx.sum(grid) / Nx.size(grid))
-    # time_to_target_reward = 1 - state.iteration / @max_iteration
-
-    # do not add reward for going off-target, but not penalize if this is necessary
-    # for avoiding an obstacle
-
-    distance_score = 1 - distance / @max_distance
-
-    distance_reward =
-      Nx.select(
-        distance <= prev_distance,
-        10 * distance_score,
-        -0.1
-      )
-
-    cond do
-      distance < 2 and reward_stage == 0 ->
-        {10_000, 1}
-
-      true ->
-        {distance_reward + avoid_obstacles_reward, reward_stage}
-    end
-  end
-
-  defnp distance(x, y, target) do
-    Nx.sqrt((x - target[0]) ** 2 + (y - target[1]) ** 2)
-  end
-end
-```
-
-```elixir
 # 250 max_iter * 15 episodes
-max_points = 750
+max_points = 1000
 
-plot_trajectory = fn axon_state ->
-  episode = axon_state.epoch
+plot_fn = fn axon_state ->
+  if axon_state.iteration > 1 do
+    episode = axon_state.epoch
 
-  trajectory = axon_state.step_state.trajectory
+    Kino.VegaLite.clear(grid_widget, dataset: "target")
+    Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
 
-  num_points = Nx.to_number(axon_state.step_state.iteration)
+    Kino.VegaLite.push(
+      grid_widget,
+      %{
+        x: Nx.to_number(axon_state.step_state.environment_state.target_x),
+        y: Nx.to_number(axon_state.step_state.environment_state.target_y),
+        episode: episode,
+        episode_group: rem(episode, 15)
+      },
+      dataset: "target"
+    )
 
-  Kino.VegaLite.push(
-    loss_widget,
-    %{
-      episode: episode,
-      loss: Nx.to_number(Nx.mean(axon_state.step_state.loss)) |> IO.inspect(label: "mean loss")
-    },
-    dataset: "loss"
-  )
+    Kino.VegaLite.push(
+      loss_widget,
+      %{
+        episode: episode,
+        loss: Nx.to_number(Nx.mean(axon_state.step_state.agent_state.loss))
+      },
+      dataset: "loss"
+    )
 
-  if num_points > 0 do
     IO.inspect("Episode #{episode} ended")
-    x = Nx.to_flat_list(trajectory[[0..(num_points - 1), 0]])
-    y = Nx.to_flat_list(trajectory[[0..(num_points - 1), 1]])
+
+    trajectory = axon_state.step_state.trajectory
+
+    idx = Nx.to_flat_list(trajectory[0][0..(axon_state.iteration - 1)//1] |> Nx.as_type(:s64))
+    x = Nx.to_flat_list(trajectory[1][0..(axon_state.iteration - 1)//1])
+    y = Nx.to_flat_list(trajectory[2][0..(axon_state.iteration - 1)//1])
 
     points =
-      [x, y]
-      |> Enum.zip_with(fn [x, y] -> %{x: x, y: y, episode: episode} end)
-      |> Enum.with_index(fn m, idx -> Map.put(m, :index, idx) end)
+      [idx, x, y]
+      |> Enum.zip_with(fn [index, x, y] ->
+        %{
+          x: x,
+          y: y,
+          index: index,
+          episode: episode,
+          episode_group: rem(episode, 15)
+        }
+      end)
 
-    Kino.VegaLite.push_many(grid_widget, points, window: max_points, dataset: "trajectory")
+    Kino.VegaLite.push_many(grid_widget, points, dataset: "trajectory")
   end
 
-  %{axon_state | epoch: episode + 1}
-end
-
-plot_reward = fn axon_state ->
   Kino.VegaLite.push(
     reward_widget,
     %{
       episode: axon_state.epoch,
-      reward:
-        Nx.to_number(Nx.mean(axon_state.step_state.total_reward))
-        |> IO.inspect(label: "total_reward")
+      reward: Nx.to_number(axon_state.step_state.agent_state.total_reward)
     },
     dataset: "reward"
   )
+
+  axon_state
 end
 ```
 
 ```elixir
-filename = "/Users/paulo.valente/Desktop/gridword_1.bin"
+filename = "/Users/paulo.valente/Desktop/gridworld1.bin"
 
 {
   q_policy,
@@ -275,11 +235,11 @@ filename = "/Users/paulo.valente/Desktop/gridword_1.bin"
       {%{}, 0, 0, nil, 0}
   end
 
-q_policy = %{}
-total_episodes = 0
-experience_replay_buffer = nil
-persisted_experience_replay_buffer_entries = 0
-experience_replay_buffer_index = 0
+# q_policy = %{}
+# total_episodes = 0
+# experience_replay_buffer = nil
+# persisted_experience_replay_buffer_entries = 0
+# experience_replay_buffer_index = 0
 total_episodes
 ```
 
@@ -288,32 +248,37 @@ q_policy
 ```
 
 ```elixir
-Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
+Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 10000
+episodes = 2000
+max_iter = 200
 
 {t, result} =
   :timer.tc(fn ->
-    BoatLearner.Navigation.GridWorld.train(
-      obstacles,
-      target_waypoint,
-      plot_trajectory,
-      plot_reward,
-      &Reward.run/1,
-      num_episodes: episodes,
-      q_policy: q_policy,
-      persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
-      experience_replay_buffer_index: experience_replay_buffer_index,
-      experience_replay_buffer: experience_replay_buffer
+    ReinforcementLearning.train(
+      BoatLearner.Environments.Gridworld,
+      ReinforcementLearning.Agents.DQN,
+      plot_fn,
+      episodes,
+      possible_targets,
+      [],
+      max_iter: max_iter,
+      agent_init_opts: [
+        eps_max_iter: 1,
+        q_policy: q_policy,
+        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
+        experience_replay_buffer_index: experience_replay_buffer_index,
+        experience_replay_buffer: experience_replay_buffer
+      ]
     )
   end)
 
 # File.write!("/Users/paulo.valente/Desktop/results_#{NaiveDateTime.utc_now() |> NaiveDateTime.to_iso8601() |> String.replace(":", "")}.bin", )
 serialized =
   Nx.serialize(
-    Map.take(result.step_state, [
+    Map.take(result.step_state.agent_state, [
       :q_policy,
       :experience_replay_buffer_index,
       :experience_replay_buffer,
@@ -324,11 +289,12 @@ serialized =
 contents =
   :erlang.term_to_binary(%{serialized: serialized, total_episodes: total_episodes + episodes})
 
-File.write!(filename, contents)
+# File.write!(filename, contents)
 
-"#{t / 1_000} ms"
+"#{Float.round(t / 1_000_000, 3)} s"
 ```
 
 ```elixir
-result.step_state.q_policy
+File.write!(filename, contents)
+result.step_state.agent_state.q_policy
 ```

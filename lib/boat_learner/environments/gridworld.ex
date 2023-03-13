@@ -10,12 +10,11 @@ defmodule BoatLearner.Environments.Gridworld do
              :target_x,
              :target_y,
              :grid,
-             :obstacles,
              :reward,
              :reward_stage,
              :is_terminal
            ],
-           keep: []}
+           keep: [:obstacles]}
   defstruct [
     :x,
     :y,
@@ -32,18 +31,20 @@ defmodule BoatLearner.Environments.Gridworld do
 
   @type t :: %__MODULE__{}
 
-  @min_x -25
-  @max_x 25
+  @min_x 0
+  @max_x 10
   @min_y 0
-  @max_y 50
+  @max_y 10
 
   @x_tol (@max_x - @min_x) * 0.01
   @y_tol (@max_y - @min_y) * 0.01
 
   @max_distance :math.sqrt((@max_x - @min_x) ** 2 + (@max_y - @min_y) ** 2)
 
-  # x, y, target_x, target_y, prev_x, prev_y
-  @state_vector_size 6
+  def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
+
+  # x, y, target_x, target_y, prev_x, prev_y, reward_stage
+  @state_vector_size 7
   def state_vector_size, do: @state_vector_size
 
   # up, down, left, right
@@ -57,9 +58,13 @@ defmodule BoatLearner.Environments.Gridworld do
           {t(), random_key :: tensor}
   def init(random_key, obstacles, possible_targets) do
     grid =
-      obstacles
-      |> to_obstacles_indices()
-      |> build_grid()
+      if obstacles == [] do
+        empty_grid()
+      else
+        obstacles
+        |> to_obstacles_indices()
+        |> build_grid()
+      end
 
     reset(random_key, possible_targets, %__MODULE__{
       obstacles: obstacles,
@@ -70,8 +75,8 @@ defmodule BoatLearner.Environments.Gridworld do
   @spec reset(random_key :: tensor, possible_targets :: tensor, t()) ::
           {t(), random_key :: tensor}
   def reset(random_key, possible_targets, %__MODULE__{} = state) do
-    reward = y = Nx.tensor(0, type: :f32)
-    {x, random_key} = Nx.Random.randint(random_key, -5, 5)
+    reward = Nx.tensor(0, type: :f32)
+    {x, random_key} = Nx.Random.randint(random_key, @min_x, @max_x)
 
     # possible_targets is a {n, 2} tensor that contains targets that we want to sample from
     # this is so we avoid retraining every episode on the same target, which can lead to
@@ -79,7 +84,7 @@ defmodule BoatLearner.Environments.Gridworld do
     {target, random_key} = Nx.Random.choice(random_key, possible_targets, samples: 1, axis: 0)
     target = Nx.reshape(target, {2})
 
-    reward_stage = Nx.tensor(0, type: :s64)
+    reward_stage = y = Nx.tensor(0, type: :s64)
 
     state = %{
       state
@@ -98,8 +103,6 @@ defmodule BoatLearner.Environments.Gridworld do
   end
 
   defp to_obstacles_indices(obstacles) do
-    obstacles = obstacles |> Nx.to_flat_list() |> Enum.chunk_every(4)
-
     obstacles_idx =
       for [min_x, max_x, min_y, max_y] <- obstacles do
         Nx.tensor(
@@ -112,9 +115,10 @@ defmodule BoatLearner.Environments.Gridworld do
     Nx.concatenate(obstacles_idx, axis: 0)
   end
 
+  defnp empty_grid, do: Nx.broadcast(Nx.tensor(0, type: :u8), {@max_x - @min_x, @max_y - @min_y})
+
   defnp build_grid(obstacles_idx) do
-    %{shape: {m, n}} =
-      grid = Nx.broadcast(Nx.tensor(0, type: :u8), {@max_x - @min_x, @max_y - @min_y})
+    %{shape: {m, n}} = grid = empty_grid()
 
     idx_top =
       Nx.concatenate(
@@ -166,11 +170,21 @@ defmodule BoatLearner.Environments.Gridworld do
   defn apply_action(state, action) do
     %{x: x, y: y} = env = state.environment_state
 
-    # 0: up, 1: down, 2: left, 3: right
-    x_updates = Nx.tensor([0, 0, 1, @neg_1])
-    y_updates = Nx.tensor([1, @neg_1, 0, 0])
-    new_x = x + x_updates[action]
-    new_y = y + y_updates[action]
+    # 0: up, 1: down, 2: right, 3: left
+    {new_x, new_y} =
+      cond do
+        action == 0 ->
+          {x, Nx.min(y + 1, @max_y + 1)}
+
+        action == 1 ->
+          {x, Nx.max(y - 1, @min_y - 1)}
+
+        action == 2 ->
+          {Nx.min(@max_x + 1, x + 1), y}
+
+        true ->
+          {Nx.max(x - 1, @min_x - 1), y}
+      end
 
     new_env = %{env | x: new_x, y: new_y, prev_x: x, prev_y: y}
 
@@ -190,36 +204,20 @@ defmodule BoatLearner.Environments.Gridworld do
       target_y: target_y,
       prev_x: prev_x,
       prev_y: prev_y,
+      is_terminal: is_terminal,
       reward_stage: reward_stage
     } = env
 
-    distance = distance(x, target_x, y, target_y)
-    prev_distance = distance(prev_x, target_x, prev_y, target_y)
-
-    distance_reward = 1 - distance / @max_distance
-    progress_reward = Nx.select(distance < prev_distance, 1, 0)
-
-    reward_stage =
-      if reward_stage == 0 and distance < 50 do
-        1
-      else
-        reward_stage
-      end
-
     reward =
       cond do
-        y < @min_y + @y_tol ->
+        is_terminal and Nx.abs(target_x - x) <= 1.5 and Nx.abs(target_y - y) <= 1.5 ->
+          1
+
+        is_terminal ->
           -1
 
-        # avoid the bounding box
-        x < @min_x + 5 * @x_tol or x > @max_x - 5 * @x_tol or y > @max_y - 5 * @y_tol ->
-          -100
-
-        reward_stage == 1 and distance < 50 ->
-          Nx.select(distance < prev_distance, 10, -1)
-
         true ->
-          distance_reward + progress_reward
+          -0.01
       end
 
     %{env | reward_stage: reward_stage, reward: reward}
@@ -228,19 +226,12 @@ defmodule BoatLearner.Environments.Gridworld do
   defnp distance(x, target_x, y, target_y), do: Nx.sqrt((x - target_x) ** 2 + (y - target_y) ** 2)
 
   defnp is_terminal_state(%{x: x, y: y, target_x: target_x, target_y: target_y, grid: grid} = env) do
-    x_clipped = clip_to_grid(x, @min_x, @max_x)
-    y_clipped = clip_to_grid(y, @min_y, @max_y)
+    is_terminal =
+      (Nx.abs(target_x - x) <= 1.5 and Nx.abs(target_y - y) <= 1.5) or x < @min_x or x > @max_x or
+        y < @min_y or
+        y > @max_y
 
-    # terminates on collision or if reached target
-    is_terminal = (target_x == x and target_y == y) or grid[x_clipped][y_clipped] != 0
     %{env | is_terminal: is_terminal}
-  end
-
-  defnp clip_to_grid(coord, min, max) do
-    (coord - min)
-    |> Nx.ceil()
-    |> Nx.as_type(:s64)
-    |> Nx.clip(0, max - min)
   end
 
   defn as_state_vector(%{
@@ -249,7 +240,8 @@ defmodule BoatLearner.Environments.Gridworld do
          target_x: target_x,
          target_y: target_y,
          prev_x: prev_x,
-         prev_y: prev_y
+         prev_y: prev_y,
+         reward_stage: reward_stage
        }) do
     x = (x - @min_x) / (@max_x - @min_x)
     y = (y - @min_y) / (@max_y - @min_y)
@@ -265,7 +257,8 @@ defmodule BoatLearner.Environments.Gridworld do
       target_x,
       target_y,
       prev_x,
-      prev_y
+      prev_y,
+      reward_stage
     ])
     |> Nx.new_axis(0)
   end
