@@ -18,10 +18,10 @@ Mix.install(
 alias VegaLite, as: Vl
 
 obstacles = [
-  [-250, 250, 475, 500],
-  [100, 250, 0, 450],
-  [-250, -100, 0, 450]
-  # [-250, 250, 0450]
+  [-250, 250, 475, 500]
+  # [100, 250, 0, 450],
+  # [-250, -100, 0, 450],
+  # [0, 250, 100, 125]
   # [-100, 100, 125, 150],
   # [-200, -175, 250, 400],
   # [175, 200, 250, 400],
@@ -31,6 +31,9 @@ obstacles = [
 ]
 
 target_waypoint = Nx.tensor([0, 200])
+target_waypoint = Nx.tensor([-50, 100])
+target_waypoint = Nx.tensor([50, 250])
+target_waypoint = Nx.tensor([-50, 250])
 
 obstacles_data =
   obstacles
@@ -158,6 +161,7 @@ defmodule Reward do
       previous_x: prev_x,
       previous_y: prev_y
     } = state
+
     {grid, _} =
       BoatLearner.Navigation.WaypointWithObstacles.as_visibility_grid(state, standardize: false)
 
@@ -180,7 +184,6 @@ defmodule Reward do
       |> Nx.mean()
 
     tacking_penalty = 4 * @k * Nx.abs(Nx.tanh(avg_change))
-    tacking_penalty = 0
 
     reward =
       cond do
@@ -190,7 +193,7 @@ defmodule Reward do
         #   @k ** 2
 
         reward_stage == 1 ->
-          progress_reward = Nx.select(distance < prev_distance, @k * 10, 0)
+          progress_reward = Nx.select(distance < prev_distance, 100, 0)
 
         true ->
           time_to_target_reward =
@@ -209,7 +212,6 @@ defmodule Reward do
           progress_reward = Nx.select(distance < prev_distance, 10 * @k, 0)
 
           distance_reward = @k * (1 - distance / @max_distance)
-          distance_reward = 0
 
           progress_reward + time_to_target_reward + distance_reward + avoid_obstacles_reward -
             tacking_penalty
@@ -271,7 +273,7 @@ end
 ```
 
 ```elixir
-filename = "/Users/paulo.valente/Desktop/dqn_results_simpler_31.bin"
+filename = "/Users/paulo.valente/Desktop/dqn_results_1.bin"
 
 {
   q_policy,
@@ -324,7 +326,7 @@ Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 1000
+episodes = 400
 
 {t, result} =
   :timer.tc(fn ->
