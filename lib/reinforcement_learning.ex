@@ -144,8 +144,6 @@ defmodule ReinforcementLearning do
          agent,
          environment
        ) do
-    # Enum.reduce_while(1..max_iter, initial_state, fn
-    # iter, prev_state ->
     {action, state} =
       agent.select_action(prev_state, prev_state.iteration, &environment.as_state_vector/1)
 
