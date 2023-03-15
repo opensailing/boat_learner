@@ -248,6 +248,29 @@ q_policy
 ```
 
 ```elixir
+num_observations = BoatLearner.Environments.Gridworld.state_vector_size()
+num_actions = BoatLearner.Environments.Gridworld.num_actions()
+
+policy_net =
+  Axon.input("state", shape: {nil, num_observations})
+  |> Axon.dense(64, activation: :relu)
+  |> Axon.dense(64, activation: :relu)
+  |> Axon.dense(num_actions)
+
+# These might seem redundant, but will make more sense for multi-input models
+
+environment_to_input_fn = fn env_state ->
+  %{"state" => BoatLearner.Environments.Gridworld.as_state_vector(env_state)}
+end
+
+state_vector_to_input_fn = fn state_vector ->
+  %{"state" => state_vector}
+end
+
+environment_to_state_vector_fn = &BoatLearner.Environments.Gridworld.as_state_vector/1
+```
+
+```elixir
 Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
@@ -260,11 +283,15 @@ max_iter = 200
     ReinforcementLearning.train(
       {BoatLearner.Environments.Gridworld, possible_targets: possible_targets},
       {ReinforcementLearning.Agents.DQN,
+       policy_net: policy_net,
        eps_max_iter: 1,
        q_policy: q_policy,
        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
        experience_replay_buffer_index: experience_replay_buffer_index,
-       experience_replay_buffer: experience_replay_buffer},
+       experience_replay_buffer: experience_replay_buffer,
+       environment_to_input_fn: environment_to_input_fn,
+       environment_to_state_vector_fn: environment_to_state_vector_fn,
+       state_vector_to_input_fn: state_vector_to_input_fn},
       plot_fn,
       num_episodes: episodes,
       max_iter: max_iter

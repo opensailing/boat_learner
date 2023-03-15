@@ -50,13 +50,7 @@ defmodule ReinforcementLearning do
     max_iter = opts[:max_iter]
     num_episodes = opts[:num_episodes]
 
-    {agent_state, random_key} =
-      agent.init(
-        random_key,
-        environment.state_vector_size(),
-        environment.num_actions(),
-        agent_init_opts
-      )
+    {agent_state, random_key} = agent.init(random_key, agent_init_opts)
 
     {environment_state, random_key} = environment.init(random_key, environment_init_opts)
 
@@ -144,8 +138,7 @@ defmodule ReinforcementLearning do
          agent,
          environment
        ) do
-    {action, state} =
-      agent.select_action(prev_state, prev_state.iteration, &environment.as_state_vector/1)
+    {action, state} = agent.select_action(prev_state, prev_state.iteration)
 
     %{environment_state: %{reward: reward, is_terminal: is_terminal}} =
       state = environment.apply_action(state, action)
@@ -155,8 +148,7 @@ defmodule ReinforcementLearning do
       action,
       reward,
       is_terminal,
-      state,
-      &environment.as_state_vector/1
+      state
     )
     |> agent.optimize_model()
     |> persist_trajectory()
