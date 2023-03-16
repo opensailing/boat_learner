@@ -1,8 +1,7 @@
 defmodule ReinforcementLearning.Agents.DQN do
   import Nx.Defn
 
-  @type state :: ReinforcementLearning.t()
-  @type tensor :: Nx.Tensor.t()
+  @behaviour ReinforcementLearning.Agent
 
   @learning_rate 1.0e-5
   @adamw_decay 1.0e-2
@@ -59,9 +58,7 @@ defmodule ReinforcementLearning.Agents.DQN do
     :input_template
   ]
 
-  @type t :: %__MODULE__{}
-
-  @spec init(random_key :: tensor(), opts :: keyword()) :: {t(), random_key :: tensor()}
+  @impl true
   def init(random_key, opts \\ []) do
     opts =
       Keyword.validate!(opts, [
@@ -153,14 +150,15 @@ defmodule ReinforcementLearning.Agents.DQN do
     end)
   end
 
-  @spec reset(random_key :: tensor(), state :: t()) :: {t(), random_key :: tensor()}
+  @impl true
   def reset(random_key, state) do
     total_reward = Nx.tensor(0, type: :f32)
-    loss = Nx.broadcast(Nx.tensor(0, type: :f32), {@batch_size, 1})
+    loss = Nx.tensor(0, type: :f32)
 
     {%{state | loss: loss, total_reward: total_reward}, random_key}
   end
 
+  @impl true
   defn select_action(
          %ReinforcementLearning{random_key: random_key, agent_state: agent_state} = state,
          iteration
@@ -175,7 +173,12 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     {sample, random_key} = Nx.Random.uniform(random_key)
 
-    eps_threshold = @eps_end + (@eps_start - @eps_end) * Nx.exp(-5 * iteration / eps_max_iter)
+    eps_threshold =
+      Nx.select(
+        eps_max_iter > 0,
+        @eps_end + (@eps_start - @eps_end) * Nx.exp(-5 * iteration / eps_max_iter),
+        -1
+      )
 
     {action, random_key} =
       if sample > eps_threshold do
@@ -192,13 +195,7 @@ defmodule ReinforcementLearning.Agents.DQN do
     {action, %{state | random_key: random_key}}
   end
 
-  @spec record_observation(
-          state :: state,
-          action :: tensor,
-          reward :: tensor,
-          is_terminal :: tensor,
-          next_state :: state
-        ) :: state
+  @impl true
   defn record_observation(
          %{
            environment_state: env_state,
@@ -256,13 +253,15 @@ defmodule ReinforcementLearning.Agents.DQN do
     }
   end
 
-  @spec optimize_model(state :: state) :: state
+  @impl true
   defn optimize_model(state) do
-    %{persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries} =
-      state.agent_state
+    %{
+      persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
+      experience_replay_buffer_index: experience_replay_buffer_index
+    } = state.agent_state
 
     if persisted_experience_replay_buffer_entries > @batch_size and
-         rem(persisted_experience_replay_buffer_entries, @train_every_steps) == 0 do
+         rem(experience_replay_buffer_index, @train_every_steps) == 0 do
       do_optimize_model(state)
     else
       state
@@ -315,14 +314,12 @@ defmodule ReinforcementLearning.Agents.DQN do
           |> policy_predict_fn.(state_batch)
           |> Nx.take_along_axis(action_idx, axis: 1)
 
+        expected_state_action_values =
+          reward_batch + policy_predict_fn.(q_policy, next_state_batch) * @gamma * non_final_mask
+
         %{shape: {n, 1}} =
           expected_state_action_values =
-          q_policy
-          |> policy_predict_fn.(next_state_batch)
-          |> Nx.multiply(@gamma)
-          |> Nx.multiply(non_final_mask)
-          |> Nx.add(reward_batch)
-          |> Nx.reduce_max(axes: [-1], keep_axes: true)
+          Nx.reduce_max(expected_state_action_values, axes: [-1], keep_axes: true)
 
         case {m, n} do
           {m, n} when m != n ->
@@ -346,7 +343,7 @@ defmodule ReinforcementLearning.Agents.DQN do
           state.agent_state
           | q_policy: q_policy,
             q_policy_optimizer_state: optimizer_state,
-            loss: loss
+            loss: state.agent_state.loss + loss
         },
         random_key: random_key
     }

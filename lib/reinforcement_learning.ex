@@ -18,20 +18,6 @@ defmodule ReinforcementLearning do
     :trajectory
   ]
 
-  @doc """
-
-  ## Examples
-
-      iex> ReinforcementLearning.train(
-      ...>  BoatLearner.Environments.Gridworld,
-      ...>  ReinforcementLearning.Agents.DQN,
-      ...>  &IO.puts(inspect(&1)),
-      ...>  2,
-      ...>  Nx.tensor([[-5, 10], [5, 20], [3, 10], [-2, 15]]),
-      ...>  Nx.tensor([[-25, -25, 0, 0]])
-      ...>  )
-      #Axon.Loop<>
-  """
   @spec train(
           {environment :: module, init_opts :: keyword()},
           {agent :: module, init_opts :: keyword},

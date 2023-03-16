@@ -1,5 +1,7 @@
-defmodule BoatLearner.Environments.Gridworld do
+defmodule ReinforcementLearning.Environments.Gridworld do
   import Nx.Defn
+
+  @behaviour ReinforcementLearning.Environment
 
   @derive {Nx.Container,
            containers: [
@@ -9,13 +11,12 @@ defmodule BoatLearner.Environments.Gridworld do
              :prev_y,
              :target_x,
              :target_y,
-             :grid,
              :reward,
              :reward_stage,
              :is_terminal,
              :possible_targets
            ],
-           keep: [:obstacles]}
+           keep: []}
   defstruct [
     :x,
     :y,
@@ -23,15 +24,11 @@ defmodule BoatLearner.Environments.Gridworld do
     :prev_y,
     :target_x,
     :target_y,
-    :grid,
-    :obstacles,
     :reward,
     :reward_stage,
     :is_terminal,
     :possible_targets
   ]
-
-  @type t :: %__MODULE__{}
 
   @min_x 0
   @max_x 10
@@ -41,43 +38,23 @@ defmodule BoatLearner.Environments.Gridworld do
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
   # x, y, target_x, target_y, prev_x, prev_y, reward_stage
-  @state_vector_size 7
-  def state_vector_size, do: @state_vector_size
+  def state_vector_size, do: 7
 
+  @impl true
   # up, down, left, right
-  @num_actions 4
-  def num_actions, do: @num_actions
+  def num_actions, do: 4
 
-  @type state :: ReinforcementLearning.t()
-  @type tensor :: Nx.Tensor.t()
-
-  @spec init(random_key :: tensor, opts :: keyword()) :: {t(), random_key :: tensor}
+  @impl true
   def init(random_key, opts) do
-    opts = Keyword.validate!(opts, [:obstacles, :possible_targets])
-
-    obstacles = opts[:obstacles]
+    opts = Keyword.validate!(opts, [:possible_targets])
 
     possible_targets =
       opts[:possible_targets] || raise ArgumentError, "missing option :possible_targets"
 
-    grid =
-      if obstacles do
-        obstacles
-        |> to_obstacles_indices()
-        |> build_grid()
-      else
-        empty_grid()
-      end
-
-    reset(random_key, %__MODULE__{
-      possible_targets: possible_targets,
-      obstacles: obstacles,
-      grid: grid
-    })
+    reset(random_key, %__MODULE__{possible_targets: possible_targets})
   end
 
-  @spec reset(random_key :: tensor, t()) ::
-          {t(), random_key :: tensor}
+  @impl true
   def reset(random_key, %__MODULE__{} = state) do
     reward = Nx.tensor(0, type: :f32)
     {x, random_key} = Nx.Random.randint(random_key, @min_x, @max_x)
@@ -108,70 +85,7 @@ defmodule BoatLearner.Environments.Gridworld do
     {state, random_key}
   end
 
-  defp to_obstacles_indices(obstacles) do
-    obstacles_idx =
-      for [min_x, max_x, min_y, max_y] <- obstacles do
-        Nx.tensor(
-          for i <- min_x..max_x, j <- min_y..max_y do
-            [i - @min_x, j - @min_y]
-          end
-        )
-      end
-
-    Nx.concatenate(obstacles_idx, axis: 0)
-  end
-
-  defnp empty_grid, do: Nx.broadcast(Nx.tensor(0, type: :u8), {@max_x - @min_x, @max_y - @min_y})
-
-  defnp build_grid(obstacles_idx) do
-    %{shape: {m, n}} = grid = empty_grid()
-
-    idx_top =
-      Nx.concatenate(
-        [
-          Nx.broadcast(0, {n, 1}),
-          Nx.iota({n, 1})
-        ],
-        axis: 1
-      )
-
-    idx_bottom =
-      Nx.concatenate(
-        [
-          Nx.broadcast(m - 1, {n, 1}),
-          Nx.iota({n, 1})
-        ],
-        axis: 1
-      )
-
-    idx_left =
-      Nx.concatenate(
-        [
-          Nx.iota({m, 1}),
-          Nx.broadcast(0, {m, 1})
-        ],
-        axis: 1
-      )
-
-    idx_right =
-      Nx.concatenate(
-        [
-          Nx.iota({m, 1}),
-          Nx.broadcast(n - 1, {m, 1})
-        ],
-        axis: 1
-      )
-
-    idx = Nx.concatenate([idx_top, idx_bottom, idx_left, idx_right], axis: 0)
-    idx = Nx.concatenate([idx, obstacles_idx])
-
-    updates = Nx.broadcast(Nx.tensor(1, type: :u8), {Nx.axis_size(idx, 0)})
-
-    Nx.indexed_put(grid, idx, updates)
-  end
-
-  @spec apply_action(state :: state, action :: tensor) ::
-          {reward :: tensor, reward_stage :: tensor, is_terminal :: tensor, state :: state}
+  @impl true
   defn apply_action(state, action) do
     %{x: x, y: y} = env = state.environment_state
 
