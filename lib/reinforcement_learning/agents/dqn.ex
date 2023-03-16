@@ -30,7 +30,16 @@ defmodule ReinforcementLearning.Agents.DQN do
              :total_reward,
              :eps_max_iter
            ],
-           keep: [:optimizer_update_fn, :policy_predict_fn, :state_vector_size, :num_actions]}
+           keep: [
+             :optimizer_update_fn,
+             :policy_predict_fn,
+             :input_template,
+             :state_vector_size,
+             :num_actions,
+             :environment_to_input_fn,
+             :environment_to_state_vector_fn,
+             :state_vector_to_input_fn
+           ]}
   defstruct [
     :state_vector_size,
     :num_actions,
@@ -43,28 +52,43 @@ defmodule ReinforcementLearning.Agents.DQN do
     :persisted_experience_replay_buffer_entries,
     :loss,
     :total_reward,
-    :eps_max_iter
+    :eps_max_iter,
+    :environment_to_input_fn,
+    :environment_to_state_vector_fn,
+    :state_vector_to_input_fn,
+    :input_template
   ]
 
   @type t :: %__MODULE__{}
 
-  @spec init(
-          random_key :: tensor(),
-          state_vector_size :: pos_integer(),
-          num_actions :: pos_integer(),
-          opts :: keyword()
-        ) :: {t(), random_key :: tensor()}
-  def init(random_key, state_vector_size, num_actions, opts \\ []) do
+  @spec init(random_key :: tensor(), opts :: keyword()) :: {t(), random_key :: tensor()}
+  def init(random_key, opts \\ []) do
     opts =
       Keyword.validate!(opts, [
         :q_policy,
+        :policy_net,
         :experience_replay_buffer,
         :experience_replay_buffer_index,
         :persisted_experience_replay_buffer_entries,
-        :eps_max_iter
+        :eps_max_iter,
+        :environment_to_input_fn,
+        :environment_to_state_vector_fn,
+        :state_vector_to_input_fn
       ])
 
-    policy_net = dqn(state_vector_size, num_actions)
+    policy_net = opts[:policy_net] || raise ArgumentError, "missing :policy_net option"
+
+    environment_to_input_fn =
+      opts[:environment_to_input_fn] ||
+        raise ArgumentError, "missing :environment_to_input_fn option"
+
+    environment_to_state_vector_fn =
+      opts[:environment_to_state_vector_fn] ||
+        raise ArgumentError, "missing :environment_to_state_vector_fn option"
+
+    state_vector_to_input_fn =
+      opts[:state_vector_to_input_fn] ||
+        raise ArgumentError, "missing :state_vector_to_input_fn option"
 
     {policy_init_fn, policy_predict_fn} = Axon.build(policy_net, seed: 0)
 
@@ -74,19 +98,27 @@ defmodule ReinforcementLearning.Agents.DQN do
         Axon.Optimizers.adamw(@learning_rate, eps: @eps, decay: @adamw_decay)
       )
 
-    input = %{"state" => Nx.template({1, state_vector_size}, :f32)}
-
     initial_q_policy_state = opts[:q_policy] || raise "missing initial q_policy"
     eps_max_iter = opts[:eps_max_iter] || raise "missing :eps_max_iter"
 
-    q_policy = policy_init_fn.(input, initial_q_policy_state)
+    input_template = input_template(policy_net)
+
+    q_policy = policy_init_fn.(input_template, initial_q_policy_state)
 
     q_policy_optimizer_state = optimizer_init_fn.(q_policy)
+
+    {1, num_actions} = Axon.get_output_shape(policy_net, input_template)
+
+    state_vector_size = state_vector_size(input_template)
 
     reset(random_key, %__MODULE__{
       eps_max_iter: eps_max_iter,
       state_vector_size: state_vector_size,
       num_actions: num_actions,
+      input_template: input_template,
+      environment_to_input_fn: environment_to_input_fn,
+      environment_to_state_vector_fn: environment_to_state_vector_fn,
+      state_vector_to_input_fn: state_vector_to_input_fn,
       q_policy: q_policy,
       q_policy_optimizer_state: q_policy_optimizer_state,
       policy_predict_fn: policy_predict_fn,
@@ -105,6 +137,22 @@ defmodule ReinforcementLearning.Agents.DQN do
     })
   end
 
+  defp input_template(model) do
+    model
+    |> Axon.get_inputs()
+    |> Map.new(fn {name, shape} ->
+      [nil | shape] = Tuple.to_list(shape)
+      shape = List.to_tuple([1 | shape])
+      {name, Nx.template(shape, :f32)}
+    end)
+  end
+
+  defp state_vector_size(input_template) do
+    Enum.reduce(input_template, 0, fn {_field, tensor}, acc ->
+      div(Nx.size(tensor), Nx.axis_size(tensor, 0)) + acc
+    end)
+  end
+
   @spec reset(random_key :: tensor(), state :: t()) :: {t(), random_key :: tensor()}
   def reset(random_key, state) do
     total_reward = Nx.tensor(0, type: :f32)
@@ -113,20 +161,14 @@ defmodule ReinforcementLearning.Agents.DQN do
     {%{state | loss: loss, total_reward: total_reward}, random_key}
   end
 
-  @spec select_action(
-          state,
-          iteration :: non_neg_integer(),
-          as_state_vector_fn :: (map() -> tensor())
-        ) ::
-          {action :: tensor, state :: state}
   defn select_action(
          %ReinforcementLearning{random_key: random_key, agent_state: agent_state} = state,
-         iteration,
-         as_state_vector_fn
+         iteration
        ) do
     %{
       q_policy: q_policy,
       policy_predict_fn: policy_predict_fn,
+      environment_to_input_fn: environment_to_input_fn,
       num_actions: num_actions,
       eps_max_iter: eps_max_iter
     } = agent_state
@@ -139,9 +181,7 @@ defmodule ReinforcementLearning.Agents.DQN do
       if sample > eps_threshold do
         action =
           q_policy
-          |> policy_predict_fn.(%{
-            "state" => as_state_vector_fn.(state.environment_state)
-          })
+          |> policy_predict_fn.(environment_to_input_fn.(state.environment_state))
           |> Nx.argmax()
 
         {action, random_key}
@@ -157,16 +197,17 @@ defmodule ReinforcementLearning.Agents.DQN do
           action :: tensor,
           reward :: tensor,
           is_terminal :: tensor,
-          next_state :: state,
-          as_state_vector_fn :: (map -> tensor)
+          next_state :: state
         ) :: state
   defn record_observation(
-         %{environment_state: env_state},
+         %{
+           environment_state: env_state,
+           agent_state: %{environment_to_state_vector_fn: as_state_vector_fn}
+         },
          action,
          reward,
          is_terminal,
-         %{environment_state: next_env_state} = state,
-         as_state_vector_fn
+         %{environment_state: next_env_state} = state
        ) do
     state_vector = as_state_vector_fn.(env_state)
     next_state_vector = as_state_vector_fn.(next_env_state)
@@ -235,6 +276,7 @@ defmodule ReinforcementLearning.Agents.DQN do
         q_policy_optimizer_state: q_policy_optimizer_state,
         policy_predict_fn: policy_predict_fn,
         optimizer_update_fn: optimizer_update_fn,
+        state_vector_to_input_fn: state_vector_to_input_fn,
         state_vector_size: state_vector_size
       },
       random_key: random_key
@@ -247,13 +289,19 @@ defmodule ReinforcementLearning.Agents.DQN do
         axis: 0
       )
 
-    state_batch = Nx.slice_along_axis(batch, 0, state_vector_size, axis: 1)
+    state_batch =
+      batch
+      |> Nx.slice_along_axis(0, state_vector_size, axis: 1)
+      |> then(state_vector_to_input_fn)
+
     action_batch = Nx.slice_along_axis(batch, state_vector_size, 1, axis: 1)
     reward_batch = Nx.slice_along_axis(batch, state_vector_size + 1, 1, axis: 1)
     is_terminal_batch = Nx.slice_along_axis(batch, state_vector_size + 2, 1, axis: 1)
 
     next_state_batch =
-      Nx.slice_along_axis(batch, state_vector_size + 3, state_vector_size, axis: 1)
+      batch
+      |> Nx.slice_along_axis(state_vector_size + 3, state_vector_size, axis: 1)
+      |> then(state_vector_to_input_fn)
 
     non_final_mask = not is_terminal_batch
 
@@ -264,13 +312,13 @@ defmodule ReinforcementLearning.Agents.DQN do
         %{shape: {m, 1}} =
           state_action_values =
           q_policy
-          |> policy_predict_fn.(%{"state" => state_batch})
+          |> policy_predict_fn.(state_batch)
           |> Nx.take_along_axis(action_idx, axis: 1)
 
         %{shape: {n, 1}} =
           expected_state_action_values =
           q_policy
-          |> policy_predict_fn.(%{"state" => next_state_batch})
+          |> policy_predict_fn.(next_state_batch)
           |> Nx.multiply(@gamma)
           |> Nx.multiply(non_final_mask)
           |> Nx.add(reward_batch)
@@ -312,7 +360,7 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     if entries < @experience_replay_buffer_num_entries do
       t = Nx.iota({@experience_replay_buffer_num_entries})
-      idx = Nx.select(t <= entries, t, 0)
+      idx = Nx.select(t < entries, t, 0)
       Nx.take(experience_replay_buffer, idx)
     else
       experience_replay_buffer
@@ -328,13 +376,4 @@ defmodule ReinforcementLearning.Agents.DQN do
     |> Nx.select(0.5 * abs_diff ** 2, delta * abs_diff - 0.5 * delta ** 2)
     |> Nx.mean()
   end
-
-  def dqn(num_observations, num_actions) do
-    Axon.input("state", shape: {nil, num_observations})
-    |> Axon.dense(64, activation: :relu)
-    |> Axon.dense(64, activation: :relu)
-    |> Axon.dense(num_actions)
-  end
 end
-
-7 * 64 * 64 * 4
