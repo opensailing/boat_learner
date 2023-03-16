@@ -61,12 +61,7 @@ defmodule ReinforcementLearning.Agents.DQN do
 
   @type t :: %__MODULE__{}
 
-  # @spec init(
-  #         random_key :: tensor(),
-  #         state_vector_size :: pos_integer(),
-  #         num_actions :: pos_integer(),
-  #         opts :: keyword()
-  #       ) :: {t(), random_key :: tensor()}
+  @spec init(random_key :: tensor(), opts :: keyword()) :: {t(), random_key :: tensor()}
   def init(random_key, opts \\ []) do
     opts =
       Keyword.validate!(opts, [
@@ -197,13 +192,13 @@ defmodule ReinforcementLearning.Agents.DQN do
     {action, %{state | random_key: random_key}}
   end
 
-  # @spec record_observation(
-  #         state :: state,
-  #         action :: tensor,
-  #         reward :: tensor,
-  #         is_terminal :: tensor,
-  #         next_state :: state
-  #       ) :: state
+  @spec record_observation(
+          state :: state,
+          action :: tensor,
+          reward :: tensor,
+          is_terminal :: tensor,
+          next_state :: state
+        ) :: state
   defn record_observation(
          %{
            environment_state: env_state,
