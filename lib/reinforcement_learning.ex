@@ -68,15 +68,15 @@ defmodule ReinforcementLearning do
     loop = Axon.Loop.loop(&batch_step(&1, &2, agent, environment))
 
     loop
-    |> Axon.Loop.handle(
+    |> Axon.Loop.handle_event(
       :epoch_started,
       &{:continue, %{&1 | step_state: reset_state(&1.step_state, agent, environment)}}
     )
-    |> Axon.Loop.handle(:epoch_completed, fn loop_state ->
+    |> Axon.Loop.handle_event(:epoch_completed, fn loop_state ->
       loop_state = tap(loop_state, epoch_completed_callback)
       {:continue, loop_state}
     end)
-    |> Axon.Loop.handle(:iteration_completed, fn loop_state ->
+    |> Axon.Loop.handle_event(:iteration_completed, fn loop_state ->
       is_terminal = Nx.to_number(loop_state.step_state.environment_state.is_terminal)
 
       if is_terminal == 1 do
@@ -85,7 +85,7 @@ defmodule ReinforcementLearning do
         {:continue, loop_state}
       end
     end)
-    |> Axon.Loop.handle(:epoch_halted, fn loop_state ->
+    |> Axon.Loop.handle_event(:epoch_halted, fn loop_state ->
       loop_state = tap(loop_state, epoch_completed_callback)
       {:halt_epoch, loop_state}
     end)
