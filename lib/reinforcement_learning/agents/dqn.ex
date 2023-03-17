@@ -7,6 +7,7 @@ defmodule ReinforcementLearning.Agents.DQN do
   @adamw_decay 1.0e-2
   @eps 1.0e-7
   @experience_replay_buffer_num_entries 10_000
+  @experience_replay_buffer_num_entries_on_4 div(@experience_replay_buffer_num_entries, 4)
 
   @eps_start 0.996
   @eps_end 0.01
@@ -15,6 +16,7 @@ defmodule ReinforcementLearning.Agents.DQN do
   @adamw_decay 0.01
 
   @batch_size 256
+  @batch_size_on_4 div(@batch_size, 4)
 
   @gamma 0.99
 
@@ -108,8 +110,11 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     state_vector_size = state_vector_size(input_template)
 
+    loss = Nx.tensor(0, type: :f32)
+
     reset(random_key, %__MODULE__{
       eps_max_iter: eps_max_iter,
+      loss: loss,
       state_vector_size: state_vector_size,
       num_actions: num_actions,
       input_template: input_template,
@@ -125,7 +130,7 @@ defmodule ReinforcementLearning.Agents.DQN do
         opts[:experience_replay_buffer] ||
           Nx.broadcast(
             Nx.tensor(:nan, type: :f32),
-            {@experience_replay_buffer_num_entries, 2 * state_vector_size + 3}
+            {@experience_replay_buffer_num_entries, 2 * state_vector_size + 4}
           ),
       experience_replay_buffer_index:
         opts[:experience_replay_buffer_index] || Nx.tensor(0, type: :s64),
@@ -153,9 +158,7 @@ defmodule ReinforcementLearning.Agents.DQN do
   @impl true
   def reset(random_key, state) do
     total_reward = Nx.tensor(0, type: :f32)
-    loss = Nx.tensor(0, type: :f32)
-
-    {%{state | loss: loss, total_reward: total_reward}, random_key}
+    {%{state | total_reward: total_reward}, random_key}
   end
 
   @impl true
@@ -199,7 +202,12 @@ defmodule ReinforcementLearning.Agents.DQN do
   defn record_observation(
          %{
            environment_state: env_state,
-           agent_state: %{environment_to_state_vector_fn: as_state_vector_fn}
+           agent_state: %{
+             q_policy: q_policy,
+             policy_predict_fn: policy_predict_fn,
+             state_vector_to_input_fn: state_vector_to_input_fn,
+             environment_to_state_vector_fn: as_state_vector_fn
+           }
          },
          action,
          reward,
@@ -211,15 +219,25 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     idx = Nx.stack([state.agent_state.experience_replay_buffer_index, 0]) |> Nx.new_axis(0)
 
-    shape = {Nx.size(state_vector) + 3 + Nx.size(next_state_vector), 1}
+    shape = {Nx.size(state_vector) + 4 + Nx.size(next_state_vector), 1}
 
     index_template = Nx.concatenate([Nx.broadcast(0, shape), Nx.iota(shape, axis: 0)], axis: 1)
+
+    predicted_reward =
+      reward +
+        policy_predict_fn.(q_policy, state_vector_to_input_fn.(next_state_vector)) * @gamma *
+          (1 - is_terminal)
+
+    %{shape: {1}} = predicted_reward = Nx.reduce_max(predicted_reward, axes: [-1])
+
+    temporal_difference = Nx.reshape(Nx.abs(reward - predicted_reward), {1})
 
     updates =
       Nx.concatenate([
         Nx.flatten(state_vector),
         Nx.stack([action, reward, is_terminal]),
-        Nx.flatten(next_state_vector)
+        Nx.flatten(next_state_vector),
+        temporal_difference
       ])
 
     experience_replay_buffer =
@@ -281,12 +299,7 @@ defmodule ReinforcementLearning.Agents.DQN do
       random_key: random_key
     } = state
 
-    {batch, random_key} =
-      Nx.Random.choice(random_key, slice_experience_replay_buffer(state.agent_state),
-        samples: @batch_size,
-        replace: false,
-        axis: 0
-      )
+    {batch, random_key} = sample_experience_replay_buffer(random_key, state.agent_state)
 
     state_batch =
       batch
@@ -343,10 +356,73 @@ defmodule ReinforcementLearning.Agents.DQN do
           state.agent_state
           | q_policy: q_policy,
             q_policy_optimizer_state: optimizer_state,
-            loss: state.agent_state.loss + loss
+            loss: (state.agent_state.loss + loss) / 2
         },
         random_key: random_key
     }
+  end
+
+  defnp sample_experience_replay_buffer(
+          random_key,
+          %{state_vector_size: state_vector_size} = agent_state
+        ) do
+    %{shape: {@experience_replay_buffer_num_entries, _}} =
+      exp_replay_buffer = slice_experience_replay_buffer(agent_state)
+
+    # Temporal Difference prioritizing:
+    # We are going to sort experiences by temporal difference
+    # and divide our buffer into 4 slices, from which we will
+    # then uniformily sample.
+    # The temporal difference is already stored in the end of our buffer.
+
+    temporal_difference =
+      exp_replay_buffer
+      |> Nx.slice_along_axis(state_vector_size * 2 + 3, 1, axis: 1)
+      |> Nx.flatten()
+
+    idx = Nx.argsort(temporal_difference)
+
+    top1 = Nx.slice_along_axis(idx, 0, @experience_replay_buffer_num_entries_on_4, axis: 0)
+
+    top2 =
+      Nx.slice_along_axis(
+        idx,
+        @experience_replay_buffer_num_entries_on_4,
+        @experience_replay_buffer_num_entries_on_4,
+        axis: 0
+      )
+
+    top3 =
+      Nx.slice_along_axis(
+        idx,
+        2 * @experience_replay_buffer_num_entries_on_4,
+        @experience_replay_buffer_num_entries_on_4,
+        axis: 0
+      )
+
+    top4 =
+      Nx.slice_along_axis(
+        idx,
+        3 * @experience_replay_buffer_num_entries_on_4,
+        @experience_replay_buffer_num_entries_on_4,
+        axis: 0
+      )
+
+    {batch1, random_key} =
+      Nx.Random.choice(random_key, top1, samples: @batch_size_on_4, replace: false, axis: 0)
+
+    {batch2, random_key} =
+      Nx.Random.choice(random_key, top2, samples: @batch_size_on_4, replace: false, axis: 0)
+
+    {batch3, random_key} =
+      Nx.Random.choice(random_key, top3, samples: @batch_size_on_4, replace: false, axis: 0)
+
+    {batch4, random_key} =
+      Nx.Random.choice(random_key, top4, samples: @batch_size_on_4, replace: false, axis: 0)
+
+    batch_idx = Nx.concatenate([batch1, batch2, batch3, batch4])
+    batch = Nx.take(exp_replay_buffer, batch_idx)
+    {batch, random_key}
   end
 
   defnp slice_experience_replay_buffer(state) do
