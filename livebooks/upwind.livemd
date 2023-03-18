@@ -21,19 +21,19 @@ alias VegaLite, as: Vl
 
 {min_x, max_x, min_y, max_y} = BoatLearner.Environments.UpwindMark.bounding_box()
 
-possible_targets_l = [[0, 30]]
+possible_targets_l = [[0, 1_000]]
 
 possible_targets = Nx.tensor(Enum.shuffle(possible_targets_l))
 
 width = 600
 height = 600
 
-angle_templates_base = [%{x: -25, y: 34.72}, %{x: 0, y: 5}, %{x: 25, y: 34.72}]
+angle_templates_base = [%{x: -2500 / 2, y: 2972 / 2}, %{x: 0, y: 0}, %{x: 2500 / 2, y: 2972 / 2}]
 
 angle_templates =
   Enum.flat_map(0..3, fn offset ->
     Enum.map(angle_templates_base, fn %{x: x, y: y} ->
-      y = y + 10 * offset
+      y = y + 250 * offset
 
       %{x: x, y: y, group: offset}
     end)
@@ -56,7 +56,7 @@ grid_widget =
       fill: true,
       tooltip: [content: "data"],
       grid: true,
-      size: [expr: "height * 4 * #{:math.pi()} / #{max_y - min_y}"]
+      size: [expr: "height * 40 * #{:math.pi()} / #{max_y - min_y}"]
     )
     |> Vl.encode_field(:x, "x", type: :quantitative)
     |> Vl.encode_field(:y, "y", type: :quantitative)
@@ -96,7 +96,7 @@ loss_widget =
     scale: [
       domain: [0, 32],
       type: "symlog",
-      base: 2,
+      base: 4,
       clamp: true
     ],
     axis: [tick_min_step: 1]
@@ -135,6 +135,13 @@ nil
 ```elixir
 defmodule AccumulateAndExportData do
   use GenServer
+  import Nx.Defn
+  import Nx.Constants
+
+  defnp rad_to_deg(angle) do
+    angle = angle * 180 / pi()
+    Nx.select(angle > 180, angle - 360, angle)
+  end
 
   def state_to_trajectory_entry(%{environment_state: env}) do
     target_vector = Nx.complex(Nx.subtract(env.target_x, env.x), Nx.subtract(env.target_y, env.y))
@@ -143,10 +150,10 @@ defmodule AccumulateAndExportData do
     Nx.stack([
       env.x,
       env.y,
-      env.angle |> Nx.multiply(180 / :math.pi()),
+      rad_to_deg(env.angle),
       env.speed,
       env.vmg,
-      env.angle_to_mark |> Nx.multiply(180 / :math.pi()),
+      rad_to_deg(env.angle_to_mark),
       distance_to_mark
     ])
   end
@@ -245,10 +252,12 @@ plot_fn = fn axon_state ->
 
     trajectory = axon_state.step_state.trajectory
 
-    GenServer.cast(
-      AccumulateAndExportData,
-      {:add_epoch, episode, target_x, target_y, axon_state.iteration, trajectory}
-    )
+    if rem(episode, 50) == 0 do
+      GenServer.cast(
+        AccumulateAndExportData,
+        {:add_epoch, episode, target_x, target_y, axon_state.iteration, trajectory}
+      )
+    end
 
     if rem(episode, 10) == 0 do
       Kino.VegaLite.clear(grid_widget, dataset: "target")
@@ -265,12 +274,12 @@ plot_fn = fn axon_state ->
       )
 
       idx = Enum.to_list(0..(axon_state.iteration - 1)//1)
-      x = Nx.to_flat_list(trajectory[0..(axon_state.iteration - 1)//1][0])
-      y = Nx.to_flat_list(trajectory[0..(axon_state.iteration - 1)//1][1])
+      traj = trajectory[[0..(axon_state.iteration - 1)//1, 0..1]]
 
       points =
-        [idx, x, y]
-        |> Enum.zip_with(fn [index, x, y] ->
+        traj
+        |> Nx.to_list()
+        |> Enum.with_index(fn [x, y], index ->
           %{
             x: x,
             y: y,
@@ -336,11 +345,11 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10_data.da
       {%{}, 0, 0, nil, 0}
   end
 
-# q_policy = %{}
-# total_episodes = 0
-# experience_replay_buffer = nil
-# persisted_experience_replay_buffer_entries = 0
-# experience_replay_buffer_index = 0
+q_policy = %{}
+total_episodes = 0
+experience_replay_buffer = nil
+persisted_experience_replay_buffer_entries = 0
+experience_replay_buffer_index = 0
 total_episodes
 ```
 
@@ -363,8 +372,6 @@ num_observations = length(fields)
 
 policy_net =
   Axon.input("state", shape: {nil, num_observations})
-  |> Axon.dense(128, activation: :relu)
-  |> Axon.dropout(rate: 0.25)
   |> Axon.dense(64, activation: :relu)
   |> Axon.dropout(rate: 0.25)
   |> Axon.dense(64, activation: :relu)
@@ -424,8 +431,8 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 1000
-max_iter = 250
+episodes = 100_000
+max_iter = 1000
 
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
@@ -437,7 +444,7 @@ AccumulateAndExportData.reset()
        max_fuel: max_iter, possible_targets: possible_targets},
       {ReinforcementLearning.Agents.DQN,
        policy_net: policy_net,
-       eps_max_iter: -1,
+       eps_max_iter: 10,
        q_policy: q_policy,
        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
        experience_replay_buffer_index: experience_replay_buffer_index,

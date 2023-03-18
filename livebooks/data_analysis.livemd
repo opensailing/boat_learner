@@ -19,36 +19,12 @@ Any other values will be shown in the tooltip for each data point.
 The `:mark` field is used to encode the mark for that given field and represents the type and options to be given to VegaLite.
 
 ```elixir
-# filepath = Path.join(System.fetch_env!("HOME"), "/Desktop/training_data_export.erlang")
-
-# contents = File.open!(filepath)
-
-mock_data_0 =
-  for epoch <- 0..10 do
-    Enum.zip_with([0..(epoch * 2), Enum.shuffle(0..(epoch * 2))], fn [x, y] ->
-      %{x: x, y: y, extra_field: :rand.uniform(10), epoch: epoch}
-    end)
-  end
-  |> List.flatten()
-
-mock_data_1 =
-  for epoch <- 0..10 do
-    %{x: 9 + rem(epoch, 3), y: 10 + rem(epoch, 2), epoch: epoch}
-  end
-
-layers = [
-  %{mark: %{type: :line, opts: [point: true, tooltip: [content: "data"]]}, data: mock_data_0},
-  %{mark: %{type: :point, opts: [tooltip: [content: "data"], size: 50]}, data: mock_data_1}
-]
-
-contents = :erlang.term_to_binary(layers)
-filepath = Path.join(System.fetch_env!("HOME"), "Desktop/upwind1_data.dat")
+filepath = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10_data.dat")
 contents = File.read!(filepath)
 ```
 
 ```elixir
 decoded = :erlang.binary_to_term(contents)
-IO.inspect(decoded)
 
 layers =
   Enum.map(decoded, fn %{mark: mark, data: data_map} ->
@@ -82,6 +58,9 @@ layers =
        min(curr_min_y, min_y), max(max_epoch, curr_max_epoch)}
   end)
 
+[a, b] = layers |> Enum.at(0) |> Map.get(:data) |> Map.get(:epoch) |> Enum.take(2)
+step = abs(b - a)
+
 max_x = ceil(max_x)
 min_x = ceil(min_x)
 max_y = ceil(max_y)
@@ -92,6 +71,18 @@ max_epoch = ceil(max_epoch)
 ## Plot Data
 
 ```elixir
+dx = max_x - min_x
+dy = max_y - min_y
+
+IO.inspect({max_x, min_x, dx, max_y, min_y, dy})
+
+{min_x, max_x, min_y, max_y} =
+  if dx < dy do
+    {min_x, min_x + max_y - min_y, min_y, max_y}
+  else
+    {min_x, max_x, min_y, min_y + max_x - min_x}
+  end
+
 layers =
   Enum.map(layers, fn %{mark: %{type: type, opts: opts}, data: data} ->
     VegaLite.new()
@@ -105,9 +96,8 @@ layers =
 
 VegaLite.new(height: 500, width: 500, title: "Data Visualization")
 |> VegaLite.param("epoch",
-  type: :interval,
   value: 0,
-  bind: [input: "range", min: 0, max: max_epoch]
+  bind: [input: "range", min: 0, max: max_epoch, step: step]
 )
 |> VegaLite.layers(layers)
 ```
