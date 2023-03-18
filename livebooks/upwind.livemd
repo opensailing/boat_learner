@@ -33,7 +33,7 @@ possible_targets = Nx.tensor(Enum.shuffle(possible_targets_l))
 width = 600
 height = 600
 
-angle_templates_base = [%{x: -25, y: 23.07}, %{x: 0, y: 5}, %{x: 25, y: 23.07}]
+angle_templates_base = [%{x: -25, y: 34.72}, %{x: 0, y: 5}, %{x: 25, y: 34.72}]
 
 angle_templates =
   Enum.flat_map(0..3, fn offset ->
@@ -202,7 +202,7 @@ end
 ```
 
 ```elixir
-filename = "/Users/paulo.valente/Desktop/upwind.bin"
+filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind1.bin")
 
 {
   q_policy,
@@ -319,7 +319,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 100_000
+episodes = 300_000
 max_iter = 250
 
 {t, result} =
@@ -343,7 +343,6 @@ max_iter = 250
     )
   end)
 
-# File.write!("/Users/paulo.valente/Desktop/results_#{NaiveDateTime.utc_now() |> NaiveDateTime.to_iso8601() |> String.replace(":", "")}.bin", )
 serialized =
   Nx.serialize(
     Map.take(result.step_state.agent_state, [
@@ -356,8 +355,6 @@ serialized =
 
 contents =
   :erlang.term_to_binary(%{serialized: serialized, total_episodes: total_episodes + episodes})
-
-# File.write!(filename, contents)
 
 "#{Float.round(t / 1_000_000, 3)} s"
 ```

@@ -80,7 +80,7 @@ defmodule BoatLearner.Environments.UpwindMark do
   @speed Enum.map(@speed_kts, &(&1 * @kts_to_meters_per_sec))
   @max_speed @speed |> Enum.max() |> ceil()
 
-  @dt 2
+  @dt 1
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
@@ -281,7 +281,26 @@ defmodule BoatLearner.Environments.UpwindMark do
     distance_reward = 1 - distance / (@max_y - @min_y + @max_x - @min_x)
 
     # maximize vertical speed (because the target is mostly on the vertical direction anyway)
-    speed_reward = Nx.cos(angle) * speed / @max_speed * 2
+
+    # to calculate VMG, we need to project the velocity vector onto
+    # the unit vector towards the target.
+    # Fortunately, this amounts to a simple dot product that'll yield the VMG.
+
+    # pos_to_target_vector = Nx.stack([target_x - x, target_y - y])
+    # pos_to_target_unit_vector = pos_to_target_vector / Nx.LinAlg.norm(pos_to_target_vector)
+    # # sin and cos switched from standard because the angle is measured from the vertical axis
+    # velocity_vector = speed * Nx.stack([Nx.sin(angle), Nx.cos(angle)])
+    # vmg = Nx.dot(pos_to_target_unit_vector, velocity_vector)
+
+    # We can do better than the code above because we can write the unwrapped
+    # equation directly, without relying on building tensors first.
+
+    dx = target_x - x
+    dy = target_y - y
+
+    vmg = (dx * Nx.sin(angle) + dy * Nx.cos(angle)) * speed / Nx.sqrt(dx ** 2 + dy ** 2)
+
+    speed_reward = vmg / @max_speed * 2
 
     # reward = distance_reward + speed_reward
     reward = (1 + distance_reward) * speed_reward
