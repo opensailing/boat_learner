@@ -28,9 +28,11 @@ defmodule ReinforcementLearning do
         {environment, environment_init_opts},
         {agent, agent_init_opts},
         epoch_completed_callback,
+        state_to_trajectory_fn,
         opts \\ []
       ) do
-    opts = Keyword.validate!(opts, [:random_key, :max_iter, num_episodes: 100])
+    opts =
+      Keyword.validate!(opts, [:random_key, :max_iter, :state_to_trajectory_fn, num_episodes: 100])
 
     random_key = opts[:random_key] || Nx.Random.key(System.system_time())
     max_iter = opts[:max_iter]
@@ -46,15 +48,21 @@ defmodule ReinforcementLearning do
       environment: environment,
       environment_state: environment_state,
       random_key: random_key,
-      trajectory: Nx.broadcast(Nx.tensor(:nan, type: :f32), {3, max_iter}),
       iteration: Nx.tensor(0, type: :s64)
     }
+
+    %Nx.Tensor{shape: {trajectory_points}} = state_to_trajectory_fn.(initial_state)
+
+    trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f32), {max_iter, trajectory_points})
+
+    initial_state = %__MODULE__{initial_state | trajectory: trajectory}
 
     loop(
       agent,
       environment,
       initial_state,
       epoch_completed_callback: epoch_completed_callback,
+      state_to_trajectory_fn: state_to_trajectory_fn,
       num_episodes: num_episodes,
       max_iter: max_iter
     )
@@ -62,10 +70,11 @@ defmodule ReinforcementLearning do
 
   defp loop(agent, environment, initial_state, opts) do
     epoch_completed_callback = Keyword.fetch!(opts, :epoch_completed_callback)
+    state_to_trajectory_fn = Keyword.fetch!(opts, :state_to_trajectory_fn)
     num_episodes = Keyword.fetch!(opts, :num_episodes)
     max_iter = Keyword.fetch!(opts, :max_iter)
 
-    loop = Axon.Loop.loop(&batch_step(&1, &2, agent, environment))
+    loop = Axon.Loop.loop(&batch_step(&1, &2, agent, environment, state_to_trajectory_fn))
 
     loop
     |> Axon.Loop.handle_event(
@@ -122,7 +131,8 @@ defmodule ReinforcementLearning do
          _inputs,
          prev_state,
          agent,
-         environment
+         environment,
+         state_to_trajectory_fn
        ) do
     {action, state} = agent.select_action(prev_state, prev_state.iteration)
 
@@ -137,20 +147,21 @@ defmodule ReinforcementLearning do
       state
     )
     |> agent.optimize_model()
-    |> persist_trajectory()
+    |> persist_trajectory(state_to_trajectory_fn)
   end
 
-  defnp persist_trajectory(%{trajectory: trajectory, iteration: iteration} = step_state) do
-    %{x: x, y: y} = step_state.environment_state
+  defnp persist_trajectory(
+          %{trajectory: trajectory, iteration: iteration} = step_state,
+          state_to_trajectory_fn
+        ) do
+    updates = state_to_trajectory_fn.(step_state)
+
+    %Nx.Tensor{shape: {_, num_points}} = trajectory
 
     idx =
-      Nx.tensor([
-        [0, 0],
-        [1, 0],
-        [2, 0]
-      ]) + Nx.new_axis(Nx.stack([0, iteration]), 0)
+      Nx.concatenate([Nx.broadcast(iteration, {num_points, 1}), Nx.iota({num_points, 1})], axis: 1)
 
-    trajectory = Nx.indexed_put(trajectory, idx, Nx.stack([iteration, x, y]))
+    trajectory = Nx.indexed_put(trajectory, idx, updates)
     %{step_state | trajectory: trajectory, iteration: iteration + 1}
   end
 end

@@ -26,7 +26,9 @@ defmodule BoatLearner.Environments.UpwindMark do
              :prev_speed,
              :angle,
              :fuel,
-             :max_fuel
+             :max_fuel,
+             :angle_to_mark,
+             :vmg
            ]}
   defstruct [
     :x,
@@ -44,13 +46,15 @@ defmodule BoatLearner.Environments.UpwindMark do
     :polar_chart,
     :angle_memory,
     :fuel,
-    :max_fuel
+    :max_fuel,
+    :angle_to_mark,
+    :vmg
   ]
 
-  @min_x -25
-  @max_x 25
+  @min_x -1250
+  @max_x 1250
   @min_y 0
-  @max_y 50
+  @max_y 2500
 
   @angle 5 * :math.pi() / 180
   @angle_memory_num_entries 5
@@ -80,12 +84,12 @@ defmodule BoatLearner.Environments.UpwindMark do
   @speed Enum.map(@speed_kts, &(&1 * @kts_to_meters_per_sec))
   @max_speed @speed |> Enum.max() |> ceil()
 
-  @dt 1
+  @dt 5
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
   @impl true
-  def num_actions, do: 3
+  def num_actions, do: 2
 
   @impl true
   def init(random_key, opts) do
@@ -133,7 +137,7 @@ defmodule BoatLearner.Environments.UpwindMark do
   @impl true
   def reset(random_key, state) do
     zero = Nx.tensor(0, type: :f32)
-    speed = x = reward = zero
+    vmg = angle_to_mark = speed = x = reward = zero
 
     {angle, random_key} =
       Nx.Random.uniform(random_key, -:math.pi() / 2 + @angle, :math.pi() / 2 - @angle)
@@ -166,7 +170,9 @@ defmodule BoatLearner.Environments.UpwindMark do
         target_y: target[1],
         reward: reward,
         is_terminal: Nx.tensor(0, type: :u8),
-        fuel: state.max_fuel
+        fuel: state.max_fuel,
+        angle_to_mark: angle_to_mark,
+        vmg: vmg
     }
 
     {state, random_key}
@@ -207,11 +213,26 @@ defmodule BoatLearner.Environments.UpwindMark do
   end
 
   defnp move(env) do
-    %__MODULE__{angle: angle, x: x, y: y, polar_chart: polar_chart} = env
+    %__MODULE__{
+      angle: angle,
+      target_x: target_x,
+      target_y: target_y,
+      x: x,
+      y: y,
+      polar_chart: polar_chart
+    } = env
+
     speed = speed_from_angle(polar_chart, angle)
 
     x = x + speed * Nx.sin(angle) * @dt
     y = y + speed * Nx.cos(angle) * @dt
+
+    dx = target_x - x
+    dy = target_y - y
+
+    angle_to_mark = Nx.phase(Nx.complex(dy, dx))
+
+    vmg = speed * Nx.cos(angle - angle_to_mark)
 
     %__MODULE__{
       env
@@ -221,7 +242,9 @@ defmodule BoatLearner.Environments.UpwindMark do
         prev_y: env.y,
         speed: speed,
         prev_speed: env.speed,
-        fuel: env.fuel - 1
+        fuel: env.fuel - 1,
+        angle_to_mark: angle_to_mark,
+        vmg: vmg
     }
   end
 
@@ -266,23 +289,11 @@ defmodule BoatLearner.Environments.UpwindMark do
 
   defnp calculate_reward(env) do
     %__MODULE__{
-      x: x,
-      y: y,
-      angle: angle,
-      speed: speed,
-      target_x: target_x,
-      target_y: target_y,
       is_terminal: is_terminal,
       fuel: fuel,
-      max_fuel: max_fuel
+      max_fuel: max_fuel,
+      vmg: vmg
     } = env
-
-    dx = target_x - x
-    dy = target_y - y
-
-    angle_to_the_mark = Nx.phase(Nx.complex(dy, dx))
-
-    vmg = speed * Nx.cos(angle_to_the_mark)
 
     reward = vmg / @max_speed
 
@@ -294,7 +305,7 @@ defmodule BoatLearner.Environments.UpwindMark do
           0
 
         is_terminal ->
-          reward + fuel / max_fuel * 50
+          reward + fuel / max_fuel * 100
 
         true ->
           reward

@@ -1,0 +1,103 @@
+# Data Analysis
+
+```elixir
+Mix.install([:jason, :kino_vega_lite])
+```
+
+## Load Data
+
+The file to be decoded must encode a list of layers.
+Each layer has the layout:
+
+```
+%{mark: %{type: "point" | "line" ..., opts: ...}, data: ...}
+```
+
+Any data to be loaded must contain the fields `x`, `y`, `epoch`. The data must be loaded from an `:erlang.term_to_binary`-encoded file.
+Any other values will be shown in the tooltip for each data point.
+
+The `:mark` field is used to encode the mark for that given field and represents the type and options to be given to VegaLite.
+
+```elixir
+filepath = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10_data.dat")
+contents = File.read!(filepath)
+```
+
+```elixir
+decoded = :erlang.binary_to_term(contents)
+
+layers =
+  Enum.map(decoded, fn %{mark: mark, data: data_map} ->
+    case data_map do
+      %{x: _, y: _, epoch: _, index: _} ->
+        :ok
+
+      _ ->
+        raise ArgumentError,
+              "expected data to be a map with at least the following keys: [:x, :y, :epoch, :index], got keys: #{inspect(Map.keys(data_map))}"
+    end
+
+    %{mark: mark, data: data_map}
+  end)
+
+{max_x, min_x, max_y, min_y, max_epoch} =
+  Enum.reduce(layers, nil, fn
+    %{data: %{x: x, y: y, epoch: epoch}}, nil ->
+      {min_x, max_x} = Enum.min_max(x)
+      {min_y, max_y} = Enum.min_max(y)
+      max_epoch = Enum.max(epoch)
+      {max_x, min_x, max_y, min_y, max_epoch}
+
+    %{data: %{x: x, y: y, epoch: epoch}},
+    {curr_max_x, curr_min_x, curr_max_y, curr_min_y, curr_max_epoch} ->
+      {min_x, max_x} = Enum.min_max(x)
+      {min_y, max_y} = Enum.min_max(y)
+      max_epoch = Enum.max(epoch)
+
+      {max(curr_max_x, max_x), min(curr_min_x, min_x), max(curr_max_y, max_y),
+       min(curr_min_y, min_y), max(max_epoch, curr_max_epoch)}
+  end)
+
+[a, b] = layers |> Enum.at(0) |> Map.get(:data) |> Map.get(:epoch) |> Enum.take(2)
+step = abs(b - a)
+
+max_x = ceil(max_x)
+min_x = ceil(min_x)
+max_y = ceil(max_y)
+min_y = ceil(min_y)
+max_epoch = ceil(max_epoch)
+```
+
+## Plot Data
+
+```elixir
+dx = max_x - min_x
+dy = max_y - min_y
+
+IO.inspect({max_x, min_x, dx, max_y, min_y, dy})
+
+{min_x, max_x, min_y, max_y} =
+  if dx < dy do
+    {min_x, min_x + max_y - min_y, min_y, max_y}
+  else
+    {min_x, max_x, min_y, min_y + max_x - min_x}
+  end
+
+layers =
+  Enum.map(layers, fn %{mark: %{type: type, opts: opts}, data: data} ->
+    VegaLite.new()
+    |> VegaLite.data_from_values(data)
+    |> VegaLite.mark(type, opts)
+    |> VegaLite.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x]])
+    |> VegaLite.encode_field(:y, "y", type: :quantitative, scale: [domain: [min_y, max_y]])
+    |> VegaLite.encode_field(:order, "index")
+    |> VegaLite.transform(filter: "datum.epoch == epoch")
+  end)
+
+VegaLite.new(height: 500, width: 500, title: "Data Visualization")
+|> VegaLite.param("epoch",
+  value: 0,
+  bind: [input: "range", min: 0, max: max_epoch, step: step]
+)
+|> VegaLite.layers(layers)
+```
