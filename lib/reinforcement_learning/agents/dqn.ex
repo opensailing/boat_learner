@@ -342,7 +342,9 @@ defmodule ReinforcementLearning.Agents.DQN do
             1
         end
 
-        huber_loss(expected_state_action_values, state_action_values)
+        Axon.Losses.mean_squared_error(expected_state_action_values, state_action_values,
+          reduction: :mean
+        )
       end)
 
     {scaled_updates, optimizer_state} =

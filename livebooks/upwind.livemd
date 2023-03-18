@@ -139,25 +139,14 @@ defmodule AccumulateAndExportData do
   def state_to_trajectory_entry(%{environment_state: env}) do
     target_vector = Nx.complex(Nx.subtract(env.target_x, env.x), Nx.subtract(env.target_y, env.y))
     distance_to_mark = Nx.abs(target_vector)
-    angle_to_mark = Nx.phase(target_vector)
-
-    vmg =
-      BoatLearner.Environments.UpwindMark.vmg(
-        env.x,
-        env.y,
-        env.target_x,
-        env.target_y,
-        env.angle,
-        env.speed
-      )
 
     Nx.stack([
       env.x,
       env.y,
       env.angle |> Nx.multiply(180 / :math.pi()),
       env.speed,
-      vmg,
-      angle_to_mark |> Nx.multiply(180 / :math.pi()),
+      env.vmg,
+      env.angle_to_mark |> Nx.multiply(180 / :math.pi()),
       distance_to_mark
     ])
   end
@@ -317,8 +306,8 @@ end
 ```
 
 ```elixir
-filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind1.bin")
-export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind1_data.dat")
+filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10.bin")
+export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10_data.dat")
 
 {
   q_policy,
@@ -435,7 +424,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 100
+episodes = 1000
 max_iter = 250
 
 AccumulateAndExportData.start_link([])
@@ -484,8 +473,4 @@ contents =
 ```elixir
 File.write!(filename, contents)
 result.step_state.agent_state.q_policy
-```
-
-```elixir
-
 ```
