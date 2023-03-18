@@ -1,4 +1,4 @@
-# Untitled notebook
+# Data Analysis
 
 ```elixir
 Mix.install([:jason, :kino_vega_lite])

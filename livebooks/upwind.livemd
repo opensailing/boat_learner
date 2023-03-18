@@ -1,4 +1,4 @@
-# Reinforcement Learning
+# Upwind Mark Training
 
 ```elixir
 my_app_root = Path.join(__DIR__, "..")
@@ -22,11 +22,6 @@ alias VegaLite, as: Vl
 {min_x, max_x, min_y, max_y} = BoatLearner.Environments.UpwindMark.bounding_box()
 
 possible_targets_l = [[0, 30]]
-
-# possible_targets_l = 
-# for x <- -5..5, y <- (max_y-4)..(max_y-2) do
-# [x, y]
-# end
 
 possible_targets = Nx.tensor(Enum.shuffle(possible_targets_l))
 
@@ -138,6 +133,97 @@ nil
 ```
 
 ```elixir
+defmodule AccumulateAndExportData do
+  use GenServer
+
+  def state_to_trajectory_entry(%{environment_state: env}) do
+    target_vector = Nx.complex(Nx.subtract(env.target_x, env.x), Nx.subtract(env.target_y, env.y))
+    distance_to_mark = Nx.abs(target_vector)
+    angle_to_mark = Nx.phase(target_vector)
+
+    vmg =
+      BoatLearner.Environments.UpwindMark.vmg(
+        env.x,
+        env.y,
+        env.target_x,
+        env.target_y,
+        env.angle,
+        env.speed
+      )
+
+    [
+      env.x,
+      env.y,
+      env.angle,
+      env.speed,
+      vmg,
+      angle_to_mark,
+      distance_to_mark
+    ]
+  end
+
+  def init(_opts), do: {:ok, %{trajectories: [], marks: []}}
+
+  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+
+  def reset, do: GenServer.cast(__MODULE__, :reset)
+
+  def handle_cast(:reset, _) do
+    {:ok, state} = init([])
+    {:noreply, state}
+  end
+
+  def handle_cast({:add_epoch, epoch, target_x, target_y, iterations, trajectory_tensor}, state) do
+    trajectory_data =
+      trajectory_tensor
+      |> Nx.slice_along_axis(0, iterations, axis: 0)
+      |> Nx.to_list()
+      |> Enum.map(fn [
+                       x,
+                       y,
+                       angle,
+                       speed,
+                       vmg,
+                       angle_to_mark,
+                       distance_to_mark
+                     ] ->
+        %{
+          x: x,
+          y: y,
+          epoch: epoch,
+          angle_of_attack: angle,
+          boat_speed: speed,
+          angle_to_mark: angle_to_mark,
+          distance_to_mark: distance_to_mark,
+          vmg: vmg
+        }
+      end)
+
+    mark = %{x: target_x, y: target_y, epoch: epoch}
+
+    %{trajectory: [trajectory_data | state.trajectory], marks: [mark | state.marks]}
+  end
+
+  def handle_call({:save, filename}, _from, state) do
+    layers = [
+      %{
+        mark: :point,
+        opts: [fill: true, tooltip: [content: "data"], grid: true, size: 50],
+        data: Enum.reverse(state.marks)
+      },
+      %{
+        mark: %{type: :line, opts: [tooltip: [content: "data"]]},
+        data: state.trajectories |> Enum.reverse() |> List.flatten()
+      }
+    ]
+
+    contents = :erlang.term_to_binary(layers)
+    File.write!(filename, layers)
+  end
+end
+```
+
+```elixir
 # 250 max_iter * 15 episodes
 max_points = 1000
 
@@ -149,11 +235,14 @@ plot_fn = fn axon_state ->
     Kino.VegaLite.clear(grid_widget, dataset: "target")
     Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
 
+    target_x = Nx.to_number(axon_state.step_state.environment_state.target_x)
+    target_y = Nx.to_number(axon_state.step_state.environment_state.target_y)
+
     Kino.VegaLite.push(
       grid_widget,
       %{
-        x: Nx.to_number(axon_state.step_state.environment_state.target_x),
-        y: Nx.to_number(axon_state.step_state.environment_state.target_y),
+        x: target_x,
+        y: target_y,
         episode: episode
       },
       dataset: "target"
@@ -161,9 +250,14 @@ plot_fn = fn axon_state ->
 
     trajectory = axon_state.step_state.trajectory
 
-    idx = Nx.to_flat_list(trajectory[0][0..(axon_state.iteration - 1)//1] |> Nx.as_type(:s64))
-    x = Nx.to_flat_list(trajectory[1][0..(axon_state.iteration - 1)//1])
-    y = Nx.to_flat_list(trajectory[2][0..(axon_state.iteration - 1)//1])
+    GenServer.cast(
+      AccumulateAndExportData,
+      {:add_epoch, episode, target_x, target_y, axon_state.iteration, trajectory}
+    )
+
+    idx = Enum.to_list(0..(axon_state.iteration - 1)//1)
+    x = Nx.to_flat_list(trajectory[0..(axon_state.iteration - 1)//1][0])
+    y = Nx.to_flat_list(trajectory[0..(axon_state.iteration - 1)//1][1])
 
     points =
       [idx, x, y]
@@ -203,6 +297,7 @@ end
 
 ```elixir
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind1.bin")
+export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind1_data.dat")
 
 {
   q_policy,
@@ -319,8 +414,11 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 300_000
+episodes = 10
 max_iter = 250
+
+AccumulateAndExportData.start_link([])
+AccumulateAndExportData.reset()
 
 {t, result} =
   :timer.tc(fn ->
@@ -338,10 +436,13 @@ max_iter = 250
        environment_to_state_vector_fn: environment_to_state_vector_fn,
        state_vector_to_input_fn: state_vector_to_input_fn},
       plot_fn,
+      &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter
     )
   end)
+
+GenServer.call(AccumulateAndExportData, {:save, export_filename})
 
 serialized =
   Nx.serialize(
