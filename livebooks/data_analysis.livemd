@@ -1,0 +1,100 @@
+# Untitled notebook
+
+```elixir
+Mix.install([:jason, :kino_vega_lite])
+```
+
+## Load Data
+
+The file to be decoded must encode a list of layers.
+Each layer has the layout:
+
+```
+%{mark: %{type: "point" | "line" ..., opts: ...}, data: ...}
+```
+
+Any data to be loaded must contain the fields `x`, `y`, `epoch`. The data must be loaded from an `:erlang.term_to_binary`-encoded file.
+Any other values will be shown in the tooltip for each data point.
+
+The `:mark` field is used to encode the mark for that given field and represents the type and options to be given to VegaLite.
+
+```elixir
+# filepath = Path.join(System.fetch_env!("HOME"), "/Desktop/training_data_export.erlang")
+
+# contents = File.open!(filepath)
+
+mock_data_0 =
+  for epoch <- 0..10 do
+    Enum.zip_with([0..(epoch * 2), Enum.shuffle(0..(epoch * 2))], fn [x, y] ->
+      %{x: x, y: y, extra_field: :rand.uniform(10), epoch: epoch}
+    end)
+  end
+  |> List.flatten()
+
+mock_data_1 =
+  for epoch <- 0..10 do
+    %{x: 9 + rem(epoch, 3), y: 10 + rem(epoch, 2), epoch: epoch}
+  end
+
+layers = [
+  %{mark: %{type: :line, opts: [point: true, tooltip: [content: "data"]]}, data: mock_data_0},
+  %{mark: %{type: :point, opts: [tooltip: [content: "data"], size: 50]}, data: mock_data_1}
+]
+
+contents = :erlang.term_to_binary(layers)
+```
+
+```elixir
+decoded = :erlang.binary_to_term(contents)
+
+layers =
+  Enum.map(decoded, fn %{mark: mark, data: data} ->
+    data =
+      Enum.with_index(data, fn point, index ->
+        case point do
+          %{x: _, y: _, epoch: _} -> :ok
+          _ -> raise ArgumentError, "invalid data point: #{inspect(point)}"
+        end
+
+        Map.put(point, :index, index)
+      end)
+
+    %{mark: mark, data: data}
+  end)
+
+{max_x, min_x, max_y, min_y, max_epoch} =
+  layers
+  |> Enum.reduce(nil, fn %{data: data}, acc ->
+    data
+    |> Enum.reduce(acc, fn
+      %{x: x, y: y, epoch: epoch}, nil ->
+        {x, x, y, y, epoch}
+
+      %{x: x, y: y, epoch: epoch}, {max_x, min_x, max_y, min_y, max_epoch} ->
+        {max(max_x, x), min(min_x, x), max(max_y, y), min(min_y, y), max(max_epoch, epoch)}
+    end)
+  end)
+```
+
+## Plot Data
+
+```elixir
+layers =
+  Enum.map(layers, fn %{mark: %{type: type, opts: opts}, data: data} ->
+    VegaLite.new()
+    |> VegaLite.data_from_values(data)
+    |> VegaLite.mark(type, opts)
+    |> VegaLite.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x]])
+    |> VegaLite.encode_field(:y, "y", type: :quantitative, scale: [domain: [min_y, max_y]])
+    |> VegaLite.encode_field(:order, "index")
+    |> VegaLite.transform(filter: "datum.epoch == epoch")
+  end)
+
+VegaLite.new(height: 500, width: 500, title: "Data Visualization")
+|> VegaLite.param("epoch",
+  type: :interval,
+  value: 0,
+  bind: [input: "number", min: 0, max: max_epoch]
+)
+|> VegaLite.layers(layers)
+```
