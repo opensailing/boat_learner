@@ -202,7 +202,7 @@ end
 ```
 
 ```elixir
-filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind1.bin")
+filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10.bin")
 
 {
   q_policy,
@@ -319,7 +319,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 300_000
+episodes = 400_000
 max_iter = 250
 
 {t, result} =

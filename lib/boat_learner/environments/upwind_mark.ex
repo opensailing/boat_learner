@@ -245,10 +245,11 @@ defmodule BoatLearner.Environments.UpwindMark do
   end
 
   defnp is_terminal_state(env) do
-    %__MODULE__{x: x, y: y, fuel: fuel} = env
+    %__MODULE__{x: x, y: y, fuel: fuel, target_y: target_y} = env
 
     is_terminal =
-      has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > @max_y or fuel < 5
+      has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
+        fuel < 5
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
@@ -276,34 +277,14 @@ defmodule BoatLearner.Environments.UpwindMark do
       max_fuel: max_fuel
     } = env
 
-    distance = distance(x, y, target_x, target_y)
-
-    distance_reward = 1 - distance / (@max_y - @min_y + @max_x - @min_x)
-
-    # maximize vertical speed (because the target is mostly on the vertical direction anyway)
-
-    # to calculate VMG, we need to project the velocity vector onto
-    # the unit vector towards the target.
-    # Fortunately, this amounts to a simple dot product that'll yield the VMG.
-
-    # pos_to_target_vector = Nx.stack([target_x - x, target_y - y])
-    # pos_to_target_unit_vector = pos_to_target_vector / Nx.LinAlg.norm(pos_to_target_vector)
-    # # sin and cos switched from standard because the angle is measured from the vertical axis
-    # velocity_vector = speed * Nx.stack([Nx.sin(angle), Nx.cos(angle)])
-    # vmg = Nx.dot(pos_to_target_unit_vector, velocity_vector)
-
-    # We can do better than the code above because we can write the unwrapped
-    # equation directly, without relying on building tensors first.
-
     dx = target_x - x
     dy = target_y - y
 
-    vmg = (dx * Nx.sin(angle) + dy * Nx.cos(angle)) * speed / Nx.sqrt(dx ** 2 + dy ** 2)
+    angle_to_the_mark = Nx.phase(Nx.complex(dy, dx))
 
-    speed_reward = vmg / @max_speed * 2
+    vmg = speed * Nx.cos(angle_to_the_mark)
 
-    # reward = distance_reward + speed_reward
-    reward = (1 + distance_reward) * speed_reward
+    reward = vmg / @max_speed
 
     has_reached_target = has_reached_target(env)
 
@@ -313,7 +294,7 @@ defmodule BoatLearner.Environments.UpwindMark do
           0
 
         is_terminal ->
-          reward + 250 * fuel / max_fuel
+          reward + fuel / max_fuel * 50
 
         true ->
           reward
