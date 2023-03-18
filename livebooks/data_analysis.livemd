@@ -42,38 +42,51 @@ layers = [
 ]
 
 contents = :erlang.term_to_binary(layers)
+filepath = Path.join(System.fetch_env!("HOME"), "Desktop/upwind1_data.dat")
+contents = File.read!(filepath)
 ```
 
 ```elixir
 decoded = :erlang.binary_to_term(contents)
+IO.inspect(decoded)
 
 layers =
-  Enum.map(decoded, fn %{mark: mark, data: data} ->
-    data =
-      Enum.with_index(data, fn point, index ->
-        case point do
-          %{x: _, y: _, epoch: _} -> :ok
-          _ -> raise ArgumentError, "invalid data point: #{inspect(point)}"
-        end
+  Enum.map(decoded, fn %{mark: mark, data: data_map} ->
+    case data_map do
+      %{x: _, y: _, epoch: _, index: _} ->
+        :ok
 
-        Map.put(point, :index, index)
-      end)
+      _ ->
+        raise ArgumentError,
+              "expected data to be a map with at least the following keys: [:x, :y, :epoch, :index], got keys: #{inspect(Map.keys(data_map))}"
+    end
 
-    %{mark: mark, data: data}
+    %{mark: mark, data: data_map}
   end)
 
 {max_x, min_x, max_y, min_y, max_epoch} =
-  layers
-  |> Enum.reduce(nil, fn %{data: data}, acc ->
-    data
-    |> Enum.reduce(acc, fn
-      %{x: x, y: y, epoch: epoch}, nil ->
-        {x, x, y, y, epoch}
+  Enum.reduce(layers, nil, fn
+    %{data: %{x: x, y: y, epoch: epoch}}, nil ->
+      {min_x, max_x} = Enum.min_max(x)
+      {min_y, max_y} = Enum.min_max(y)
+      max_epoch = Enum.max(epoch)
+      {max_x, min_x, max_y, min_y, max_epoch}
 
-      %{x: x, y: y, epoch: epoch}, {max_x, min_x, max_y, min_y, max_epoch} ->
-        {max(max_x, x), min(min_x, x), max(max_y, y), min(min_y, y), max(max_epoch, epoch)}
-    end)
+    %{data: %{x: x, y: y, epoch: epoch}},
+    {curr_max_x, curr_min_x, curr_max_y, curr_min_y, curr_max_epoch} ->
+      {min_x, max_x} = Enum.min_max(x)
+      {min_y, max_y} = Enum.min_max(y)
+      max_epoch = Enum.max(epoch)
+
+      {max(curr_max_x, max_x), min(curr_min_x, min_x), max(curr_max_y, max_y),
+       min(curr_min_y, min_y), max(max_epoch, curr_max_epoch)}
   end)
+
+max_x = ceil(max_x)
+min_x = ceil(min_x)
+max_y = ceil(max_y)
+min_y = ceil(min_y)
+max_epoch = ceil(max_epoch)
 ```
 
 ## Plot Data
@@ -94,7 +107,7 @@ VegaLite.new(height: 500, width: 500, title: "Data Visualization")
 |> VegaLite.param("epoch",
   type: :interval,
   value: 0,
-  bind: [input: "number", min: 0, max: max_epoch]
+  bind: [input: "range", min: 0, max: max_epoch]
 )
 |> VegaLite.layers(layers)
 ```

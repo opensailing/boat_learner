@@ -51,7 +51,7 @@ defmodule ReinforcementLearning do
       iteration: Nx.tensor(0, type: :s64)
     }
 
-    {trajectory_points} = state_to_trajectory_fn.(initial_state)
+    %Nx.Tensor{shape: {trajectory_points}} = state_to_trajectory_fn.(initial_state)
 
     trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f32), {max_iter, trajectory_points})
 
@@ -156,11 +156,12 @@ defmodule ReinforcementLearning do
         ) do
     updates = state_to_trajectory_fn.(step_state)
 
-    %Nx.Tensor{shape: {num_points, _}} = trajectory
+    %Nx.Tensor{shape: {_, num_points}} = trajectory
 
-    idx = Nx.concatenate([Nx.broadcast(iteration, {num_points, 1}), Nx.iota({num_points, 1})], axis: 1)
+    idx =
+      Nx.concatenate([Nx.broadcast(iteration, {num_points, 1}), Nx.iota({num_points, 1})], axis: 1)
 
-    trajectory = Nx.indexed_put(trajectory, idx, updates))
+    trajectory = Nx.indexed_put(trajectory, idx, updates)
     %{step_state | trajectory: trajectory, iteration: iteration + 1}
   end
 end
