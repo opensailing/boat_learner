@@ -1,19 +1,11 @@
 # BoatLearner
 
-To start your Phoenix server:
+This system is mostly designed for usage with livebook.
 
-  * Install dependencies with `mix deps.get`
-  * Create and migrate your database with `mix ecto.setup`
-  * Start Phoenix endpoint with `mix phx.server` or inside IEx with `iex -S mix phx.server`
+## Environment variables
 
-Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
+- BOAT_LEARNER_BACKEND
+  If set to "torchx", will use Torchx as the default backend. If "binary", uses plain Nx.BinaryBackend.
+  Otherwise, will use EXLA as the defual backend and compiler.
 
-Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
-
-## Learn more
-
-  * Official website: https://www.phoenixframework.org/
-  * Guides: https://hexdocs.pm/phoenix/overview.html
-  * Docs: https://hexdocs.pm/phoenix
-  * Forum: https://elixirforum.com/c/phoenix-forum
-  * Source: https://github.com/phoenixframework/phoenix
+  For EXLA and Torchx, each have their own available environment variables as well.

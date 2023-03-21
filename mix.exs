@@ -31,12 +31,25 @@ defmodule BoatLearner.MixProject do
     [
       {:jason, "~> 1.2"},
       {:nx, github: "elixir-nx/nx", sparse: "nx", override: true},
-      {:exla, github: "elixir-nx/nx", sparse: "exla", override: true},
       {:scholar, github: "elixir-nx/scholar"},
       {:axon, github: "elixir-nx/axon"},
       {:kino, "~> 0.8"},
       {:kino_vega_lite, "~> 0.1"},
       {:table_rex, "~> 3.1"}
+      | backend()
     ]
+  end
+
+  defp backend do
+    case System.get_env("BOAT_LEARNER_BACKEND") do
+      "torchx" ->
+        [{:torchx, github: "elixir-nx/nx", sparse: "torchx", override: true}]
+
+      "binary" ->
+        []
+
+      _ ->
+        [{:exla, github: "elixir-nx/nx", sparse: "exla", override: true}]
+    end
   end
 end
