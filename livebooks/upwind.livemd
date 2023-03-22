@@ -10,7 +10,7 @@ Mix.install(
   config_path: Path.join(my_app_root, "config/config.exs"),
   lockfile: Path.join(my_app_root, "mix.lock"),
   # change to "cuda118" to use CUDA
-  system_env: %{"XLA_TARGET" => "cpu"}
+  system_env: %{"XLA_TARGET" => "cuda118"}
 )
 ```
 

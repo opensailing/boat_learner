@@ -89,7 +89,7 @@ defmodule BoatLearner.Environments.UpwindMark do
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
   @impl true
-  def num_actions, do: 2
+  def num_actions, do: 5
 
   @impl true
   def init(random_key, opts) do
@@ -186,13 +186,19 @@ defmodule BoatLearner.Environments.UpwindMark do
     new_env =
       cond do
         action == 0 ->
-          turn_and_move(env, -@angle)
+          turn_and_move(env, -@angle, 2)
 
         action == 1 ->
+          turn_and_move(env, -6 * @angle, 4)
+
+        action == 2 ->
           move(env)
 
+        action == 3 ->
+          turn_and_move(env, @angle, 2)
+
         true ->
-          turn_and_move(env, @angle)
+          turn_and_move(env, 6 * @angle, 4)
       end
 
     new_env =
@@ -204,12 +210,12 @@ defmodule BoatLearner.Environments.UpwindMark do
     %ReinforcementLearning{rl_state | environment_state: new_env}
   end
 
-  defnp turn_and_move(env, angle_inc) do
+  defnp turn_and_move(env, angle_inc, fuel_penalty) do
     angle = env.angle + angle_inc
     two_pi = 2 * pi()
     angle = Nx.select(angle >= two_pi, angle - two_pi, angle)
     angle = Nx.select(angle < 0, angle + two_pi, angle)
-    move(%__MODULE__{env | fuel: env.fuel - 4, angle: angle})
+    move(%__MODULE__{env | fuel: env.fuel - fuel_penalty, angle: angle})
   end
 
   defnp move(env) do
