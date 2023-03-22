@@ -120,13 +120,13 @@ defmodule BoatLearner.Environments.UpwindMark do
 
     dspeed = Scholar.Interpolation.BezierSpline.predict(spline_model, Nx.add(min_theta, dtheta))
 
-    # Fit {0, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
+    # Fit {0, 0}, {35deg, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
     zero = Nx.new_axis(0, 0)
 
     linear_model =
       Scholar.Interpolation.Linear.fit(
-        Nx.concatenate([zero, min_theta, theta]),
-        Nx.concatenate([zero, dspeed, speed])
+        Nx.concatenate([zero, Nx.tensor([35 * :math.pi() / 180]), min_theta, theta]),
+        Nx.concatenate([zero, zero, dspeed, speed])
       )
 
     cutoff_angle = Nx.reduce_min(spline_model.k, axes: [0])[0]
