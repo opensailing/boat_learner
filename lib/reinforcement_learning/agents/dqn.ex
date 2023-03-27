@@ -25,6 +25,7 @@ defmodule ReinforcementLearning.Agents.DQN do
              :q_policy,
              :q_policy_optimizer_state,
              :loss,
+             :loss_denominator,
              :experience_replay_buffer,
              :experience_replay_buffer_index,
              :persisted_experience_replay_buffer_entries,
@@ -52,6 +53,7 @@ defmodule ReinforcementLearning.Agents.DQN do
     :experience_replay_buffer_index,
     :persisted_experience_replay_buffer_entries,
     :loss,
+    :loss_denominator,
     :total_reward,
     :eps_max_iter,
     :environment_to_input_fn,
@@ -110,11 +112,12 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     state_vector_size = state_vector_size(input_template)
 
-    loss = Nx.tensor(0, type: :f32)
+    loss = loss_denominator = Nx.tensor(0, type: :f32)
 
     reset(random_key, %__MODULE__{
       eps_max_iter: eps_max_iter,
       loss: loss,
+      loss_denominator: loss_denominator,
       state_vector_size: state_vector_size,
       num_actions: num_actions,
       input_template: input_template,
@@ -157,8 +160,10 @@ defmodule ReinforcementLearning.Agents.DQN do
 
   @impl true
   def reset(random_key, state) do
-    total_reward = Nx.tensor(0, type: :f32)
-    {%{state | total_reward: total_reward}, random_key}
+    total_reward = loss = loss_denominator = Nx.tensor(0, type: :f32)
+
+    {%{state | total_reward: total_reward, loss: loss, loss_denominator: loss_denominator},
+     random_key}
   end
 
   @impl true
@@ -358,7 +363,8 @@ defmodule ReinforcementLearning.Agents.DQN do
           state.agent_state
           | q_policy: q_policy,
             q_policy_optimizer_state: optimizer_state,
-            loss: (state.agent_state.loss + loss) / 2
+            loss: state.agent_state.loss + loss,
+            loss_denominator: state.agent_state.loss_denominator + 1
         },
         random_key: random_key
     }

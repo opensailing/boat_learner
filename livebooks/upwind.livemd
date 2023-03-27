@@ -10,7 +10,8 @@ Mix.install(
   config_path: Path.join(my_app_root, "config/config.exs"),
   lockfile: Path.join(my_app_root, "mix.lock"),
   # change to "cuda118" to use CUDA
-  system_env: %{"XLA_TARGET" => "cuda118"}
+  # system_env: %{"XLA_TARGET" => "cuda118"}
+  force: true
 )
 ```
 
@@ -290,11 +291,21 @@ plot_fn = fn axon_state ->
 
       Kino.VegaLite.push_many(grid_widget, points, dataset: "trajectory")
 
+      loss = Nx.to_number(axon_state.step_state.agent_state.loss)
+      loss_den = Nx.to_number(axon_state.step_state.agent_state.loss_denominator)
+
+      loss =
+        if loss_den > 0 do
+          loss / loss_den
+        else
+          loss
+        end
+
       Kino.VegaLite.push(
         loss_widget,
         %{
           episode: episode,
-          loss: Nx.to_number(axon_state.step_state.agent_state.loss)
+          loss: loss
         },
         dataset: "loss"
       )
@@ -345,11 +356,11 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10_data.da
       {%{}, 0, 0, nil, 0}
   end
 
-q_policy = %{}
-total_episodes = 0
-experience_replay_buffer = nil
-persisted_experience_replay_buffer_entries = 0
-experience_replay_buffer_index = 0
+# q_policy = %{}
+# total_episodes = 0
+# experience_replay_buffer = nil
+# persisted_experience_replay_buffer_entries = 0
+# experience_replay_buffer_index = 0
 total_episodes
 ```
 
@@ -431,7 +442,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 100_000
+episodes = 250_000
 max_iter = 1000
 
 AccumulateAndExportData.start_link([])
@@ -444,7 +455,7 @@ AccumulateAndExportData.reset()
        max_fuel: max_iter, possible_targets: possible_targets},
       {ReinforcementLearning.Agents.DQN,
        policy_net: policy_net,
-       eps_max_iter: 10,
+       eps_max_iter: 8,
        q_policy: q_policy,
        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
        experience_replay_buffer_index: experience_replay_buffer_index,

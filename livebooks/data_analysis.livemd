@@ -1,7 +1,7 @@
 # Data Analysis
 
 ```elixir
-Mix.install([:jason, :kino_vega_lite])
+Mix.install([:kino_vega_lite])
 ```
 
 ## Load Data
