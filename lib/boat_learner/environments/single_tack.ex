@@ -87,9 +87,9 @@ defmodule BoatLearner.Environments.SingleTack do
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
-  # move, turn +-1, turn +-10
+  # move, turn +-5
   @impl true
-  def num_actions, do: 5
+  def num_actions, do: 3
 
   @impl true
   def init(random_key, opts) do
@@ -138,11 +138,14 @@ defmodule BoatLearner.Environments.SingleTack do
   @impl true
   def reset(random_key, state) do
     zero = Nx.tensor(0, type: :f32)
-    vmg = previous_vmg = speed = x = reward = zero
+    vmg = previous_vmg = y = speed = x = reward = zero
 
     {heading, random_key} = Nx.Random.uniform(random_key, 0, :math.pi() / 2 - @one_deg_in_rad)
 
-    y = Nx.tensor(1, type: :f32)
+    heading = Nx.floor(heading)
+
+    x = Nx.add(x, 1)
+    y = Nx.add(y, 1)
 
     state = %__MODULE__{
       state
@@ -174,16 +177,10 @@ defmodule BoatLearner.Environments.SingleTack do
     new_env =
       cond do
         action == 0 ->
-          turn(env, -@one_deg_in_rad)
+          turn(env, -5 * @one_deg_in_rad)
 
         action == 1 ->
-          turn(env, @one_deg_in_rad)
-
-        action == 2 ->
-          turn(env, -@one_deg_in_rad * 10, 2)
-
-        action == 3 ->
-          turn(env, @one_deg_in_rad * 10, 2)
+          turn(env, 5 * @one_deg_in_rad)
 
         true ->
           move(env)
@@ -294,7 +291,9 @@ defmodule BoatLearner.Environments.SingleTack do
       is_terminal: is_terminal,
       vmg: vmg,
       previous_vmg: previous_vmg,
-      tack_count: tack_count
+      tack_count: tack_count,
+      remaining_iterations: remaining_iterations,
+      max_remaining_iterations: max_remaining_iterations
     } = env
 
     has_reached_target = has_reached_target(env)
@@ -302,20 +301,23 @@ defmodule BoatLearner.Environments.SingleTack do
     reward =
       cond do
         tack_count > 0 ->
-          -100
+          -10
 
         has_reached_target and tack_count == 0 ->
-          1000
+          100
 
         has_reached_target ->
-          500
+          50
 
         is_terminal ->
-          -1000
+          -100
 
         true ->
-          vmg / @max_speed * 10
+          vmg / @max_speed * 5
       end
+
+    reward =
+      Nx.select(reward > 0, reward * remaining_iterations / max_remaining_iterations, reward)
 
     %__MODULE__{env | reward: reward}
   end
