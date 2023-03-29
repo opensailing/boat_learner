@@ -8,10 +8,10 @@ Mix.install(
     {:boat_learner, path: my_app_root, env: :dev}
   ],
   config_path: Path.join(my_app_root, "config/config.exs"),
-  lockfile: Path.join(my_app_root, "mix.lock"),
+  lockfile: Path.join(my_app_root, "mix.lock")
   # change to "cuda118" to use CUDA
   # system_env: %{"XLA_TARGET" => "cuda118"}
-  force: true
+  # force: true
 )
 ```
 
@@ -20,27 +20,41 @@ Mix.install(
 ```elixir
 alias VegaLite, as: Vl
 
-{min_x, max_x, min_y, max_y} = BoatLearner.Environments.UpwindMark.bounding_box()
+{min_x, max_x, min_y, _max_y} = BoatLearner.Environments.SingleTack.bounding_box()
 
-possible_targets_l = [[0, 1_000]]
-
-possible_targets = Nx.tensor(Enum.shuffle(possible_targets_l))
+target_y = 100
 
 width = 600
 height = 600
 
-angle_templates_base = [%{x: -2500 / 2, y: 2972 / 2}, %{x: 0, y: 0}, %{x: 2500 / 2, y: 2972 / 2}]
+scale_max_x = max_x / 250
+scale_min_x = min_x / -250
+
+angle_templates_base = [
+  %{x: -250.0 * scale_min_x, y: 297.2 * scale_min_x},
+  %{x: 0, y: 0},
+  %{x: 250.0 * scale_max_x, y: 297.2 * scale_max_x}
+]
 
 angle_templates =
-  Enum.flat_map(0..3, fn offset ->
+  Enum.flat_map(0..9, fn offset ->
     Enum.map(angle_templates_base, fn %{x: x, y: y} ->
-      y = y + 250 * offset
+      delta_y = (target_y - min_y) / 10 * offset
+
+      {x, y} =
+        if y + delta_y > target_y do
+          x = (target_y - delta_y) * x / y
+          y = target_y
+          {x, y}
+        else
+          {x, y + delta_y}
+        end
 
       %{x: x, y: y, group: offset}
     end)
   end)
 
-max_y = max(max_y, angle_templates |> Enum.map(& &1.y) |> Enum.max())
+max_y = max(target_y, angle_templates |> Enum.map(& &1.y) |> Enum.max())
 
 grid_widget =
   Vl.new(width: width, height: height)
@@ -48,29 +62,20 @@ grid_widget =
     Vl.new()
     |> Vl.data_from_values(angle_templates, name: "angles")
     |> Vl.mark(:line, opacity: 0.25)
-    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [clamp: false])
-    |> Vl.encode_field(:y, "y", type: :quantitative, scale: [clamp: false])
-    |> Vl.encode_field(:color, "group", type: :nominal, scale: [scheme: "blues"], legend: false),
-    Vl.new()
-    |> Vl.data(name: "target")
-    |> Vl.mark(:point,
-      fill: true,
-      tooltip: [content: "data"],
-      grid: true,
-      size: [expr: "height * 40 * #{:math.pi()} / #{max_y - min_y}"]
+    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x], clamp: false])
+    |> Vl.encode_field(:y, "y",
+      type: :quantitative,
+      scale: [domain: [min_y, target_y], clamp: false]
     )
-    |> Vl.encode_field(:x, "x", type: :quantitative)
-    |> Vl.encode_field(:y, "y", type: :quantitative)
-    |> Vl.encode_field(:color, "episode",
-      type: :nominal,
-      scale: [scheme: "blues"],
-      legend: false
-    ),
+    |> Vl.encode_field(:color, "group", type: :nominal, scale: [scheme: "blues"], legend: false),
     Vl.new()
     |> Vl.data(name: "trajectory")
     |> Vl.mark(:line, opacity: 1, tooltip: [content: "data"])
     |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x], clamp: true])
-    |> Vl.encode_field(:y, "y", type: :quantitative, scale: [domain: [min_y, max_y], clamp: true])
+    |> Vl.encode_field(:y, "y",
+      type: :quantitative,
+      scale: [domain: [min_y, target_y], clamp: true]
+    )
     |> Vl.encode_field(:color, "episode",
       type: :nominal,
       scale: [scheme: "blues"],
@@ -95,14 +100,14 @@ loss_widget =
   |> Vl.encode_field(:y, "loss",
     type: :quantitative,
     scale: [
-      domain: [0, 32],
-      type: "symlog",
-      base: 4,
+      domain: %{expr: "[0, pow(10, loss_mag)]"},
+      type: [if: "loss_mag == 0", then: "linear", else: "symlog"],
       clamp: true
     ],
     axis: [tick_min_step: 1]
   )
   |> Vl.encode_field(:order, "episode")
+  |> Vl.param("loss_mag", value: 2, bind: [input: "range", min: 0, max: 15, step: 1])
   |> Kino.VegaLite.new()
   |> Kino.render()
 
@@ -120,9 +125,8 @@ reward_widget =
   |> Vl.encode_field(:y, "reward",
     type: :quantitative,
     scale: [
-      domain: [-1.5e3, 1.5e3],
+      domain: [-1.5, 1.5],
       type: "symlog",
-      base: 10,
       clamp: true
     ]
   )
@@ -145,16 +149,14 @@ defmodule AccumulateAndExportData do
   end
 
   def state_to_trajectory_entry(%{environment_state: env}) do
-    target_vector = Nx.complex(Nx.subtract(env.target_x, env.x), Nx.subtract(env.target_y, env.y))
-    distance_to_mark = Nx.abs(target_vector)
+    distance_to_mark = Nx.abs(Nx.subtract(env.target_y, env.y))
 
     Nx.stack([
       env.x,
       env.y,
-      rad_to_deg(env.angle),
+      rad_to_deg(env.heading),
       env.speed,
       env.vmg,
-      rad_to_deg(env.angle_to_mark),
       distance_to_mark
     ])
   end
@@ -170,7 +172,7 @@ defmodule AccumulateAndExportData do
     {:noreply, state}
   end
 
-  def handle_cast({:add_epoch, epoch, target_x, target_y, iterations, trajectory_tensor}, state) do
+  def handle_cast({:add_epoch, epoch, iterations, trajectory_tensor}, state) do
     trajectory_data =
       trajectory_tensor
       |> Nx.slice_along_axis(0, iterations, axis: 0)
@@ -181,7 +183,6 @@ defmodule AccumulateAndExportData do
                               angle,
                               speed,
                               vmg,
-                              angle_to_mark,
                               distance_to_mark
                             ],
                             index ->
@@ -189,25 +190,15 @@ defmodule AccumulateAndExportData do
           x: x,
           y: y,
           epoch: epoch,
-          angle_of_attack: angle,
+          heading: angle,
           boat_speed: speed,
-          angle_to_mark: angle_to_mark,
           distance_to_mark: distance_to_mark,
           vmg: vmg,
           index: index
         }
       end)
 
-    %{x: mark_xs, y: mark_ys, epoch: mark_epochs, index: mark_indices} = state.marks
-
-    marks = %{
-      x: [target_x | mark_xs],
-      y: [target_y | mark_ys],
-      epoch: [epoch | mark_epochs],
-      index: [0 | mark_indices]
-    }
-
-    {:noreply, %{trajectories: [state.trajectories, trajectory_data], marks: marks}}
+    {:noreply, %{trajectories: [state.trajectories, trajectory_data], marks: []}}
   end
 
   def handle_call({:save, filename}, _from, state) do
@@ -219,13 +210,6 @@ defmodule AccumulateAndExportData do
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
     layers = [
-      %{
-        mark: %{
-          type: :point,
-          opts: [fill: true, tooltip: [content: "data"], grid: true, size: 75]
-        },
-        data: state.marks
-      },
       %{
         mark: %{type: :line, opts: [tooltip: [content: "data"], point: true]},
         data: data
@@ -248,33 +232,18 @@ plot_fn = fn axon_state ->
   IO.inspect("Episode #{episode} ended")
 
   if axon_state.iteration > 1 do
-    target_x = Nx.to_number(axon_state.step_state.environment_state.target_x)
-    target_y = Nx.to_number(axon_state.step_state.environment_state.target_y)
-
     trajectory = axon_state.step_state.trajectory
 
     if rem(episode, 50) == 0 do
       GenServer.cast(
         AccumulateAndExportData,
-        {:add_epoch, episode, target_x, target_y, axon_state.iteration, trajectory}
+        {:add_epoch, episode, axon_state.iteration, trajectory}
       )
     end
 
     if rem(episode, 10) == 0 do
-      Kino.VegaLite.clear(grid_widget, dataset: "target")
       Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
 
-      Kino.VegaLite.push(
-        grid_widget,
-        %{
-          x: target_x,
-          y: target_y,
-          episode: episode
-        },
-        dataset: "target"
-      )
-
-      idx = Enum.to_list(0..(axon_state.iteration - 1)//1)
       traj = trajectory[[0..(axon_state.iteration - 1)//1, 0..1]]
 
       points =
@@ -314,7 +283,8 @@ plot_fn = fn axon_state ->
         reward_widget,
         %{
           episode: axon_state.epoch,
-          reward: Nx.to_number(axon_state.step_state.agent_state.total_reward)
+          reward: Nx.to_number(axon_state.step_state.agent_state.total_reward),
+          iterations: axon_state.iteration
         },
         dataset: "reward"
       )
@@ -326,8 +296,8 @@ end
 ```
 
 ```elixir
-filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10.bin")
-export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10_data.dat")
+filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark.bin")
+export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark_data.dat")
 
 {
   q_policy,
@@ -356,11 +326,11 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10_data.da
       {%{}, 0, 0, nil, 0}
   end
 
-# q_policy = %{}
-# total_episodes = 0
-# experience_replay_buffer = nil
-# persisted_experience_replay_buffer_entries = 0
-# experience_replay_buffer_index = 0
+q_policy = %{}
+total_episodes = 0
+experience_replay_buffer = nil
+persisted_experience_replay_buffer_entries = 0
+experience_replay_buffer_index = 0
 total_episodes
 ```
 
@@ -372,20 +342,23 @@ q_policy
 fields = [
   :x,
   :y,
-  :speed,
-  :target_x,
+  :vmg,
+  :previous_vmg,
   :target_y,
-  :fuel
+  :heading,
+  :previous_heading,
+  :tack_count
 ]
 
-num_actions = BoatLearner.Environments.UpwindMark.num_actions()
+num_actions = BoatLearner.Environments.SingleTack.num_actions()
 num_observations = length(fields)
 
 policy_net =
   Axon.input("state", shape: {nil, num_observations})
+  |> Axon.dense(128, activation: :relu)
   |> Axon.dense(64, activation: :relu)
-  |> Axon.dropout(rate: 0.25)
   |> Axon.dense(64, activation: :relu)
+  |> Axon.dense(32, activation: :relu)
   |> Axon.dense(num_actions)
 
 # These might seem redundant, but will make more sense for multi-input models
@@ -398,13 +371,13 @@ end
 normalize_y = fn y ->
   import Kernel, only: []
   import Nx.Defn.Kernel, only: [-: 2, /: 2]
-  (y - min_y) / (max_y - min_y)
+  (y - min_y) / (target_y - min_y)
 end
 
 normalize_speed = fn s ->
   import Kernel, only: []
   import Nx.Defn.Kernel, only: [-: 2, +: 2, /: 2]
-  s / (max_y - min_y + max_x - min_x)
+  s / 10
 end
 
 normalize_angle = fn a ->
@@ -417,10 +390,12 @@ environment_to_state_vector_fn = fn env_state ->
   [
     normalize_x.(env_state.x),
     normalize_y.(env_state.y),
-    normalize_x.(env_state.target_x),
     normalize_y.(env_state.target_y),
-    normalize_speed.(env_state.speed),
-    Nx.divide(env_state.fuel, env_state.max_fuel)
+    normalize_speed.(env_state.vmg),
+    normalize_speed.(env_state.previous_vmg),
+    normalize_angle.(env_state.heading),
+    normalize_angle.(env_state.prev_heading),
+    env_state.tack_count
   ]
   |> Nx.stack()
   |> Nx.new_axis(0)
@@ -442,31 +417,45 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 250_000
-max_iter = 1000
+episodes = 300_000
+max_iter = 200
 
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
 
+{learning_rate, gamma, training_frequency} = {0.001, 0.99, 32}
+
+eps_start = 1
+eps_end = 0.01
+
+# 0.2 @ 75k epochs
+eps_decay_rate = (0.2 / eps_start) ** (1 / 50_000)
+
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
-      {BoatLearner.Environments.UpwindMark,
-       max_fuel: max_iter, possible_targets: possible_targets},
+      {BoatLearner.Environments.SingleTack,
+       max_remaining_iterations: max_iter, target_y: target_y},
       {ReinforcementLearning.Agents.DQN,
        policy_net: policy_net,
-       eps_max_iter: 8,
        q_policy: q_policy,
        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
        experience_replay_buffer_index: experience_replay_buffer_index,
        experience_replay_buffer: experience_replay_buffer,
        environment_to_input_fn: environment_to_input_fn,
        environment_to_state_vector_fn: environment_to_state_vector_fn,
-       state_vector_to_input_fn: state_vector_to_input_fn},
+       state_vector_to_input_fn: state_vector_to_input_fn,
+       learning_rate: learning_rate,
+       gamma: gamma,
+       training_frequency: training_frequency,
+       eps_start: eps_start,
+       eps_end: eps_end,
+       eps_decay_rate: eps_decay_rate},
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
-      max_iter: max_iter
+      max_iter: max_iter,
+      accumulated_episodes: total_episodes
     )
   end)
 
@@ -482,13 +471,105 @@ serialized =
     ])
   )
 
+"#{Float.round(t / 1_000_000, 3)} s" |> IO.puts()
+
 contents =
   :erlang.term_to_binary(%{serialized: serialized, total_episodes: total_episodes + episodes})
 
-"#{Float.round(t / 1_000_000, 3)} s"
-```
-
-```elixir
 File.write!(filename, contents)
 result.step_state.agent_state.q_policy
+```
+
+## Grid Search
+
+```elixir
+# grid =
+#   for learning_rate <- [1.0e-4, 1.0e-3, 1.0e-2],
+#       gamma <- [0.99],
+#       training_frequency <- [8, 16, 32, 64] do
+#     {learning_rate, gamma, training_frequency}
+#   end
+
+# results =
+#   grid
+#   |> Task.async_stream(
+#     fn {learning_rate, gamma, training_frequency} = params ->
+#       IO.puts(
+#         "Starting grid search for lr: #{learning_rate}, gamma: #{gamma}, update_freq: #{training_frequency}"
+#       )
+
+#       max_iter = 200
+#       episodes = 2000
+#       target_y = 200
+
+#       loss_to_trajectory_fn = fn %{agent_state: %{loss: loss, loss_denominator: loss_denominator}} ->
+#         loss_denominator
+#         |> Nx.select(Nx.divide(loss, loss_denominator), :infinity)
+#         |> Nx.new_axis(0)
+#       end
+
+#       # print_fn = fn state ->
+#       #   epoch = state.epoch
+#       #   loss = Nx.to_number(state.step_state.agent_state.loss)
+#       #   loss_den = Nx.to_number(state.step_state.agent_state.loss_denominator)
+
+#       #   loss_effective =
+#       #     if loss_den != 0 do
+#       #       loss / loss_den
+#       #     else
+#       #       "NaN"
+#       #     end
+
+#       #   if rem(epoch, 50) == 0 do
+#       #     IO.inspect("Episode #{epoch}; loss: #{loss_effective}; parameters: #{param_str}")
+#       #   end
+#       # end
+
+#       print_fn = & &1
+
+#       axon_state =
+#         ReinforcementLearning.train(
+#           {BoatLearner.Environments.SingleTack,
+#            max_remaining_iterations: max_iter, target_y: target_y},
+#           {
+#             ReinforcementLearning.Agents.DQN,
+#             policy_net: policy_net,
+#             q_policy: q_policy,
+#             persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
+#             experience_replay_buffer_index: experience_replay_buffer_index,
+#             experience_replay_buffer: experience_replay_buffer,
+#             environment_to_input_fn: environment_to_input_fn,
+#             environment_to_state_vector_fn: environment_to_state_vector_fn,
+#             state_vector_to_input_fn: state_vector_to_input_fn,
+#             learning_rate: learning_rate,
+#             gamma: gamma,
+#             training_frequency: training_frequency
+#           },
+#           print_fn,
+#           loss_to_trajectory_fn,
+#           num_episodes: episodes,
+#           max_iter: max_iter
+#         )
+
+#       %{shape: {entries}} =
+#         loss = Nx.sort(axon_state.step_state.trajectory, direction: :asc) |> Nx.flatten()
+
+#       loss =
+#         loss
+#         |> Nx.take(max(div(entries, 10), 1))
+#         |> Nx.to_flat_list()
+#         |> Enum.reject(&is_atom/1)
+#         |> case do
+#           [] -> 1.0e6
+#           entries -> entries |> Nx.tensor() |> Nx.mean() |> Nx.to_number()
+#         end
+
+#       {params, loss}
+#     end,
+#     max_concurrency: 6,
+#     ordered: false,
+#     timeout: :infinity
+#   )
+#   |> Enum.map(fn {:ok, result} -> result end)
+#   |> Enum.sort_by(&elem(&1, 1), :asc)
 ```

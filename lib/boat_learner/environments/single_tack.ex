@@ -1,4 +1,4 @@
-defmodule BoatLearner.Environments.UpwindMark do
+defmodule BoatLearner.Environments.SingleTack do
   @moduledoc """
   Simple environment that provides an upwind mark
   and simulates the physics for wind at 0 degrees.
@@ -15,20 +15,20 @@ defmodule BoatLearner.Environments.UpwindMark do
              :y,
              :prev_x,
              :prev_y,
-             :target_x,
              :target_y,
              :reward,
              :is_terminal,
-             :possible_targets,
              :polar_chart,
-             :angle_memory,
              :speed,
              :prev_speed,
-             :angle,
-             :fuel,
-             :max_fuel,
-             :angle_to_mark,
-             :vmg
+             :heading,
+             :prev_heading,
+             :remaining_iterations,
+             :max_remaining_iterations,
+             :vmg,
+             :previous_vmg,
+             :has_turned,
+             :tack_count
            ]}
   defstruct [
     :x,
@@ -37,27 +37,26 @@ defmodule BoatLearner.Environments.UpwindMark do
     :prev_y,
     :speed,
     :prev_speed,
-    :angle,
-    :target_x,
+    :heading,
+    :prev_heading,
     :target_y,
     :reward,
     :is_terminal,
-    :possible_targets,
     :polar_chart,
-    :angle_memory,
-    :fuel,
-    :max_fuel,
-    :angle_to_mark,
-    :vmg
+    :remaining_iterations,
+    :max_remaining_iterations,
+    :vmg,
+    :previous_vmg,
+    :has_turned,
+    :tack_count
   ]
 
-  @min_x -1250
-  @max_x 1250
+  @min_x 0
+  @max_x 100
   @min_y 0
-  @max_y 2500
+  @max_y 250
 
-  @angle 5 * :math.pi() / 180
-  @angle_memory_num_entries 5
+  @one_deg_in_rad 1 * :math.pi() / 180
 
   @kts_to_meters_per_sec 0.514444
   @speed_kts [
@@ -84,26 +83,28 @@ defmodule BoatLearner.Environments.UpwindMark do
   @speed Enum.map(@speed_kts, &(&1 * @kts_to_meters_per_sec))
   @max_speed @speed |> Enum.max() |> ceil()
 
-  @dt 5
+  @dt 10
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
+  # move, turn +-5
   @impl true
-  def num_actions, do: 5
+  def num_actions, do: 3
 
   @impl true
   def init(random_key, opts) do
-    opts = Keyword.validate!(opts, [:possible_targets, :max_fuel])
+    opts = Keyword.validate!(opts, [:target_y, :max_remaining_iterations])
 
-    possible_targets =
-      opts[:possible_targets] || raise ArgumentError, "missing option :possible_targets"
+    target_y = opts[:target_y] || raise ArgumentError, "missing option :target_y"
 
-    max_fuel = opts[:max_fuel] || raise ArgumentError, "missing option :max_fuel"
+    max_remaining_iterations =
+      opts[:max_remaining_iterations] ||
+        raise ArgumentError, "missing option :max_remaining_iterations"
 
     reset(random_key, %__MODULE__{
-      possible_targets: possible_targets,
+      target_y: target_y,
       polar_chart: init_polar_chart(),
-      max_fuel: Nx.tensor(max_fuel, type: :f32)
+      max_remaining_iterations: Nx.tensor(max_remaining_iterations, type: :f32)
     })
   end
 
@@ -137,42 +138,32 @@ defmodule BoatLearner.Environments.UpwindMark do
   @impl true
   def reset(random_key, state) do
     zero = Nx.tensor(0, type: :f32)
-    vmg = angle_to_mark = speed = x = reward = zero
+    vmg = previous_vmg = y = speed = x = reward = zero
 
-    {angle, random_key} =
-      Nx.Random.uniform(random_key, -:math.pi() / 2 + @angle, :math.pi() / 2 - @angle)
+    {heading, random_key} = Nx.Random.uniform(random_key, 0, :math.pi() / 2 - @one_deg_in_rad)
 
-    angle = Nx.select(Nx.less(angle, 0), Nx.add(2 * :math.pi(), angle), angle)
+    heading = Nx.floor(heading)
 
-    y = Nx.tensor(5, type: :f32)
-
-    angle_memory = Nx.broadcast(zero, {@angle_memory_num_entries})
-
-    # possible_targets is a {n, 2} tensor that contains targets that we want to sample from
-    # this is so we avoid retraining every episode on the same target, which can lead to
-    # overfitting
-    {target, random_key} =
-      Nx.Random.choice(random_key, state.possible_targets, samples: 1, axis: 0)
-
-    target = Nx.reshape(target, {2})
+    x = Nx.add(x, 1)
+    y = Nx.add(y, 1)
 
     state = %__MODULE__{
       state
       | x: x,
         y: y,
-        angle: angle,
-        angle_memory: angle_memory,
+        heading: heading,
+        prev_heading: heading,
         speed: speed,
         prev_speed: speed,
         prev_x: x,
         prev_y: y,
-        target_x: target[0],
-        target_y: target[1],
         reward: reward,
         is_terminal: Nx.tensor(0, type: :u8),
-        fuel: state.max_fuel,
-        angle_to_mark: angle_to_mark,
-        vmg: vmg
+        has_turned: Nx.tensor(0, type: :s64),
+        remaining_iterations: state.max_remaining_iterations,
+        previous_vmg: previous_vmg,
+        vmg: vmg,
+        tack_count: Nx.tensor(0, type: :s64)
     }
 
     {state, random_key}
@@ -186,59 +177,61 @@ defmodule BoatLearner.Environments.UpwindMark do
     new_env =
       cond do
         action == 0 ->
-          turn_and_move(env, -@angle, 2)
+          turn(env, -5 * @one_deg_in_rad)
 
         action == 1 ->
-          turn_and_move(env, -6 * @angle, 4)
-
-        action == 2 ->
-          move(env)
-
-        action == 3 ->
-          turn_and_move(env, @angle, 2)
+          turn(env, 5 * @one_deg_in_rad)
 
         true ->
-          turn_and_move(env, 6 * @angle, 4)
+          move(env)
       end
 
     new_env =
       new_env
-      |> update_angle_memory()
       |> is_terminal_state()
       |> calculate_reward()
 
     %ReinforcementLearning{rl_state | environment_state: new_env}
   end
 
-  defnp turn_and_move(env, angle_inc, fuel_penalty) do
-    angle = env.angle + angle_inc
+  defnp turn(env, angle_inc, remaining_iterations_penalty \\ 1) do
+    prev_heading = env.heading
+    heading = prev_heading + angle_inc
     two_pi = 2 * pi()
-    angle = Nx.select(angle >= two_pi, angle - two_pi, angle)
-    angle = Nx.select(angle < 0, angle + two_pi, angle)
-    move(%__MODULE__{env | fuel: env.fuel - fuel_penalty, angle: angle})
+    heading = Nx.select(heading >= two_pi, heading - two_pi, heading)
+    heading = Nx.select(heading < 0, heading + two_pi, heading)
+    speed = speed_from_heading(env.polar_chart, heading)
+
+    tack_count =
+      if heading < pi() != prev_heading < pi() do
+        env.tack_count + 1
+      else
+        env.tack_count
+      end
+
+    %__MODULE__{
+      env
+      | remaining_iterations: env.remaining_iterations - remaining_iterations_penalty,
+        heading: heading,
+        prev_heading: prev_heading,
+        speed: speed,
+        has_turned: 1,
+        tack_count: tack_count
+    }
   end
 
   defnp move(env) do
     %__MODULE__{
-      angle: angle,
-      target_x: target_x,
-      target_y: target_y,
+      heading: heading,
       x: x,
       y: y,
-      polar_chart: polar_chart
+      speed: speed
     } = env
 
-    speed = speed_from_angle(polar_chart, angle)
+    x = x + speed * Nx.sin(heading) * @dt
+    y = y + speed * Nx.cos(heading) * @dt
 
-    x = x + speed * Nx.sin(angle) * @dt
-    y = y + speed * Nx.cos(angle) * @dt
-
-    dx = target_x - x
-    dy = target_y - y
-
-    angle_to_mark = Nx.phase(Nx.complex(dy, dx))
-
-    vmg = speed * Nx.cos(angle - angle_to_mark)
+    vmg = speed * Nx.cos(heading)
 
     %__MODULE__{
       env
@@ -248,13 +241,14 @@ defmodule BoatLearner.Environments.UpwindMark do
         prev_y: env.y,
         speed: speed,
         prev_speed: env.speed,
-        fuel: env.fuel - 1,
-        angle_to_mark: angle_to_mark,
-        vmg: vmg
+        remaining_iterations: env.remaining_iterations - 1,
+        previous_vmg: env.vmg,
+        vmg: vmg,
+        has_turned: 0
     }
   end
 
-  defn speed_from_angle({linear_model, spline_model, cutoff_angle}, angle) do
+  defn speed_from_heading({linear_model, spline_model, cutoff_angle}, angle) do
     # angle is already maintained between 0 and 2pi
     # so we only need to calculate the "absolute value"
     # (as if the angle was between -pi and pi)
@@ -268,54 +262,62 @@ defmodule BoatLearner.Environments.UpwindMark do
     |> Nx.clip(0, @max_speed)
   end
 
-  defnp update_angle_memory(%__MODULE__{angle_memory: angle_memory, angle: angle} = env) do
-    angle_memory = Nx.concatenate([angle_memory[1..-1//1], Nx.reshape(angle, {1})])
-    %__MODULE__{env | angle_memory: angle_memory}
-  end
-
   defnp is_terminal_state(env) do
-    %__MODULE__{x: x, y: y, fuel: fuel, target_y: target_y} = env
+    %__MODULE__{
+      x: x,
+      y: y,
+      remaining_iterations: remaining_iterations,
+      tack_count: tack_count,
+      target_y: target_y,
+      previous_vmg: previous_vmg,
+      vmg: vmg
+    } = env
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
-        fuel < 5
+        remaining_iterations < 2 or tack_count > 0 or vmg < previous_vmg
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
 
   defnp has_reached_target(env) do
-    %__MODULE__{x: x, y: y, target_x: target_x, target_y: target_y} = env
+    %__MODULE__{y: y, target_y: target_y} = env
 
-    distance(x, y, target_x, target_y) < 1.5
-  end
-
-  defnp distance(x, y, target_x, target_y) do
-    Nx.sqrt((x - target_x) ** 2 + (y - target_y) ** 2)
+    target_y - y < 1.5
   end
 
   defnp calculate_reward(env) do
     %__MODULE__{
       is_terminal: is_terminal,
-      fuel: fuel,
-      max_fuel: max_fuel,
-      vmg: vmg
+      vmg: vmg,
+      previous_vmg: previous_vmg,
+      tack_count: tack_count,
+      remaining_iterations: remaining_iterations,
+      max_remaining_iterations: max_remaining_iterations
     } = env
-
-    reward = vmg / @max_speed - (1 - fuel / max_fuel) * 0.25
 
     has_reached_target = has_reached_target(env)
 
     reward =
       cond do
-        is_terminal and not has_reached_target ->
-          0
+        tack_count > 0 ->
+          -0.1
+
+        has_reached_target and tack_count == 0 ->
+          1
+
+        has_reached_target ->
+          0.5
 
         is_terminal ->
-          reward + fuel / max_fuel * 100
+          -1
 
         true ->
-          reward
+          vmg / @max_speed * 0.5
       end
+
+    reward =
+      Nx.select(reward > 0, reward * remaining_iterations / max_remaining_iterations, reward)
 
     %__MODULE__{env | reward: reward}
   end

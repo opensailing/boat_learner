@@ -17,7 +17,7 @@ defmodule ReinforcementLearning.Agent do
   @doc """
   Resets any values that aren't fixed for the agent state.
   """
-  @callback reset(random_key :: Nx.t(), agent_state :: t) :: {t(), random_key :: Nx.t()}
+  @callback reset(random_key :: Nx.t(), rl_state :: t) :: {t(), random_key :: Nx.t()}
 
   @doc """
   Selects the action to be taken.
