@@ -1,4 +1,4 @@
-defmodule BoatLearner.Environments.UpwindMark do
+defmodule BoatLearner.Environments.SingleTack do
   @moduledoc """
   Simple environment that provides an upwind mark
   and simulates the physics for wind at 0 degrees.
@@ -15,7 +15,6 @@ defmodule BoatLearner.Environments.UpwindMark do
              :y,
              :prev_x,
              :prev_y,
-             :target_x,
              :target_y,
              :reward,
              :is_terminal,
@@ -23,10 +22,13 @@ defmodule BoatLearner.Environments.UpwindMark do
              :speed,
              :prev_speed,
              :heading,
+             :prev_heading,
              :remaining_iterations,
              :max_remaining_iterations,
              :vmg,
-             :has_moved
+             :previous_vmg,
+             :has_turned,
+             :tack_count
            ]}
   defstruct [
     :x,
@@ -36,6 +38,7 @@ defmodule BoatLearner.Environments.UpwindMark do
     :speed,
     :prev_speed,
     :heading,
+    :prev_heading,
     :target_y,
     :reward,
     :is_terminal,
@@ -43,15 +46,17 @@ defmodule BoatLearner.Environments.UpwindMark do
     :remaining_iterations,
     :max_remaining_iterations,
     :vmg,
-    :has_moved
+    :previous_vmg,
+    :has_turned,
+    :tack_count
   ]
 
-  @min_x -1250
-  @max_x 1250
+  @min_x 0
+  @max_x 100
   @min_y 0
-  @max_y 2500
+  @max_y 250
 
-  @delta_angle 1 * :math.pi() / 180
+  @one_deg_in_rad 1 * :math.pi() / 180
 
   @kts_to_meters_per_sec 0.514444
   @speed_kts [
@@ -78,12 +83,13 @@ defmodule BoatLearner.Environments.UpwindMark do
   @speed Enum.map(@speed_kts, &(&1 * @kts_to_meters_per_sec))
   @max_speed @speed |> Enum.max() |> ceil()
 
-  @dt 5
+  @dt 10
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
+  # move, turn +-1, turn +-10
   @impl true
-  def num_actions, do: 3
+  def num_actions, do: 5
 
   @impl true
   def init(random_key, opts) do
@@ -91,7 +97,9 @@ defmodule BoatLearner.Environments.UpwindMark do
 
     target_y = opts[:target_y] || raise ArgumentError, "missing option :target_y"
 
-    max_remaining_iterations = opts[:max_remaining_iterations] || raise ArgumentError, "missing option :max_remaining_iterations"
+    max_remaining_iterations =
+      opts[:max_remaining_iterations] ||
+        raise ArgumentError, "missing option :max_remaining_iterations"
 
     reset(random_key, %__MODULE__{
       target_y: target_y,
@@ -130,9 +138,9 @@ defmodule BoatLearner.Environments.UpwindMark do
   @impl true
   def reset(random_key, state) do
     zero = Nx.tensor(0, type: :f32)
-    vmg = speed = x = reward = zero
+    vmg = previous_vmg = speed = x = reward = zero
 
-    {heading, random_key} = Nx.Random.uniform(random_key, 0, :math.pi() / 2 - @delta_angle)
+    {heading, random_key} = Nx.Random.uniform(random_key, 0, :math.pi() / 2 - @one_deg_in_rad)
 
     y = Nx.tensor(1, type: :f32)
 
@@ -141,15 +149,18 @@ defmodule BoatLearner.Environments.UpwindMark do
       | x: x,
         y: y,
         heading: heading,
+        prev_heading: heading,
         speed: speed,
         prev_speed: speed,
         prev_x: x,
         prev_y: y,
         reward: reward,
         is_terminal: Nx.tensor(0, type: :u8),
-        has_moved: Nx.tensor(0, type: :u8),
+        has_turned: Nx.tensor(0, type: :s64),
         remaining_iterations: state.max_remaining_iterations,
-        vmg: vmg
+        previous_vmg: previous_vmg,
+        vmg: vmg,
+        tack_count: Nx.tensor(0, type: :s64)
     }
 
     {state, random_key}
@@ -162,11 +173,17 @@ defmodule BoatLearner.Environments.UpwindMark do
     # 0: turn left, 1: keep heading, 2: turn right
     new_env =
       cond do
-        not has_moved and action == 0 ->
-          turn(env, -@delta_angle)
+        action == 0 ->
+          turn(env, -@one_deg_in_rad)
 
-        not has_moved and action == 1 ->
-          turn(env, @delta_angle)
+        action == 1 ->
+          turn(env, @one_deg_in_rad)
+
+        action == 2 ->
+          turn(env, -@one_deg_in_rad * 10, 2)
+
+        action == 3 ->
+          turn(env, @one_deg_in_rad * 10, 2)
 
         true ->
           move(env)
@@ -181,24 +198,38 @@ defmodule BoatLearner.Environments.UpwindMark do
   end
 
   defnp turn(env, angle_inc, remaining_iterations_penalty \\ 1) do
-    heading = env.heading + angle_inc
+    prev_heading = env.heading
+    heading = prev_heading + angle_inc
     two_pi = 2 * pi()
     heading = Nx.select(heading >= two_pi, heading - two_pi, heading)
     heading = Nx.select(heading < 0, heading + two_pi, heading)
-    %__MODULE__{env | remaining_iterations: env.remaining_iterations - remaining_iterations_penalty, heading: heading}
+    speed = speed_from_heading(env.polar_chart, heading)
+
+    tack_count =
+      if heading < pi() != prev_heading < pi() do
+        env.tack_count + 1
+      else
+        env.tack_count
+      end
+
+    %__MODULE__{
+      env
+      | remaining_iterations: env.remaining_iterations - remaining_iterations_penalty,
+        heading: heading,
+        prev_heading: prev_heading,
+        speed: speed,
+        has_turned: 1,
+        tack_count: tack_count
+    }
   end
 
   defnp move(env) do
     %__MODULE__{
       heading: heading,
-      target_y: target_y,
       x: x,
       y: y,
-      polar_chart: polar_chart
-      has_moved: Nx.tensor(1, type: :u8)
+      speed: speed
     } = env
-
-    speed = speed_from_heading(polar_chart, heading)
 
     x = x + speed * Nx.sin(heading) * @dt
     y = y + speed * Nx.cos(heading) * @dt
@@ -214,7 +245,9 @@ defmodule BoatLearner.Environments.UpwindMark do
         speed: speed,
         prev_speed: env.speed,
         remaining_iterations: env.remaining_iterations - 1,
-        vmg: vmg
+        previous_vmg: env.vmg,
+        vmg: vmg,
+        has_turned: 0
     }
   end
 
@@ -233,17 +266,25 @@ defmodule BoatLearner.Environments.UpwindMark do
   end
 
   defnp is_terminal_state(env) do
-    %__MODULE__{x: x, y: y, remaining_iterations: remaining_iterations, target_y: target_y} = env
+    %__MODULE__{
+      x: x,
+      y: y,
+      remaining_iterations: remaining_iterations,
+      tack_count: tack_count,
+      target_y: target_y,
+      previous_vmg: previous_vmg,
+      vmg: vmg
+    } = env
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
-        remaining_iterations < 2
+        remaining_iterations < 2 or tack_count > 0 or vmg < previous_vmg
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
 
   defnp has_reached_target(env) do
-    %__MODULE__{x: x, y: y, target_x: target_x, target_y: target_y} = env
+    %__MODULE__{y: y, target_y: target_y} = env
 
     target_y - y < 1.5
   end
@@ -251,25 +292,29 @@ defmodule BoatLearner.Environments.UpwindMark do
   defnp calculate_reward(env) do
     %__MODULE__{
       is_terminal: is_terminal,
-      remaining_iterations: remaining_iterations,
-      max_remaining_iterations: max_remaining_iterations,
-      vmg: vmg
+      vmg: vmg,
+      previous_vmg: previous_vmg,
+      tack_count: tack_count
     } = env
-
-    reward = vmg / @max_speed
 
     has_reached_target = has_reached_target(env)
 
     reward =
       cond do
-        is_terminal and not has_reached_target ->
-          0
+        tack_count > 0 ->
+          -100
+
+        has_reached_target and tack_count == 0 ->
+          1000
+
+        has_reached_target ->
+          500
 
         is_terminal ->
-          reward + remaining_iterations / max_remaining_iterations * 100
+          -1000
 
         true ->
-          reward
+          vmg / @max_speed * 10
       end
 
     %__MODULE__{env | reward: reward}

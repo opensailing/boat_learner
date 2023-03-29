@@ -19,12 +19,22 @@ Any other values will be shown in the tooltip for each data point.
 The `:mark` field is used to encode the mark for that given field and represents the type and options to be given to VegaLite.
 
 ```elixir
-filepath = Path.join(System.fetch_env!("HOME"), "Desktop/upwind10_data.dat")
+filepath = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark_data.dat")
 contents = File.read!(filepath)
 ```
 
 ```elixir
 decoded = :erlang.binary_to_term(contents)
+
+decoded =
+  decoded
+  |> Enum.reject(&is_list(&1.data))
+  |> Enum.concat([
+    %{
+      data: %{x: [-250, 250], y: [200, 200], epoch: [0], index: [0]},
+      mark: %{opts: [grid: true, color: "red"], type: :line}
+    }
+  ])
 
 layers =
   Enum.map(decoded, fn %{mark: mark, data: data_map} ->

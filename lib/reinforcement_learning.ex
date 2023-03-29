@@ -6,7 +6,14 @@ defmodule ReinforcementLearning do
   import Nx.Defn
 
   @derive {Nx.Container,
-           containers: [:agent_state, :environment_state, :random_key, :iteration, :trajectory],
+           containers: [
+             :agent_state,
+             :environment_state,
+             :random_key,
+             :iteration,
+             :episode,
+             :trajectory
+           ],
            keep: []}
   defstruct [
     :agent,
@@ -15,6 +22,7 @@ defmodule ReinforcementLearning do
     :environment_state,
     :random_key,
     :iteration,
+    :episode,
     :trajectory
   ]
 
@@ -32,13 +40,27 @@ defmodule ReinforcementLearning do
         opts \\ []
       ) do
     opts =
-      Keyword.validate!(opts, [:random_key, :max_iter, :state_to_trajectory_fn, num_episodes: 100])
+      Keyword.validate!(opts, [
+        :random_key,
+        :max_iter,
+        :state_to_trajectory_fn,
+        accumulated_episodes: 0,
+        num_episodes: 100
+      ])
 
     random_key = opts[:random_key] || Nx.Random.key(System.system_time())
     max_iter = opts[:max_iter]
     num_episodes = opts[:num_episodes]
 
-    {agent_state, random_key} = agent.init(random_key, agent_init_opts)
+    {init_agent_state, random_key} = agent.init(random_key, agent_init_opts)
+    episode = Nx.tensor(opts[:accumulated_episodes], type: :s64)
+
+    {agent_state, random_key} =
+      agent.reset(random_key, %__MODULE__{
+        agent: agent,
+        agent_state: init_agent_state,
+        episode: episode
+      })
 
     {environment_state, random_key} = environment.init(random_key, environment_init_opts)
 
@@ -48,7 +70,8 @@ defmodule ReinforcementLearning do
       environment: environment,
       environment_state: environment_state,
       random_key: random_key,
-      iteration: Nx.tensor(0, type: :s64)
+      iteration: Nx.tensor(0, type: :s64),
+      episode: episode
     }
 
     %Nx.Tensor{shape: {trajectory_points}} = state_to_trajectory_fn.(initial_state)
@@ -106,14 +129,13 @@ defmodule ReinforcementLearning do
 
   defp reset_state(
          %__MODULE__{
-           agent_state: agent_state,
            environment_state: environment_state,
            random_key: random_key
          } = loop_state,
          agent,
          environment
        ) do
-    {agent_state, random_key} = agent.reset(random_key, agent_state)
+    {agent_state, random_key} = agent.reset(random_key, loop_state)
 
     {environment_state, random_key} = environment.reset(random_key, environment_state)
 
@@ -123,6 +145,7 @@ defmodule ReinforcementLearning do
         environment_state: environment_state,
         random_key: random_key,
         trajectory: Nx.broadcast(Nx.tensor(:nan, type: :f32), loop_state.trajectory),
+        episode: Nx.add(loop_state.episode, 1),
         iteration: Nx.tensor(0, type: :s64)
     }
   end

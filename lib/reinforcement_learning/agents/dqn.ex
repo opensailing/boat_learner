@@ -3,20 +3,19 @@ defmodule ReinforcementLearning.Agents.DQN do
 
   @behaviour ReinforcementLearning.Agent
 
-  @learning_rate 1.0e-5
+  @learning_rate 1.0e-3
   @adamw_decay 1.0e-2
   @eps 1.0e-7
   @experience_replay_buffer_num_entries 10_000
-  @experience_replay_buffer_num_entries_on_4 div(@experience_replay_buffer_num_entries, 4)
 
-  @eps_start 0.996
+  @eps_start 1
+  @eps_decay_rate 0.995
   @eps_end 0.01
 
-  @train_every_steps 64
+  @train_every_steps 8
   @adamw_decay 0.01
 
-  @batch_size 256
-  @batch_size_on_4 div(@batch_size, 4)
+  @batch_size 128
 
   @gamma 0.99
 
@@ -30,7 +29,7 @@ defmodule ReinforcementLearning.Agents.DQN do
              :experience_replay_buffer_index,
              :persisted_experience_replay_buffer_entries,
              :total_reward,
-             :eps_max_iter
+             :epsilon_greedy_eps
            ],
            keep: [
              :optimizer_update_fn,
@@ -40,7 +39,14 @@ defmodule ReinforcementLearning.Agents.DQN do
              :num_actions,
              :environment_to_input_fn,
              :environment_to_state_vector_fn,
-             :state_vector_to_input_fn
+             :state_vector_to_input_fn,
+             :learning_rate,
+             :batch_size,
+             :training_frequency,
+             :gamma,
+             :eps_start,
+             :eps_end,
+             :decay_rate
            ]}
   defstruct [
     :state_vector_size,
@@ -55,11 +61,18 @@ defmodule ReinforcementLearning.Agents.DQN do
     :loss,
     :loss_denominator,
     :total_reward,
-    :eps_max_iter,
     :environment_to_input_fn,
     :environment_to_state_vector_fn,
     :state_vector_to_input_fn,
-    :input_template
+    :input_template,
+    :learning_rate,
+    :batch_size,
+    :training_frequency,
+    :gamma,
+    :epsilon_greedy_eps,
+    :eps_start,
+    :eps_end,
+    :decay_rate
   ]
 
   @impl true
@@ -71,10 +84,16 @@ defmodule ReinforcementLearning.Agents.DQN do
         :experience_replay_buffer,
         :experience_replay_buffer_index,
         :persisted_experience_replay_buffer_entries,
-        :eps_max_iter,
         :environment_to_input_fn,
         :environment_to_state_vector_fn,
-        :state_vector_to_input_fn
+        :state_vector_to_input_fn,
+        learning_rate: @learning_rate,
+        batch_size: @batch_size,
+        training_frequency: @train_every_steps,
+        gamma: @gamma,
+        eps_start: @eps_start,
+        eps_end: @eps_end,
+        eps_decay_rate: @eps_decay_rate
       ])
 
     policy_net = opts[:policy_net] || raise ArgumentError, "missing :policy_net option"
@@ -100,7 +119,6 @@ defmodule ReinforcementLearning.Agents.DQN do
       )
 
     initial_q_policy_state = opts[:q_policy] || raise "missing initial q_policy"
-    eps_max_iter = opts[:eps_max_iter] || raise "missing :eps_max_iter"
 
     input_template = input_template(policy_net)
 
@@ -114,8 +132,19 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     loss = loss_denominator = Nx.tensor(0, type: :f32)
 
-    reset(random_key, %__MODULE__{
-      eps_max_iter: eps_max_iter,
+    eps_start = opts[:eps_start]
+    eps_end = opts[:eps_end]
+    decay_rate = opts[:eps_decay_rate]
+
+    state = %__MODULE__{
+      epsilon_greedy_eps: eps_start,
+      eps_start: eps_start,
+      eps_end: eps_end,
+      decay_rate: decay_rate,
+      learning_rate: opts[:learning_rate],
+      batch_size: opts[:batch_size],
+      training_frequency: opts[:training_frequency],
+      gamma: opts[:gamma],
       loss: loss,
       loss_denominator: loss_denominator,
       state_vector_size: state_vector_size,
@@ -139,7 +168,9 @@ defmodule ReinforcementLearning.Agents.DQN do
         opts[:experience_replay_buffer_index] || Nx.tensor(0, type: :s64),
       persisted_experience_replay_buffer_entries:
         opts[:persisted_experience_replay_buffer_entries] || Nx.tensor(0, type: :s64)
-    })
+    }
+
+    {state, random_key}
   end
 
   defp input_template(model) do
@@ -159,34 +190,34 @@ defmodule ReinforcementLearning.Agents.DQN do
   end
 
   @impl true
-  def reset(random_key, state) do
+  def reset(random_key, %ReinforcementLearning{agent_state: state, episode: episode}) do
     total_reward = loss = loss_denominator = Nx.tensor(0, type: :f32)
 
-    {%{state | total_reward: total_reward, loss: loss, loss_denominator: loss_denominator},
-     random_key}
+    eps = Nx.max(Nx.multiply(state.eps_start, Nx.pow(state.decay_rate, episode)), state.eps_end)
+
+    {%{
+       state
+       | epsilon_greedy_eps: eps,
+         total_reward: total_reward,
+         loss: loss,
+         loss_denominator: loss_denominator
+     }, random_key}
   end
 
   @impl true
   defn select_action(
          %ReinforcementLearning{random_key: random_key, agent_state: agent_state} = state,
-         iteration
+         _iteration
        ) do
     %{
       q_policy: q_policy,
       policy_predict_fn: policy_predict_fn,
       environment_to_input_fn: environment_to_input_fn,
       num_actions: num_actions,
-      eps_max_iter: eps_max_iter
+      epsilon_greedy_eps: eps_threshold
     } = agent_state
 
     {sample, random_key} = Nx.Random.uniform(random_key)
-
-    eps_threshold =
-      Nx.select(
-        eps_max_iter > 0,
-        @eps_end + (@eps_start - @eps_end) * Nx.exp(-5 * iteration / eps_max_iter),
-        -1
-      )
 
     {action, random_key} =
       if sample > eps_threshold do
@@ -211,7 +242,8 @@ defmodule ReinforcementLearning.Agents.DQN do
              q_policy: q_policy,
              policy_predict_fn: policy_predict_fn,
              state_vector_to_input_fn: state_vector_to_input_fn,
-             environment_to_state_vector_fn: as_state_vector_fn
+             environment_to_state_vector_fn: as_state_vector_fn,
+             gamma: gamma
            }
          },
          action,
@@ -230,7 +262,7 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     predicted_reward =
       reward +
-        policy_predict_fn.(q_policy, state_vector_to_input_fn.(next_state_vector)) * @gamma *
+        policy_predict_fn.(q_policy, state_vector_to_input_fn.(next_state_vector)) * gamma *
           (1 - is_terminal)
 
     %{shape: {1}} = predicted_reward = Nx.reduce_max(predicted_reward, axes: [-1])
@@ -280,11 +312,13 @@ defmodule ReinforcementLearning.Agents.DQN do
   defn optimize_model(state) do
     %{
       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
-      experience_replay_buffer_index: experience_replay_buffer_index
+      experience_replay_buffer_index: experience_replay_buffer_index,
+      batch_size: batch_size,
+      training_frequency: training_frequency
     } = state.agent_state
 
-    if persisted_experience_replay_buffer_entries > @batch_size and
-         rem(experience_replay_buffer_index, @train_every_steps) == 0 do
+    if persisted_experience_replay_buffer_entries > batch_size and
+         rem(experience_replay_buffer_index, training_frequency) == 0 do
       do_optimize_model(state)
     else
       state
@@ -299,12 +333,15 @@ defmodule ReinforcementLearning.Agents.DQN do
         policy_predict_fn: policy_predict_fn,
         optimizer_update_fn: optimizer_update_fn,
         state_vector_to_input_fn: state_vector_to_input_fn,
-        state_vector_size: state_vector_size
+        state_vector_size: state_vector_size,
+        experience_replay_buffer: experience_replay_buffer,
+        gamma: gamma
       },
       random_key: random_key
     } = state
 
-    {batch, random_key} = sample_experience_replay_buffer(random_key, state.agent_state)
+    {batch, batch_idx, random_key} =
+      sample_experience_replay_buffer(random_key, state.agent_state)
 
     state_batch =
       batch
@@ -322,35 +359,51 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     non_final_mask = not is_terminal_batch
 
-    {loss, gradient} =
-      value_and_grad(q_policy, fn q_policy ->
-        action_idx = Nx.as_type(action_batch, :s64)
+    {{experience_replay_buffer, loss}, gradient} =
+      value_and_grad(
+        q_policy,
+        fn q_policy ->
+          action_idx = Nx.as_type(action_batch, :s64)
 
-        %{shape: {m, 1}} =
-          state_action_values =
-          q_policy
-          |> policy_predict_fn.(state_batch)
-          |> Nx.take_along_axis(action_idx, axis: 1)
+          %{shape: {m, 1}} =
+            state_action_values =
+            q_policy
+            |> policy_predict_fn.(state_batch)
+            |> Nx.take_along_axis(action_idx, axis: 1)
 
-        expected_state_action_values =
-          reward_batch + policy_predict_fn.(q_policy, next_state_batch) * @gamma * non_final_mask
-
-        %{shape: {n, 1}} =
           expected_state_action_values =
-          Nx.reduce_max(expected_state_action_values, axes: [-1], keep_axes: true)
+            reward_batch +
+              policy_predict_fn.(q_policy, next_state_batch) * gamma * non_final_mask
 
-        case {m, n} do
-          {m, n} when m != n ->
-            raise "shape mismatch for batch values"
+          %{shape: {n, 1}} =
+            expected_state_action_values =
+            Nx.reduce_max(expected_state_action_values, axes: [-1], keep_axes: true)
 
-          _ ->
-            1
-        end
+          case {m, n} do
+            {m, n} when m != n ->
+              raise "shape mismatch for batch values"
 
-        Axon.Losses.mean_squared_error(expected_state_action_values, state_action_values,
-          reduction: :mean
-        )
-      end)
+            _ ->
+              1
+          end
+
+          td_errors = Nx.abs(expected_state_action_values - state_action_values)
+
+          {
+            update_priorities(
+              experience_replay_buffer,
+              batch_idx,
+              state_vector_size * 2 + 3,
+              td_errors
+            ),
+            huber_loss(expected_state_action_values, state_action_values)
+            # Axon.Losses.mean_squared_error(expected_state_action_values, state_action_values,
+            #   reduction: :mean
+            # )
+          }
+        end,
+        &elem(&1, 1)
+      )
 
     {scaled_updates, optimizer_state} =
       optimizer_update_fn.(gradient, q_policy_optimizer_state, q_policy)
@@ -364,12 +417,14 @@ defmodule ReinforcementLearning.Agents.DQN do
           | q_policy: q_policy,
             q_policy_optimizer_state: optimizer_state,
             loss: state.agent_state.loss + loss,
-            loss_denominator: state.agent_state.loss_denominator + 1
+            loss_denominator: state.agent_state.loss_denominator + 1,
+            experience_replay_buffer: experience_replay_buffer
         },
         random_key: random_key
     }
   end
 
+  @alpha 0.6
   defnp sample_experience_replay_buffer(
           random_key,
           %{state_vector_size: state_vector_size} = agent_state
@@ -388,49 +443,18 @@ defmodule ReinforcementLearning.Agents.DQN do
       |> Nx.slice_along_axis(state_vector_size * 2 + 3, 1, axis: 1)
       |> Nx.flatten()
 
-    idx = Nx.argsort(temporal_difference)
+    priorities = temporal_difference ** @alpha
+    probs = priorities / Nx.sum(priorities)
 
-    top1 = Nx.slice_along_axis(idx, 0, @experience_replay_buffer_num_entries_on_4, axis: 0)
-
-    top2 =
-      Nx.slice_along_axis(
-        idx,
-        @experience_replay_buffer_num_entries_on_4,
-        @experience_replay_buffer_num_entries_on_4,
+    {batch_idx, random_key} =
+      Nx.Random.choice(random_key, Nx.iota(temporal_difference.shape), probs,
+        samples: @batch_size,
+        replace: false,
         axis: 0
       )
 
-    top3 =
-      Nx.slice_along_axis(
-        idx,
-        2 * @experience_replay_buffer_num_entries_on_4,
-        @experience_replay_buffer_num_entries_on_4,
-        axis: 0
-      )
-
-    top4 =
-      Nx.slice_along_axis(
-        idx,
-        3 * @experience_replay_buffer_num_entries_on_4,
-        @experience_replay_buffer_num_entries_on_4,
-        axis: 0
-      )
-
-    {batch1, random_key} =
-      Nx.Random.choice(random_key, top1, samples: @batch_size_on_4, replace: false, axis: 0)
-
-    {batch2, random_key} =
-      Nx.Random.choice(random_key, top2, samples: @batch_size_on_4, replace: false, axis: 0)
-
-    {batch3, random_key} =
-      Nx.Random.choice(random_key, top3, samples: @batch_size_on_4, replace: false, axis: 0)
-
-    {batch4, random_key} =
-      Nx.Random.choice(random_key, top4, samples: @batch_size_on_4, replace: false, axis: 0)
-
-    batch_idx = Nx.concatenate([batch1, batch2, batch3, batch4])
     batch = Nx.take(exp_replay_buffer, batch_idx)
-    {batch, random_key}
+    {batch, batch_idx, random_key}
   end
 
   defnp slice_experience_replay_buffer(state) do
@@ -446,6 +470,22 @@ defmodule ReinforcementLearning.Agents.DQN do
     else
       experience_replay_buffer
     end
+  end
+
+  defn update_priorities(
+         buffer,
+         %{shape: {n}} = row_idx,
+         target_column,
+         td_errors
+       ) do
+    case td_errors.shape do
+      {^n, 1} -> :ok
+      shape -> raise "invalid shape for td_errors, got: #{inspect(shape)}"
+    end
+
+    indices = Nx.stack([row_idx, Nx.broadcast(target_column, {n})], axis: -1)
+
+    Nx.indexed_put(buffer, indices, Nx.reshape(td_errors, {n}))
   end
 
   defnp huber_loss(y_true, y_pred, opts \\ [delta: 1.0]) do
