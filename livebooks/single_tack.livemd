@@ -100,13 +100,14 @@ loss_widget =
   |> Vl.encode_field(:y, "loss",
     type: :quantitative,
     scale: [
-      domain: [0, 1.0e6],
-      type: "symlog",
+      domain: %{expr: "[0, pow(10, loss_mag)]"},
+      type: [if: "loss_mag == 0", then: "linear", else: "symlog"],
       clamp: true
     ],
     axis: [tick_min_step: 1]
   )
   |> Vl.encode_field(:order, "episode")
+  |> Vl.param("loss_mag", value: 2, bind: [input: "range", min: 0, max: 15, step: 1])
   |> Kino.VegaLite.new()
   |> Kino.render()
 
@@ -124,9 +125,8 @@ reward_widget =
   |> Vl.encode_field(:y, "reward",
     type: :quantitative,
     scale: [
-      domain: [-1.5e3, 1.5e3],
+      domain: [-1.5, 1.5],
       type: "symlog",
-      base: 10,
       clamp: true
     ]
   )
@@ -417,19 +417,19 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 100_000
+episodes = 300_000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
 
-{learning_rate, gamma, training_frequency} = {0.001, 0.99, 8}
+{learning_rate, gamma, training_frequency} = {0.001, 0.99, 32}
 
 eps_start = 1
 eps_end = 0.01
 
 # 0.2 @ 75k epochs
-eps_decay_rate = (0.2 / eps_start) ** (1 / 30000)
+eps_decay_rate = (0.2 / eps_start) ** (1 / 50_000)
 
 {t, result} =
   :timer.tc(fn ->
@@ -471,7 +471,7 @@ serialized =
     ])
   )
 
-"#{Float.round(t / 1_000_000, 3)} s"
+"#{Float.round(t / 1_000_000, 3)} s" |> IO.puts()
 
 contents =
   :erlang.term_to_binary(%{serialized: serialized, total_episodes: total_episodes + episodes})

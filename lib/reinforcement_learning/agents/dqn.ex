@@ -113,7 +113,7 @@ defmodule ReinforcementLearning.Agents.DQN do
     {policy_init_fn, policy_predict_fn} = Axon.build(policy_net, seed: 0)
 
     {optimizer_init_fn, optimizer_update_fn} =
-      Axon.Updates.clip()
+      Axon.Updates.clip_by_global_norm()
       |> Axon.Updates.compose(
         Axon.Optimizers.adamw(@learning_rate, eps: @eps, decay: @adamw_decay)
       )

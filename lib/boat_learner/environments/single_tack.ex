@@ -301,19 +301,19 @@ defmodule BoatLearner.Environments.SingleTack do
     reward =
       cond do
         tack_count > 0 ->
-          -10
+          -0.1
 
         has_reached_target and tack_count == 0 ->
-          100
+          1
 
         has_reached_target ->
-          50
+          0.5
 
         is_terminal ->
-          -100
+          -1
 
         true ->
-          vmg / @max_speed * 5
+          vmg / @max_speed * 0.5
       end
 
     reward =
