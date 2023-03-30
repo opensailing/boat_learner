@@ -309,12 +309,7 @@ defmodule BoatLearner.Environments.SingleTack do
           vmg / @max_speed
       end
 
-    reward =
-      if is_terminal do
-        reward
-      else
-        reward * remaining_iterations / max_remaining_iterations
-      end
+    reward = reward * remaining_iterations / max_remaining_iterations
 
     %__MODULE__{env | reward: reward}
   end

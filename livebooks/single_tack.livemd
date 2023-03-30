@@ -89,49 +89,97 @@ grid_widget =
 loss_widget =
   Vl.new(width: width, height: div(height, 2), title: "Loss")
   |> Vl.data(name: "loss")
-  |> Vl.mark(:line,
-    grid: true,
-    tooltip: [content: "data"],
-    interpolate: "linear",
-    point: true,
-    color: "blue"
-  )
-  |> Vl.encode_field(:x, "episode", type: :quantitative)
-  |> Vl.encode_field(:y, "loss",
-    type: :quantitative,
-    scale: [
-      domain: %{expr: "[0, pow(10, loss_mag)]"},
-      type: [if: "loss_mag <= 0", then: "linear", else: "symlog"],
-      clamp: true
-    ],
-    axis: [tick_count: 10]
-  )
-  |> Vl.encode_field(:order, "episode")
-  |> Vl.param("loss_mag", value: 1, bind: [input: "range", min: -5, max: 15, step: 0.5])
+  |> Vl.layers([
+    Vl.new()
+    |> Vl.mark(:point,
+      grid: true,
+      tooltip: [content: "data"],
+      color: "red",
+      opacity: 0.25
+    )
+    |> Vl.encode_field(:x, "episode", type: :quantitative)
+    |> Vl.encode_field(:order, "episode")
+    |> Vl.encode_field(:y, "loss",
+      type: :quantitative,
+      scale: [
+        domain: %{expr: "[min_y, max_y]"},
+        clamp: true
+      ],
+      axis: [tick_count: 10]
+    ),
+    Vl.new()
+    |> Vl.mark(:line, grid: true, color: "blue")
+    |> Vl.transform(
+      frame: [-15, 0],
+      window: [
+        [
+          field: "loss",
+          op: "mean",
+          as: "rolling_mean_loss"
+        ]
+      ]
+    )
+    |> Vl.encode_field(:x, "episode", type: :quantitative)
+    |> Vl.encode_field(:order, "episode")
+    |> Vl.encode_field(:y, "rolling_mean_loss",
+      type: :quantitative,
+      scale: [
+        domain: %{expr: "[min_y, max_y]"},
+        clamp: true
+      ]
+    )
+  ])
+  |> Vl.param("max_y", value: 1, bind: [input: "number"])
+  |> Vl.param("min_y", value: 0, bind: [input: "number"])
   |> Kino.VegaLite.new()
   |> Kino.render()
 
 reward_widget =
   Vl.new(width: width, height: div(height, 2), title: "Total Reward per Epoch")
   |> Vl.data(name: "reward")
-  |> Vl.mark(:line,
-    grid: true,
-    tooltip: [content: "data"],
-    interpolate: "step-after",
-    point: true,
-    color: "blue"
-  )
-  |> Vl.encode_field(:x, "episode", type: :quantitative)
-  |> Vl.encode_field(:y, "reward",
-    type: :quantitative,
-    scale: [
-      domain: %{expr: "[min_reward_limit, max_reward_limit]"},
-      clamp: true
-    ],
-    axis: [tick_count: 10]
-  )
-  |> Vl.param("max_reward_limit", value: 150, bind: [input: "number"])
-  |> Vl.param("min_reward_limit", value: -50, bind: [input: "number"])
+  |> Vl.layers([
+    Vl.new()
+    |> Vl.mark(:point,
+      grid: true,
+      tooltip: [content: "data"],
+      point: true,
+      color: "red",
+      opacity: 0.25
+    )
+    |> Vl.encode_field(:x, "episode", type: :quantitative)
+    |> Vl.encode_field(:y, "reward",
+      type: :quantitative,
+      scale: [
+        domain: %{expr: "[min_y, max_y]"},
+        clamp: true
+      ],
+      axis: [tick_count: 10]
+    ),
+    Vl.new()
+    |> Vl.mark(:line, grid: true, color: "blue")
+    |> Vl.transform(
+      frame: [-15, 0],
+      window: [
+        [
+          field: "reward",
+          op: "mean",
+          as: "rolling_mean_reward"
+        ]
+      ]
+    )
+    |> Vl.encode_field(:x, "episode", type: :quantitative)
+    |> Vl.encode_field(:order, "episode")
+    |> Vl.encode_field(:y, "rolling_mean_reward",
+      type: :quantitative,
+      scale: [
+        domain: %{expr: "[min_y, max_y]"},
+        clamp: true
+      ],
+      axis: [tick_count: 10]
+    )
+  ])
+  |> Vl.param("max_y", value: 100, bind: [input: "number"])
+  |> Vl.param("min_y", value: -10, bind: [input: "number"])
   |> Vl.encode_field(:order, "episode")
   |> Kino.VegaLite.new()
   |> Kino.render()
@@ -295,8 +343,8 @@ end
 ```
 
 ```elixir
-filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark.bin")
-export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark_data.dat")
+filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark_vmg_reward.bin")
+export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark_vmg_reward.dat")
 
 {
   q_policy,
@@ -414,7 +462,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 50_000
+episodes = 200_000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
@@ -453,7 +501,7 @@ eps_decay_rate = (0.2 / eps_start) ** (1 / 75_000)
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter,
-      accumulated_episodes: total_episodes
+      accumulated_episodes: total_episodes - 300_000
     )
   end)
 
