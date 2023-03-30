@@ -202,6 +202,9 @@ defmodule BoatLearner.Environments.SingleTack do
     heading = Nx.select(heading < 0, heading + two_pi, heading)
     speed = speed_from_heading(env.polar_chart, heading)
 
+    # because we are normalizing angles to be between 0 and 2pi,
+    # this check is equivalent to checking for 0 crossings if
+    # the angles were normalized between -pi and pi
     tack_count =
       if heading < pi() != prev_heading < pi() do
         env.tack_count + 1
@@ -269,7 +272,6 @@ defmodule BoatLearner.Environments.SingleTack do
       remaining_iterations: remaining_iterations,
       tack_count: tack_count,
       target_y: target_y,
-      previous_vmg: previous_vmg,
       vmg: vmg
     } = env
 
@@ -290,7 +292,6 @@ defmodule BoatLearner.Environments.SingleTack do
     %__MODULE__{
       is_terminal: is_terminal,
       vmg: vmg,
-      tack_count: tack_count,
       remaining_iterations: remaining_iterations,
       max_remaining_iterations: max_remaining_iterations
     } = env

@@ -343,8 +343,8 @@ end
 ```
 
 ```elixir
-filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark_vmg_reward.bin")
-export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark_vmg_reward.dat")
+filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark.bin")
+export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark.dat")
 
 {
   q_policy,
@@ -462,7 +462,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 200_000
+episodes = 100_000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
@@ -473,7 +473,7 @@ AccumulateAndExportData.reset()
 eps_start = 1
 eps_end = 0.01
 
-eps_decay_rate = (0.2 / eps_start) ** (1 / 75_000)
+eps_decay_rate = (0.2 / eps_start) ** (1 / 30_000)
 
 {t, result} =
   :timer.tc(fn ->
@@ -501,7 +501,8 @@ eps_decay_rate = (0.2 / eps_start) ** (1 / 75_000)
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter,
-      accumulated_episodes: total_episodes - 300_000
+      # accumulated_episodes: 0
+      accumulated_episodes: total_episodes
     )
   end)
 
