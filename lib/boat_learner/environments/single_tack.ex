@@ -52,7 +52,7 @@ defmodule BoatLearner.Environments.SingleTack do
   ]
 
   @min_x 0
-  @max_x 100
+  @max_x 125
   @min_y 0
   @max_y 250
 
@@ -83,7 +83,7 @@ defmodule BoatLearner.Environments.SingleTack do
   @speed Enum.map(@speed_kts, &(&1 * @kts_to_meters_per_sec))
   @max_speed @speed |> Enum.max() |> ceil()
 
-  @dt 10
+  @dt 5
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
@@ -275,7 +275,7 @@ defmodule BoatLearner.Environments.SingleTack do
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
-        remaining_iterations < 2 or tack_count > 0 or vmg < previous_vmg
+        remaining_iterations < 2 or tack_count > 0
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
@@ -290,7 +290,6 @@ defmodule BoatLearner.Environments.SingleTack do
     %__MODULE__{
       is_terminal: is_terminal,
       vmg: vmg,
-      previous_vmg: previous_vmg,
       tack_count: tack_count,
       remaining_iterations: remaining_iterations,
       max_remaining_iterations: max_remaining_iterations
@@ -300,24 +299,22 @@ defmodule BoatLearner.Environments.SingleTack do
 
     reward =
       cond do
-        tack_count > 0 ->
-          -0.1
-
-        has_reached_target and tack_count == 0 ->
-          1
-
         has_reached_target ->
-          0.5
+          100
 
         is_terminal ->
-          -1
+          -10
 
         true ->
-          vmg / @max_speed * 0.5
+          vmg / @max_speed
       end
 
     reward =
-      Nx.select(reward > 0, reward * remaining_iterations / max_remaining_iterations, reward)
+      if is_terminal do
+        reward
+      else
+        reward * remaining_iterations / max_remaining_iterations
+      end
 
     %__MODULE__{env | reward: reward}
   end

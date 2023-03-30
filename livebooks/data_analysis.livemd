@@ -26,16 +26,6 @@ contents = File.read!(filepath)
 ```elixir
 decoded = :erlang.binary_to_term(contents)
 
-decoded =
-  decoded
-  |> Enum.reject(&is_list(&1.data))
-  |> Enum.concat([
-    %{
-      data: %{x: [-250, 250], y: [200, 200], epoch: [0], index: [0]},
-      mark: %{opts: [grid: true, color: "red"], type: :line}
-    }
-  ])
-
 layers =
   Enum.map(decoded, fn %{mark: mark, data: data_map} ->
     case data_map do
@@ -76,6 +66,8 @@ min_x = ceil(min_x)
 max_y = ceil(max_y)
 min_y = ceil(min_y)
 max_epoch = ceil(max_epoch)
+
+{max_x, min_x, max_y, min_y, max_epoch}
 ```
 
 ## Plot Data
@@ -93,21 +85,28 @@ IO.inspect({max_x, min_x, dx, max_y, min_y, dy})
     {min_x, max_x, min_y, min_y + max_x - min_x}
   end
 
-layers =
+[h | layers] =
   Enum.map(layers, fn %{mark: %{type: type, opts: opts}, data: data} ->
     VegaLite.new()
     |> VegaLite.data_from_values(data)
     |> VegaLite.mark(type, opts)
-    |> VegaLite.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x]])
+    |> VegaLite.encode_field(:x, "x",
+      type: :quantitative,
+      scale: [
+        domain: [min_x, max_x]
+      ]
+    )
     |> VegaLite.encode_field(:y, "y", type: :quantitative, scale: [domain: [min_y, max_y]])
     |> VegaLite.encode_field(:order, "index")
     |> VegaLite.transform(filter: "datum.epoch == epoch")
   end)
+
+h = h |> VegaLite.param("brush", select: :interval, bind: :scales)
 
 VegaLite.new(height: 500, width: 500, title: "Data Visualization")
 |> VegaLite.param("epoch",
   value: 0,
   bind: [input: "range", min: 0, max: max_epoch, step: step]
 )
-|> VegaLite.layers(layers)
+|> VegaLite.layers([h | layers])
 ```

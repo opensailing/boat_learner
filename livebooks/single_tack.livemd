@@ -1,4 +1,4 @@
-# Upwind Mark Training
+# Single Tack
 
 ```elixir
 my_app_root = Path.join(__DIR__, "..")
@@ -92,7 +92,7 @@ loss_widget =
   |> Vl.mark(:line,
     grid: true,
     tooltip: [content: "data"],
-    interpolate: "step-after",
+    interpolate: "linear",
     point: true,
     color: "blue"
   )
@@ -101,13 +101,13 @@ loss_widget =
     type: :quantitative,
     scale: [
       domain: %{expr: "[0, pow(10, loss_mag)]"},
-      type: [if: "loss_mag == 0", then: "linear", else: "symlog"],
+      type: [if: "loss_mag <= 0", then: "linear", else: "symlog"],
       clamp: true
     ],
-    axis: [tick_min_step: 1]
+    axis: [tick_count: 10]
   )
   |> Vl.encode_field(:order, "episode")
-  |> Vl.param("loss_mag", value: 2, bind: [input: "range", min: 0, max: 15, step: 1])
+  |> Vl.param("loss_mag", value: 1, bind: [input: "range", min: -5, max: 15, step: 0.5])
   |> Kino.VegaLite.new()
   |> Kino.render()
 
@@ -125,11 +125,13 @@ reward_widget =
   |> Vl.encode_field(:y, "reward",
     type: :quantitative,
     scale: [
-      domain: [-1.5, 1.5],
-      type: "symlog",
+      domain: %{expr: "[min_reward_limit, max_reward_limit]"},
       clamp: true
-    ]
+    ],
+    axis: [tick_count: 10]
   )
+  |> Vl.param("max_reward_limit", value: 150, bind: [input: "number"])
+  |> Vl.param("min_reward_limit", value: -50, bind: [input: "number"])
   |> Vl.encode_field(:order, "episode")
   |> Kino.VegaLite.new()
   |> Kino.render()
@@ -263,21 +265,18 @@ plot_fn = fn axon_state ->
       loss = Nx.to_number(axon_state.step_state.agent_state.loss)
       loss_den = Nx.to_number(axon_state.step_state.agent_state.loss_denominator)
 
-      loss =
-        if loss_den > 0 do
-          loss / loss_den
-        else
-          loss
-        end
+      if loss_den > 0 do
+        loss = loss / loss_den
 
-      Kino.VegaLite.push(
-        loss_widget,
-        %{
-          episode: episode,
-          loss: loss
-        },
-        dataset: "loss"
-      )
+        Kino.VegaLite.push(
+          loss_widget,
+          %{
+            episode: episode,
+            loss: loss
+          },
+          dataset: "loss"
+        )
+      end
 
       Kino.VegaLite.push(
         reward_widget,
@@ -301,6 +300,7 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark_data
 
 {
   q_policy,
+  q_target,
   experience_replay_buffer_index,
   persisted_experience_replay_buffer_entries,
   experience_replay_buffer,
@@ -314,31 +314,19 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark_data
 
     %{
       q_policy: q_policy,
+      q_target: q_target,
       experience_replay_buffer_index: experience_replay_buffer_index,
       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
       experience_replay_buffer: exp_replay_buffer
     } = Nx.deserialize(serialized)
 
-    {q_policy, experience_replay_buffer_index, persisted_experience_replay_buffer_entries,
-     exp_replay_buffer, total_episodes}
+    {q_policy, q_target, experience_replay_buffer_index,
+     persisted_experience_replay_buffer_entries, exp_replay_buffer, total_episodes}
   rescue
     File.Error ->
-      {%{}, 0, 0, nil, 0}
+      {%{}, %{}, 0, 0, nil, 0}
   end
 
-q_policy = %{}
-total_episodes = 0
-experience_replay_buffer = nil
-persisted_experience_replay_buffer_entries = 0
-experience_replay_buffer_index = 0
-total_episodes
-```
-
-```elixir
-q_policy
-```
-
-```elixir
 fields = [
   :x,
   :y,
@@ -356,7 +344,6 @@ num_observations = length(fields)
 policy_net =
   Axon.input("state", shape: {nil, num_observations})
   |> Axon.dense(128, activation: :relu)
-  |> Axon.dense(64, activation: :relu)
   |> Axon.dense(64, activation: :relu)
   |> Axon.dense(32, activation: :relu)
   |> Axon.dense(num_actions)
@@ -408,6 +395,16 @@ end
 state_vector_to_input_fn = fn state_vector ->
   %{"state" => state_vector}
 end
+
+# q_policy = %{}
+# q_target = %{}
+# total_episodes = 0
+# experience_replay_buffer = nil
+# persisted_experience_replay_buffer_entries = 0
+# experience_replay_buffer_index = 0
+
+IO.inspect({q_policy, q_target, total_episodes}, label: "{q_policy, q_target, total_episodes}")
+:ok
 ```
 
 ## Train
@@ -417,7 +414,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 300_000
+episodes = 50_000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
@@ -428,8 +425,7 @@ AccumulateAndExportData.reset()
 eps_start = 1
 eps_end = 0.01
 
-# 0.2 @ 75k epochs
-eps_decay_rate = (0.2 / eps_start) ** (1 / 50_000)
+eps_decay_rate = (0.2 / eps_start) ** (1 / 75_000)
 
 {t, result} =
   :timer.tc(fn ->
@@ -439,6 +435,7 @@ eps_decay_rate = (0.2 / eps_start) ** (1 / 50_000)
       {ReinforcementLearning.Agents.DQN,
        policy_net: policy_net,
        q_policy: q_policy,
+       q_target: q_target,
        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
        experience_replay_buffer_index: experience_replay_buffer_index,
        experience_replay_buffer: experience_replay_buffer,
@@ -448,6 +445,7 @@ eps_decay_rate = (0.2 / eps_start) ** (1 / 50_000)
        learning_rate: learning_rate,
        gamma: gamma,
        training_frequency: training_frequency,
+       target_training_frequency: 100,
        eps_start: eps_start,
        eps_end: eps_end,
        eps_decay_rate: eps_decay_rate},
@@ -465,6 +463,7 @@ serialized =
   Nx.serialize(
     Map.take(result.step_state.agent_state, [
       :q_policy,
+      :q_target,
       :experience_replay_buffer_index,
       :experience_replay_buffer,
       :persisted_experience_replay_buffer_entries
