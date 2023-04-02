@@ -1,4 +1,4 @@
-# Single Tack
+# Double Tack
 
 ```elixir
 my_app_root = Path.join(__DIR__, "..")
@@ -8,7 +8,8 @@ Mix.install(
     {:boat_learner, path: my_app_root, env: :dev}
   ],
   config_path: Path.join(my_app_root, "config/config.exs"),
-  lockfile: Path.join(my_app_root, "mix.lock")
+  lockfile: Path.join(my_app_root, "mix.lock"),
+  consolidate_protocols: false
   # change to "cuda118" to use CUDA
   # system_env: %{"XLA_TARGET" => "cuda118"}
   # force: true
@@ -20,7 +21,7 @@ Mix.install(
 ```elixir
 alias VegaLite, as: Vl
 
-{min_x, max_x, min_y, _max_y} = BoatLearner.Environments.SingleTack.bounding_box()
+{min_x, max_x, min_y, _max_y} = BoatLearner.Environments.DoubleTack.bounding_box()
 
 target_y = 100
 
@@ -343,8 +344,8 @@ end
 ```
 
 ```elixir
-filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark.bin")
-export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark.dat")
+filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.bin")
+export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat")
 
 {
   q_policy,
@@ -375,6 +376,20 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/single_mark.dat"
       {%{}, %{}, 0, 0, nil, 0}
   end
 
+single_tack_namespace = "single_tack"
+
+q_policy =
+  case q_policy do
+    %{^single_tack_namespace => _} -> q_policy
+    _ -> %{single_tack_namespace => q_policy}
+  end
+
+q_target =
+  case q_target do
+    %{^single_tack_namespace => _} -> q_target
+    _ -> %{single_tack_namespace => q_target}
+  end
+
 fields = [
   :x,
   :y,
@@ -386,12 +401,24 @@ fields = [
   :tack_count
 ]
 
-num_actions = BoatLearner.Environments.SingleTack.num_actions()
+num_actions = BoatLearner.Environments.DoubleTack.num_actions()
 num_observations = length(fields)
 
-policy_net =
-  Axon.input("state", shape: {nil, num_observations})
+input = Axon.input("state", shape: {nil, num_observations})
+
+single_tack_policy_net =
+  input
   |> Axon.dense(128, activation: :relu)
+  |> Axon.dense(64, activation: :relu)
+  |> Axon.dense(32, activation: :relu)
+  |> Axon.dense(num_actions)
+  |> Axon.pop_node()
+  |> elem(1)
+  |> Axon.freeze()
+  |> Axon.namespace(single_tack_namespace)
+
+policy_net =
+  single_tack_policy_net
   |> Axon.dense(64, activation: :relu)
   |> Axon.dense(32, activation: :relu)
   |> Axon.dense(num_actions)
@@ -430,7 +457,7 @@ environment_to_state_vector_fn = fn env_state ->
     normalize_speed.(env_state.previous_vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.prev_heading),
-    env_state.tack_count
+    0
   ]
   |> Nx.stack()
   |> Nx.new_axis(0)
@@ -445,7 +472,7 @@ state_vector_to_input_fn = fn state_vector ->
 end
 
 # q_policy = %{}
-# q_target = %{}
+# q_target = q_policy
 # total_episodes = 0
 # experience_replay_buffer = nil
 # persisted_experience_replay_buffer_entries = 0
@@ -478,7 +505,7 @@ eps_decay_rate = (0.2 / eps_start) ** (1 / 30_000)
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
-      {BoatLearner.Environments.SingleTack,
+      {BoatLearner.Environments.DoubleTack,
        max_remaining_iterations: max_iter, target_y: target_y},
       {ReinforcementLearning.Agents.DQN,
        policy_net: policy_net,
@@ -501,8 +528,8 @@ eps_decay_rate = (0.2 / eps_start) ** (1 / 30_000)
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter,
-      # accumulated_episodes: 0
-      accumulated_episodes: total_episodes
+      accumulated_episodes: 0
+      # accumulated_episodes: total_episodes
     )
   end)
 

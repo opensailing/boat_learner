@@ -1,4 +1,4 @@
-defmodule BoatLearner.Environments.SingleTack do
+defmodule BoatLearner.Environments.DoubleTack do
   @moduledoc """
   Simple environment that provides an upwind mark
   and simulates the physics for wind at 0 degrees.
@@ -228,13 +228,19 @@ defmodule BoatLearner.Environments.SingleTack do
       heading: heading,
       x: x,
       y: y,
+      target_y: target_y,
       speed: speed
     } = env
 
     x = x + speed * Nx.sin(heading) * @dt
     y = y + speed * Nx.cos(heading) * @dt
 
-    vmg = speed * Nx.cos(heading)
+    dy = target_y - y
+    dx = -x
+
+    mark_vector = Nx.complex(dy, dx)
+    angle_to_mark = Nx.phase(mark_vector)
+    vmg = speed * Nx.cos(heading + angle_to_mark)
 
     %__MODULE__{
       env
@@ -271,21 +277,20 @@ defmodule BoatLearner.Environments.SingleTack do
       y: y,
       remaining_iterations: remaining_iterations,
       tack_count: tack_count,
-      target_y: target_y,
-      vmg: vmg
+      target_y: target_y
     } = env
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
-        remaining_iterations < 2 or tack_count > 0
+        remaining_iterations < 2 or tack_count > 1
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
 
   defnp has_reached_target(env) do
-    %__MODULE__{y: y, target_y: target_y} = env
+    %__MODULE__{x: x, y: y, target_y: target_y} = env
 
-    target_y - y < 1.5
+    target_y - y < 1.5 and x < 1.5
   end
 
   defnp calculate_reward(env) do

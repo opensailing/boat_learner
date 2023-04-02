@@ -12,16 +12,18 @@ defmodule ReinforcementLearning.Agents.DQN do
   @eps_decay_rate 0.995
   @eps_end 0.01
 
-  @train_every_steps 8
+  @train_every_steps 32
   @adamw_decay 0.01
 
   @batch_size 128
 
   @gamma 0.99
+  @tau 0.001
 
   @derive {Nx.Container,
            containers: [
              :q_policy,
+             :q_target,
              :q_policy_optimizer_state,
              :loss,
              :loss_denominator,
@@ -43,6 +45,7 @@ defmodule ReinforcementLearning.Agents.DQN do
              :learning_rate,
              :batch_size,
              :training_frequency,
+             :target_training_frequency,
              :gamma,
              :eps_start,
              :eps_end,
@@ -52,6 +55,7 @@ defmodule ReinforcementLearning.Agents.DQN do
     :state_vector_size,
     :num_actions,
     :q_policy,
+    :q_target,
     :q_policy_optimizer_state,
     :policy_predict_fn,
     :optimizer_update_fn,
@@ -68,6 +72,7 @@ defmodule ReinforcementLearning.Agents.DQN do
     :learning_rate,
     :batch_size,
     :training_frequency,
+    :target_training_frequency,
     :gamma,
     :epsilon_greedy_eps,
     :eps_start,
@@ -80,6 +85,7 @@ defmodule ReinforcementLearning.Agents.DQN do
     opts =
       Keyword.validate!(opts, [
         :q_policy,
+        :q_target,
         :policy_net,
         :experience_replay_buffer,
         :experience_replay_buffer_index,
@@ -87,6 +93,7 @@ defmodule ReinforcementLearning.Agents.DQN do
         :environment_to_input_fn,
         :environment_to_state_vector_fn,
         :state_vector_to_input_fn,
+        target_training_frequency: @train_every_steps * 4,
         learning_rate: @learning_rate,
         batch_size: @batch_size,
         training_frequency: @train_every_steps,
@@ -119,10 +126,12 @@ defmodule ReinforcementLearning.Agents.DQN do
       )
 
     initial_q_policy_state = opts[:q_policy] || raise "missing initial q_policy"
+    initial_q_target_state = opts[:q_target] || initial_q_policy_state
 
     input_template = input_template(policy_net)
 
     q_policy = policy_init_fn.(input_template, initial_q_policy_state)
+    q_target = policy_init_fn.(input_template, initial_q_target_state)
 
     q_policy_optimizer_state = optimizer_init_fn.(q_policy)
 
@@ -144,6 +153,7 @@ defmodule ReinforcementLearning.Agents.DQN do
       learning_rate: opts[:learning_rate],
       batch_size: opts[:batch_size],
       training_frequency: opts[:training_frequency],
+      target_training_frequency: opts[:target_training_frequency],
       gamma: opts[:gamma],
       loss: loss,
       loss_denominator: loss_denominator,
@@ -155,6 +165,7 @@ defmodule ReinforcementLearning.Agents.DQN do
       state_vector_to_input_fn: state_vector_to_input_fn,
       q_policy: q_policy,
       q_policy_optimizer_state: q_policy_optimizer_state,
+      q_target: q_target,
       policy_predict_fn: policy_predict_fn,
       optimizer_update_fn: optimizer_update_fn,
       # prev_state_vector, target_x, target_y, action, reward, is_terminal, next_state_vector
@@ -314,21 +325,36 @@ defmodule ReinforcementLearning.Agents.DQN do
       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
       experience_replay_buffer_index: experience_replay_buffer_index,
       batch_size: batch_size,
-      training_frequency: training_frequency
+      training_frequency: training_frequency,
+      target_training_frequency: target_training_frequency
     } = state.agent_state
 
-    if persisted_experience_replay_buffer_entries > batch_size and
-         rem(experience_replay_buffer_index, training_frequency) == 0 do
-      do_optimize_model(state)
-    else
-      state
+    has_at_least_one_batch = persisted_experience_replay_buffer_entries > batch_size
+    should_update_policy_net = rem(experience_replay_buffer_index, training_frequency) == 0
+    should_update_target_net = rem(experience_replay_buffer_index, target_training_frequency) == 0
+
+    cond do
+      not has_at_least_one_batch ->
+        state
+
+      should_update_policy_net and not should_update_target_net ->
+        update_policy_network(state)
+
+      should_update_policy_net and should_update_target_net ->
+        state
+        |> update_policy_network()
+        |> soft_update_target_network()
+
+      true ->
+        state
     end
   end
 
-  defnp do_optimize_model(state) do
+  defnp update_policy_network(state) do
     %{
       agent_state: %{
         q_policy: q_policy,
+        q_target: q_target,
         q_policy_optimizer_state: q_policy_optimizer_state,
         policy_predict_fn: policy_predict_fn,
         optimizer_update_fn: optimizer_update_fn,
@@ -373,7 +399,7 @@ defmodule ReinforcementLearning.Agents.DQN do
 
           expected_state_action_values =
             reward_batch +
-              policy_predict_fn.(q_policy, next_state_batch) * gamma * non_final_mask
+              policy_predict_fn.(q_target, next_state_batch) * gamma * non_final_mask
 
           %{shape: {n, 1}} =
             expected_state_action_values =
@@ -422,6 +448,14 @@ defmodule ReinforcementLearning.Agents.DQN do
         },
         random_key: random_key
     }
+  end
+
+  defnp soft_update_target_network(state) do
+    %{agent_state: %{q_target: q_target, q_policy: q_policy} = agent_state} = state
+
+    q_target = Axon.Shared.deep_merge(q_policy, q_target, &(&1 * @tau + &2 * (1 - @tau)))
+
+    %{state | agent_state: %{agent_state | q_target: q_target}}
   end
 
   @alpha 0.6
