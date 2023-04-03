@@ -490,7 +490,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 25_000
+episodes = 100_000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
@@ -501,7 +501,7 @@ AccumulateAndExportData.reset()
 eps_start = 1
 eps_end = 0.01
 
-eps_decay_rate = (0.2 / eps_start) ** (1 / 6_000)
+eps_decay_rate = (0.5 / eps_start) ** (1 / 10_000)
 
 {t, result} =
   :timer.tc(fn ->
@@ -528,7 +528,7 @@ eps_decay_rate = (0.2 / eps_start) ** (1 / 6_000)
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter,
-      accumulated_episodes: total_episodes
+      accumulated_episodes: 0
     )
   end)
 
