@@ -285,14 +285,14 @@ plot_fn = fn axon_state ->
   if axon_state.iteration > 1 do
     trajectory = axon_state.step_state.trajectory
 
-    if rem(episode, 50) == 0 do
+    if rem(episode, 25) == 0 do
       GenServer.cast(
         AccumulateAndExportData,
         {:add_epoch, episode, axon_state.iteration, trajectory}
       )
     end
 
-    if rem(episode, 10) == 0 do
+    if rem(episode, 5) == 0 do
       Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
 
       traj = trajectory[[0..(axon_state.iteration - 1)//1, 0..1]]
@@ -401,6 +401,7 @@ fields = [
   :tack_count
 ]
 
+single_tack_num_actions = BoatLearner.Environments.SingleTack.num_actions()
 num_actions = BoatLearner.Environments.DoubleTack.num_actions()
 num_observations = length(fields)
 
@@ -411,7 +412,7 @@ single_tack_policy_net =
   |> Axon.dense(128, activation: :relu)
   |> Axon.dense(64, activation: :relu)
   |> Axon.dense(32, activation: :relu)
-  |> Axon.dense(num_actions)
+  |> Axon.dense(single_tack_num_actions)
   |> Axon.pop_node()
   |> elem(1)
   |> Axon.freeze()
@@ -457,7 +458,7 @@ environment_to_state_vector_fn = fn env_state ->
     normalize_speed.(env_state.previous_vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.prev_heading),
-    0
+    env_state.tack_count
   ]
   |> Nx.stack()
   |> Nx.new_axis(0)
@@ -489,7 +490,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 100_000
+episodes = 25_000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
@@ -500,13 +501,12 @@ AccumulateAndExportData.reset()
 eps_start = 1
 eps_end = 0.01
 
-eps_decay_rate = (0.2 / eps_start) ** (1 / 30_000)
+eps_decay_rate = (0.2 / eps_start) ** (1 / 6_000)
 
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
-      {BoatLearner.Environments.DoubleTack,
-       max_remaining_iterations: max_iter, target_y: target_y},
+      {BoatLearner.Environments.DoubleTack, max_remaining_seconds: max_iter, target_y: target_y},
       {ReinforcementLearning.Agents.DQN,
        policy_net: policy_net,
        q_policy: q_policy,
@@ -528,8 +528,7 @@ eps_decay_rate = (0.2 / eps_start) ** (1 / 30_000)
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter,
-      accumulated_episodes: 0
-      # accumulated_episodes: total_episodes
+      accumulated_episodes: total_episodes
     )
   end)
 

@@ -23,8 +23,8 @@ defmodule BoatLearner.Environments.DoubleTack do
              :prev_speed,
              :heading,
              :prev_heading,
-             :remaining_iterations,
-             :max_remaining_iterations,
+             :remaining_seconds,
+             :max_remaining_seconds,
              :vmg,
              :previous_vmg,
              :has_turned,
@@ -43,8 +43,8 @@ defmodule BoatLearner.Environments.DoubleTack do
     :reward,
     :is_terminal,
     :polar_chart,
-    :remaining_iterations,
-    :max_remaining_iterations,
+    :remaining_seconds,
+    :max_remaining_seconds,
     :vmg,
     :previous_vmg,
     :has_turned,
@@ -83,32 +83,45 @@ defmodule BoatLearner.Environments.DoubleTack do
   @speed Enum.map(@speed_kts, &(&1 * @kts_to_meters_per_sec))
   @max_speed @speed |> Enum.max() |> ceil()
 
-  @dt 5
+  # 68 degrees / 9 seconds = 7.5 deg/sec
+  # 75 degrees / 6 seconds = 12.5 deg/sec
+  # 77 degrees / 5 seconds = 15.4 deg/sec
+  # 65 degrees / 5 seconds = 13 deg/sec
+  # 82 degrees / 6 = 13.6 deg/sec
+
+  # rad/second
+  # turning_rates = [68 / 9, 75 / 6, 77 / 5, 65 / 5, 82 / 6]
+  # @turning_rate Enum.sum(turning_rates) / length(turning_rates) * @one_deg_in_rad -> 12.5 * @one_deg_in_rad
+
+  @turning_rate 12.5 * @one_deg_in_rad
+  @iters_per_action 20
+  @speed_penalty 0.4
+  @speed_recovery_in_seconds 4
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
-  # move, turn +-5
+  # 0, +- 1, +- 10, +- 30
   @impl true
-  def num_actions, do: 3
+  def num_actions, do: 7
 
   @impl true
   def init(random_key, opts) do
-    opts = Keyword.validate!(opts, [:target_y, :max_remaining_iterations])
+    opts = Keyword.validate!(opts, [:target_y, :max_remaining_seconds])
 
     target_y = opts[:target_y] || raise ArgumentError, "missing option :target_y"
 
-    max_remaining_iterations =
-      opts[:max_remaining_iterations] ||
-        raise ArgumentError, "missing option :max_remaining_iterations"
+    max_remaining_seconds =
+      opts[:max_remaining_seconds] ||
+        raise ArgumentError, "missing option :max_remaining_seconds"
 
     reset(random_key, %__MODULE__{
       target_y: target_y,
       polar_chart: init_polar_chart(),
-      max_remaining_iterations: Nx.tensor(max_remaining_iterations, type: :f32)
+      max_remaining_seconds: Nx.tensor(max_remaining_seconds, type: :f32)
     })
   end
 
-  defp init_polar_chart do
+  def init_polar_chart do
     # data for the boat at TWS=6
 
     theta = Nx.tensor(@theta)
@@ -159,8 +172,8 @@ defmodule BoatLearner.Environments.DoubleTack do
         prev_y: y,
         reward: reward,
         is_terminal: Nx.tensor(0, type: :u8),
-        has_turned: Nx.tensor(0, type: :s64),
-        remaining_iterations: state.max_remaining_iterations,
+        has_turned: Nx.tensor(0, type: :u8),
+        remaining_seconds: state.max_remaining_seconds,
         previous_vmg: previous_vmg,
         vmg: vmg,
         tack_count: Nx.tensor(0, type: :s64)
@@ -177,13 +190,25 @@ defmodule BoatLearner.Environments.DoubleTack do
     new_env =
       cond do
         action == 0 ->
-          turn(env, -5 * @one_deg_in_rad)
+          turn_and_move(env, -30 * @one_deg_in_rad)
 
         action == 1 ->
-          turn(env, 5 * @one_deg_in_rad)
+          turn_and_move(env, -10 * @one_deg_in_rad)
+
+        action == 2 ->
+          turn_and_move(env, -1 * @one_deg_in_rad)
+
+        action == 3 ->
+          turn_and_move(env, 0)
+
+        action == 4 ->
+          turn_and_move(env, @one_deg_in_rad)
+
+        action == 5 ->
+          turn_and_move(env, 10 * @one_deg_in_rad)
 
         true ->
-          move(env)
+          turn_and_move(env, 30 * @one_deg_in_rad)
       end
 
     new_env =
@@ -194,66 +219,76 @@ defmodule BoatLearner.Environments.DoubleTack do
     %ReinforcementLearning{rl_state | environment_state: new_env}
   end
 
-  defnp turn(env, angle_inc, remaining_iterations_penalty \\ 1) do
+  defn turn_and_move(env, dtheta) do
+    turning_time = Nx.abs(dtheta) / @turning_rate
+    dt = turning_time / @iters_per_action
+
+    dtheta_steps = Nx.broadcast(@turning_rate * dt * Nx.sign(dtheta), {@iters_per_action})
     prev_heading = env.heading
-    heading = prev_heading + angle_inc
+    heading_steps = Nx.cumulative_sum(dtheta_steps) + prev_heading
+
     two_pi = 2 * pi()
-    heading = Nx.select(heading >= two_pi, heading - two_pi, heading)
-    heading = Nx.select(heading < 0, heading + two_pi, heading)
-    speed = speed_from_heading(env.polar_chart, heading)
+    heading_steps = Nx.select(heading_steps >= two_pi, heading_steps - two_pi, heading_steps)
+    heading_steps = Nx.select(heading_steps < 0, heading_steps + two_pi, heading_steps)
+
+    # Calculate the speed and apply the speed penalty
+    speed_steps = speed_from_heading(env.polar_chart, heading_steps)
+    target_speed = speed_steps[-1]
+    speed_steps = @speed_penalty * speed_steps
 
     # because we are normalizing angles to be between 0 and 2pi,
     # this check is equivalent to checking for 0 crossings if
     # the angles were normalized between -pi and pi
     tack_count =
-      if heading < pi() != prev_heading < pi() do
+      if heading_steps[-1] < pi() != prev_heading < pi() do
         env.tack_count + 1
       else
         env.tack_count
       end
 
+    # Calculate the position changes in x and y directions for each interval
+    dx = dt * Nx.sin(heading_steps) * speed_steps
+    dy = dt * Nx.cos(heading_steps) * speed_steps
+
+    x = env.x + Nx.sum(dx)
+    y = env.y + Nx.sum(dy)
+
+    heading = heading_steps[-1]
+    speed = speed_steps[-1]
+
+    # Recover the speed over `@speed_recovery_in_seconds` seconds
+    speed_steps = Nx.linspace(speed, target_speed, n: @speed_recovery_in_seconds)
+    # because the heading won't change, the calculation would be:
+    # dx = Nx.sin(heading) * speed_steps[0] + Nx.sin(heading) * speed_steps[1] + ... + Nx.sin(heading) * speed_steps[-1]
+    # which means that: dx = Nx.sin(heading) * (speed_steps[0] + speed_steps[1] + ... + speed_steps[-1])
+    # which simplifies to dx = Nx.sin(heading) * Nx.sum(speed_steps), and likewise for dy
+
+    x = x + Nx.sin(heading) * Nx.sum(speed_steps)
+    y = y + Nx.cos(heading) * Nx.sum(speed_steps)
+    speed = target_speed
+
+    target_x = 0
+    dx = target_x - x
+    dy = env.target_y - y
+
+    angle_to_mark = Nx.atan2(dx, dy)
+
+    vmg = speed * Nx.cos(heading - angle_to_mark)
+
     %__MODULE__{
       env
-      | remaining_iterations: env.remaining_iterations - remaining_iterations_penalty,
+      | remaining_seconds: env.remaining_seconds - (turning_time + @speed_recovery_in_seconds),
         heading: heading,
         prev_heading: prev_heading,
         speed: speed,
-        has_turned: 1,
-        tack_count: tack_count
-    }
-  end
-
-  defnp move(env) do
-    %__MODULE__{
-      heading: heading,
-      x: x,
-      y: y,
-      target_y: target_y,
-      speed: speed
-    } = env
-
-    x = x + speed * Nx.sin(heading) * @dt
-    y = y + speed * Nx.cos(heading) * @dt
-
-    dy = target_y - y
-    dx = -x
-
-    mark_vector = Nx.complex(dy, dx)
-    angle_to_mark = Nx.phase(mark_vector)
-    vmg = speed * Nx.cos(heading + angle_to_mark)
-
-    %__MODULE__{
-      env
-      | x: x,
+        has_turned: heading != prev_heading,
+        tack_count: tack_count,
+        vmg: vmg,
+        previous_vmg: env.vmg,
+        x: x,
         y: y,
         prev_x: env.x,
-        prev_y: env.y,
-        speed: speed,
-        prev_speed: env.speed,
-        remaining_iterations: env.remaining_iterations - 1,
-        previous_vmg: env.vmg,
-        vmg: vmg,
-        has_turned: 0
+        prev_y: env.y
     }
   end
 
@@ -275,14 +310,14 @@ defmodule BoatLearner.Environments.DoubleTack do
     %__MODULE__{
       x: x,
       y: y,
-      remaining_iterations: remaining_iterations,
+      remaining_seconds: remaining_seconds,
       tack_count: tack_count,
       target_y: target_y
     } = env
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
-        remaining_iterations < 2 or tack_count > 1
+        remaining_seconds < 2 or tack_count > 1
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
@@ -297,8 +332,11 @@ defmodule BoatLearner.Environments.DoubleTack do
     %__MODULE__{
       is_terminal: is_terminal,
       vmg: vmg,
-      remaining_iterations: remaining_iterations,
-      max_remaining_iterations: max_remaining_iterations
+      remaining_seconds: remaining_seconds,
+      max_remaining_seconds: max_remaining_seconds,
+      target_y: target_y,
+      y: y,
+      x: x
     } = env
 
     has_reached_target = has_reached_target(env)
@@ -306,16 +344,23 @@ defmodule BoatLearner.Environments.DoubleTack do
     reward =
       cond do
         has_reached_target ->
-          100
+          1000 * remaining_seconds / max_remaining_seconds
 
         is_terminal ->
-          -10
+          # Calculate the Euclidean distance between the updated position and the target position
+          distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
+          m = -1 / target_y
+          b = 1
+
+          # Normalize the distance to the range [-1, 1],
+          # such that initial_distance maps to 0 and 0 maps to 1
+          distance_reward = Nx.clip(m * distance + b, -1, 1) * 100
+
+          -100 + distance_reward * remaining_seconds / max_remaining_seconds
 
         true ->
-          vmg / @max_speed
+          vmg / @max_speed * 10 * remaining_seconds / max_remaining_seconds
       end
-
-    reward = reward * remaining_iterations / max_remaining_iterations
 
     %__MODULE__{env | reward: reward}
   end
