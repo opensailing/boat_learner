@@ -1,4 +1,4 @@
-defmodule BoatLearner.Environments.DoubleTack do
+defmodule BoatLearner.Environments.DoubleTackDiscrete do
   @moduledoc """
   Simple environment that provides an upwind mark
   and simulates the physics for wind at 0 degrees.
@@ -100,10 +100,9 @@ defmodule BoatLearner.Environments.DoubleTack do
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
-  # We have a single action in the interval [-1, 1]
-  # that maps linearly to angles [-pi, pi]
+  # 0, +- 1, +- 10, +- 30
   @impl true
-  def num_actions, do: 1
+  def num_actions, do: 7
 
   @impl true
   def init(random_key, opts) do
@@ -124,6 +123,7 @@ defmodule BoatLearner.Environments.DoubleTack do
 
   def init_polar_chart do
     # data for the boat at TWS=6
+
     theta = Nx.tensor(@theta)
     speed = Nx.tensor(@speed)
 
@@ -186,25 +186,45 @@ defmodule BoatLearner.Environments.DoubleTack do
   defn apply_action(rl_state, action) do
     %__MODULE__{} = env = rl_state.environment_state
 
-    action = Nx.reshape(action, {})
+    # 0: turn left, 1: keep heading, 2: turn right
+    new_env =
+      cond do
+        action == 0 ->
+          turn_and_move(env, -30 * @one_deg_in_rad)
+
+        action == 1 ->
+          turn_and_move(env, -10 * @one_deg_in_rad)
+
+        action == 2 ->
+          turn_and_move(env, -1 * @one_deg_in_rad)
+
+        action == 3 ->
+          turn_and_move(env, 0)
+
+        action == 4 ->
+          turn_and_move(env, @one_deg_in_rad)
+
+        action == 5 ->
+          turn_and_move(env, 10 * @one_deg_in_rad)
+
+        true ->
+          turn_and_move(env, 30 * @one_deg_in_rad)
+      end
 
     new_env =
-      env
-      |> turn_and_move(action * pi())
+      new_env
       |> is_terminal_state()
       |> calculate_reward()
 
     %ReinforcementLearning{rl_state | environment_state: new_env}
   end
 
-  defn turn_and_move(env, target_heading) do
-    prev_heading = env.heading
-    dtheta = target_heading - prev_heading
-
+  defn turn_and_move(env, dtheta) do
     turning_time = Nx.abs(dtheta) / @turning_rate
     dt = turning_time / @iters_per_action
 
     dtheta_steps = Nx.broadcast(@turning_rate * dt * Nx.sign(dtheta), {@iters_per_action})
+    prev_heading = env.heading
     heading_steps = Nx.cumulative_sum(dtheta_steps) + prev_heading
 
     two_pi = 2 * pi()

@@ -21,11 +21,9 @@ Mix.install(
 ```elixir
 alias VegaLite, as: Vl
 
-{min_x, max_x, min_y, max_y} = BoatLearner.Environments.DoubleTack.bounding_box()
+{min_x, max_x, min_y, _max_y} = BoatLearner.Environments.DoubleTackDiscrete.bounding_box()
 
 target_y = 100
-
-max_y = min(target_y, max_y)
 
 width = 600
 height = 600
@@ -42,12 +40,12 @@ angle_templates_base = [
 angle_templates =
   Enum.flat_map(0..9, fn offset ->
     Enum.map(angle_templates_base, fn %{x: x, y: y} ->
-      delta_y = (max_y - min_y) / 10 * offset
+      delta_y = (target_y - min_y) / 10 * offset
 
       {x, y} =
-        if y + delta_y > max_y do
-          x = (max_y - delta_y) * x / y
-          y = max_y
+        if y + delta_y > target_y do
+          x = (target_y - delta_y) * x / y
+          y = target_y
           {x, y}
         else
           {x, y + delta_y}
@@ -57,7 +55,7 @@ angle_templates =
     end)
   end)
 
-max_y = max(max_y, angle_templates |> Enum.map(& &1.y) |> Enum.max())
+max_y = max(target_y, angle_templates |> Enum.map(& &1.y) |> Enum.max())
 
 grid_widget =
   Vl.new(width: width, height: height)
@@ -68,7 +66,7 @@ grid_widget =
     |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x], clamp: false])
     |> Vl.encode_field(:y, "y",
       type: :quantitative,
-      scale: [domain: [min_y, max_y], clamp: false]
+      scale: [domain: [min_y, target_y], clamp: false]
     )
     |> Vl.encode_field(:color, "group", type: :nominal, scale: [scheme: "blues"], legend: false),
     Vl.new()
@@ -77,7 +75,7 @@ grid_widget =
     |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x], clamp: true])
     |> Vl.encode_field(:y, "y",
       type: :quantitative,
-      scale: [domain: [min_y, max_y], clamp: true]
+      scale: [domain: [min_y, target_y], clamp: true]
     )
     |> Vl.encode_field(:color, "episode",
       type: :nominal,
@@ -225,10 +223,6 @@ defmodule AccumulateAndExportData do
     {:noreply, state}
   end
 
-  def handle_cast({:add_epoch, _epoch, 0, _trajectory_tensor}, state) do
-    {:noreply, state}
-  end
-
   def handle_cast({:add_epoch, epoch, iterations, trajectory_tensor}, state) do
     trajectory_data =
       trajectory_tensor
@@ -288,59 +282,61 @@ plot_fn = fn axon_state ->
   episode = axon_state.epoch
   IO.inspect("Episode #{episode} ended")
 
-  trajectory = axon_state.step_state.trajectory
+  if axon_state.iteration > 1 do
+    trajectory = axon_state.step_state.trajectory
 
-  if rem(episode, 25) == 0 do
-    GenServer.cast(
-      AccumulateAndExportData,
-      {:add_epoch, episode, axon_state.iteration, trajectory}
-    )
-  end
-
-  if rem(episode, 5) == 0 do
-    Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
-
-    traj = trajectory[[0..(axon_state.iteration - 1)//1, 0..1]]
-
-    points =
-      traj
-      |> Nx.to_list()
-      |> Enum.with_index(fn [x, y], index ->
-        %{
-          x: x,
-          y: y,
-          index: index,
-          episode: episode
-        }
-      end)
-
-    Kino.VegaLite.push_many(grid_widget, points, dataset: "trajectory")
-
-    loss = Nx.to_number(axon_state.step_state.agent_state.loss)
-    loss_den = Nx.to_number(axon_state.step_state.agent_state.loss_denominator)
-
-    if loss_den > 0 do
-      loss = loss / loss_den
-
-      Kino.VegaLite.push(
-        loss_widget,
-        %{
-          episode: episode,
-          loss: loss
-        },
-        dataset: "loss"
+    if rem(episode, 25) == 0 do
+      GenServer.cast(
+        AccumulateAndExportData,
+        {:add_epoch, episode, axon_state.iteration, trajectory}
       )
     end
 
-    Kino.VegaLite.push(
-      reward_widget,
-      %{
-        episode: axon_state.epoch,
-        reward: Nx.to_number(axon_state.step_state.agent_state.total_reward),
-        iterations: axon_state.iteration
-      },
-      dataset: "reward"
-    )
+    if rem(episode, 5) == 0 do
+      Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
+
+      traj = trajectory[[0..(axon_state.iteration - 1)//1, 0..1]]
+
+      points =
+        traj
+        |> Nx.to_list()
+        |> Enum.with_index(fn [x, y], index ->
+          %{
+            x: x,
+            y: y,
+            index: index,
+            episode: episode
+          }
+        end)
+
+      Kino.VegaLite.push_many(grid_widget, points, dataset: "trajectory")
+
+      loss = Nx.to_number(axon_state.step_state.agent_state.loss)
+      loss_den = Nx.to_number(axon_state.step_state.agent_state.loss_denominator)
+
+      if loss_den > 0 do
+        loss = loss / loss_den
+
+        Kino.VegaLite.push(
+          loss_widget,
+          %{
+            episode: episode,
+            loss: loss
+          },
+          dataset: "loss"
+        )
+      end
+
+      Kino.VegaLite.push(
+        reward_widget,
+        %{
+          episode: axon_state.epoch,
+          reward: Nx.to_number(axon_state.step_state.agent_state.total_reward),
+          iterations: axon_state.iteration
+        },
+        dataset: "reward"
+      )
+    end
   end
 
   axon_state
@@ -352,10 +348,8 @@ filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.bin")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat")
 
 {
-  actor_params,
-  actor_target_params,
-  critic_params,
-  critic_target_params,
+  q_policy,
+  q_target,
   experience_replay_buffer_index,
   persisted_experience_replay_buffer_entries,
   experience_replay_buffer,
@@ -368,21 +362,32 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat"
     %{serialized: serialized, total_episodes: total_episodes} = :erlang.binary_to_term(contents)
 
     %{
-      actor_params: actor_params,
-      actor_target_params: actor_target_params,
-      critic_params: critic_params,
-      critic_target_params: critic_target_params,
+      q_policy: q_policy,
+      q_target: q_target,
       experience_replay_buffer_index: experience_replay_buffer_index,
       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
       experience_replay_buffer: exp_replay_buffer
     } = Nx.deserialize(serialized)
 
-    {actor_params, actor_target_params, critic_params, critic_target_params,
-     experience_replay_buffer_index, persisted_experience_replay_buffer_entries,
-     exp_replay_buffer, total_episodes}
+    {q_policy, q_target, experience_replay_buffer_index,
+     persisted_experience_replay_buffer_entries, exp_replay_buffer, total_episodes}
   rescue
     File.Error ->
-      {%{}, %{}, %{}, %{}, 0, 0, nil, 0}
+      {%{}, %{}, 0, 0, nil, 0}
+  end
+
+single_tack_namespace = "single_tack"
+
+q_policy =
+  case q_policy do
+    %{^single_tack_namespace => _} -> q_policy
+    _ -> %{single_tack_namespace => q_policy}
+  end
+
+q_target =
+  case q_target do
+    %{^single_tack_namespace => _} -> q_target
+    _ -> %{single_tack_namespace => q_target}
   end
 
 fields = [
@@ -396,24 +401,28 @@ fields = [
   :tack_count
 ]
 
-num_actions = BoatLearner.Environments.DoubleTack.num_actions()
+single_tack_num_actions = BoatLearner.Environments.SingleTack.num_actions()
+num_actions = BoatLearner.Environments.DoubleTackDiscrete.num_actions()
 num_observations = length(fields)
 
-state_input = Axon.input("state", shape: {nil, num_observations})
-action_input = Axon.input("actions", shape: {nil, num_actions})
+input = Axon.input("state", shape: {nil, num_observations})
 
-actor_net =
-  state_input
-  |> Axon.dense(512, activation: :relu)
-  |> Axon.dense(512, activation: :relu)
-  |> Axon.dense(num_actions, activation: :tanh)
+single_tack_policy_net =
+  input
+  |> Axon.dense(128, activation: :relu)
+  |> Axon.dense(64, activation: :relu)
+  |> Axon.dense(32, activation: :relu)
+  |> Axon.dense(single_tack_num_actions)
+  |> Axon.pop_node()
+  |> elem(1)
+  |> Axon.freeze()
+  |> Axon.namespace(single_tack_namespace)
 
-critic_net =
-  [state_input, action_input]
-  |> Axon.concatenate()
-  |> Axon.dense(512, activation: :relu)
-  |> Axon.dense(512, activation: :relu)
-  |> Axon.dense(1)
+policy_net =
+  single_tack_policy_net
+  |> Axon.dense(64, activation: :relu)
+  |> Axon.dense(32, activation: :relu)
+  |> Axon.dense(num_actions)
 
 # These might seem redundant, but will make more sense for multi-input models
 normalize_x = fn x ->
@@ -455,25 +464,22 @@ environment_to_state_vector_fn = fn env_state ->
   |> Nx.new_axis(0)
 end
 
+environment_to_input_fn = fn env_state ->
+  %{"state" => environment_to_state_vector_fn.(env_state)}
+end
+
 state_vector_to_input_fn = fn state_vector ->
   %{"state" => state_vector}
 end
 
-# actor_params = %{} 
-# actor_target_params = %{} 
-# critic_params = %{} 
-# critic_target_params = %{}
+# q_policy = %{}
+# q_target = q_policy
 # total_episodes = 0
 # experience_replay_buffer = nil
 # persisted_experience_replay_buffer_entries = 0
 # experience_replay_buffer_index = 0
 
-IO.inspect(
-  {actor_params, actor_target_params, critic_params, critic_target_params, total_episodes},
-  label:
-    "{actor_params, actor_target_params, critic_params, critic_target_params, total_episodes}"
-)
-
+IO.inspect({q_policy, q_target, total_episodes}, label: "{q_policy, q_target, total_episodes}")
 :ok
 ```
 
@@ -490,27 +496,34 @@ max_iter = 200
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
 
+{learning_rate, gamma, training_frequency} = {0.001, 0.99, 32}
+
+eps_start = 1
+eps_end = 0.01
+
+eps_decay_rate = (0.5 / eps_start) ** (1 / 10_000)
+
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
-      {
-        BoatLearner.Environments.DoubleTack,
-        max_remaining_seconds: max_iter, target_y: target_y
-      },
-      {
-        ReinforcementLearning.Agents.DDPG,
-        actor_net: actor_net,
-        actor_params: actor_params,
-        actor_target_params: actor_target_params,
-        critic_net: critic_net,
-        critic_params: critic_params,
-        critic_target_params: critic_target_params,
-        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
-        experience_replay_buffer_index: experience_replay_buffer_index,
-        experience_replay_buffer: experience_replay_buffer,
-        environment_to_state_vector_fn: environment_to_state_vector_fn,
-        state_vector_to_input_fn: state_vector_to_input_fn
-      },
+      {BoatLearner.Environments.DoubleTackDiscrete, max_remaining_seconds: max_iter, target_y: target_y},
+      {ReinforcementLearning.Agents.DQN,
+       policy_net: policy_net,
+       q_policy: q_policy,
+       q_target: q_target,
+       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
+       experience_replay_buffer_index: experience_replay_buffer_index,
+       experience_replay_buffer: experience_replay_buffer,
+       environment_to_input_fn: environment_to_input_fn,
+       environment_to_state_vector_fn: environment_to_state_vector_fn,
+       state_vector_to_input_fn: state_vector_to_input_fn,
+       learning_rate: learning_rate,
+       gamma: gamma,
+       training_frequency: training_frequency,
+       target_training_frequency: 100,
+       eps_start: eps_start,
+       eps_end: eps_end,
+       eps_decay_rate: eps_decay_rate},
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
@@ -524,10 +537,8 @@ GenServer.call(AccumulateAndExportData, {:save, export_filename})
 serialized =
   Nx.serialize(
     Map.take(result.step_state.agent_state, [
-      :actor_params,
-      :actor_target_params,
-      :critic_params,
-      :critic_target_params,
+      :q_policy,
+      :q_target,
       :experience_replay_buffer_index,
       :experience_replay_buffer,
       :persisted_experience_replay_buffer_entries
