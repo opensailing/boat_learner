@@ -461,14 +461,14 @@ state_vector_to_input_fn = fn state_vector ->
   %{"state" => state_vector}
 end
 
-actor_params = %{}
-actor_target_params = %{}
-critic_params = %{}
-critic_target_params = %{}
-total_episodes = 0
-experience_replay_buffer = nil
-persisted_experience_replay_buffer_entries = 0
-experience_replay_buffer_index = 0
+# actor_params = %{}
+# actor_target_params = %{}
+# critic_params = %{}
+# critic_target_params = %{}
+# total_episodes = 0
+# experience_replay_buffer = nil
+# persisted_experience_replay_buffer_entries = 0
+# experience_replay_buffer_index = 0
 
 IO.inspect(
   {actor_params, actor_target_params, critic_params, critic_target_params, total_episodes},
@@ -492,6 +492,10 @@ max_iter = 200
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
 
+eps_start = 1
+eps_end = 0.01
+eps_decay_rate = (0.5 / eps_start) ** (1 / 10_000)
+
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
@@ -513,9 +517,11 @@ AccumulateAndExportData.reset()
         experience_replay_buffer_max_size: 100_000,
         environment_to_state_vector_fn: environment_to_state_vector_fn,
         state_vector_to_input_fn: state_vector_to_input_fn,
-        noise_stddev: 0.05,
         training_frequency: 10,
-        target_update_frequency: 50
+        target_update_frequency: 50,
+        eps_start: eps_start,
+        eps_end: eps_end,
+        eps_decay_rate: eps_decay_rate
       },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,

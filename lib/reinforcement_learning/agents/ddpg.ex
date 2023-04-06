@@ -9,6 +9,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
   """
   import Nx.Defn
 
+  alias ReinforcementLearning.Utils.Noise.OUProcess
+
   @behaviour ReinforcementLearning.Agent
 
   @derive {Nx.Container,
@@ -20,7 +22,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :experience_replay_buffer,
              :experience_replay_buffer_index,
              :persisted_experience_replay_buffer_entries,
-             :noise_stddev,
              :training_frequency,
              :target_update_frequency,
              :loss,
@@ -30,7 +31,12 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :critic_optimizer_state,
              :action_lower_limit,
              :action_upper_limit,
-             :state_vector
+             :state_vector,
+             :ou_process,
+             :epsilon_greedy_eps,
+             :eps_start,
+             :eps_end,
+             :eps_decay_rate
            ],
            keep: [
              :environment_to_state_vector_fn,
@@ -65,7 +71,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
     :experience_replay_buffer_max_size,
     :tau,
     :batch_size,
-    :noise_stddev,
     :training_frequency,
     :target_update_frequency,
     :actor_optimizer_state,
@@ -76,7 +81,12 @@ defmodule ReinforcementLearning.Agents.DDPG do
     :loss_denominator,
     :total_reward,
     :actor_optimizer_update_fn,
-    :critic_optimizer_update_fn
+    :critic_optimizer_update_fn,
+    :ou_process,
+    :epsilon_greedy_eps,
+    :eps_start,
+    :eps_end,
+    :eps_decay_rate
   ]
 
   @impl true
@@ -93,11 +103,15 @@ defmodule ReinforcementLearning.Agents.DDPG do
       :persisted_experience_replay_buffer_entries,
       :environment_to_state_vector_fn,
       :state_vector_to_input_fn,
+      ou_process_opts: [],
+      epsilon_greedy_eps: 1,
+      eps_start: 1,
+      eps_end: 0.01,
+      eps_decay_rate: 0.9995,
       gamma: 0.99,
       experience_replay_buffer_max_size: 1_000_000,
       tau: 0.005,
       batch_size: 64,
-      noise_stddev: 0.1,
       training_frequency: 32,
       target_update_frequency: 100,
       actor_optimizer_params: [learning_rate: 1.0e-3, eps: 1.0e-7, adamw_decay: 1.0e-2],
@@ -195,6 +209,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     {1, num_actions} = Axon.get_output_shape(actor_net, input_template)
 
+    ou_process = OUProcess.init({1, num_actions}, opts[:ou_process_opts])
+
     critic_template = input_template(critic_net)
 
     case critic_template do
@@ -229,6 +245,10 @@ defmodule ReinforcementLearning.Agents.DDPG do
     experience_replay_buffer_max_size = opts[:experience_replay_buffer_max_size]
 
     state = %__MODULE__{
+      epsilon_greedy_eps: opts[:eps_start],
+      eps_start: opts[:eps_start],
+      eps_end: opts[:eps_end],
+      eps_decay_rate: opts[:eps_decay_rate],
       state_vector: Nx.broadcast(0.0, {1, state_vector_size}),
       state_vector_size: state_vector_size,
       num_actions: num_actions,
@@ -255,7 +275,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       gamma: opts[:gamma],
       tau: opts[:tau],
       batch_size: opts[:batch_size],
-      noise_stddev: opts[:noise_stddev],
+      ou_process: ou_process,
       training_frequency: opts[:training_frequency],
       target_update_frequency: opts[:target_update_frequency],
       total_reward: total_reward,
@@ -289,14 +309,18 @@ defmodule ReinforcementLearning.Agents.DDPG do
   end
 
   @impl true
-  def reset(random_key, %ReinforcementLearning{agent_state: state}) do
+  def reset(random_key, %ReinforcementLearning{episode: episode, agent_state: state}) do
     total_reward = loss = loss_denominator = Nx.tensor(0, type: :f32)
+
+    eps =
+      Nx.max(Nx.multiply(state.eps_start, Nx.pow(state.eps_decay_rate, episode)), state.eps_end)
 
     {%{
        state
        | total_reward: total_reward,
          loss: loss,
-         loss_denominator: loss_denominator
+         loss_denominator: loss_denominator,
+         epsilon_greedy_eps: eps
      }, random_key}
   end
 
@@ -309,25 +333,20 @@ defmodule ReinforcementLearning.Agents.DDPG do
       actor_params: actor_params,
       actor_predict_fn: actor_predict_fn,
       environment_to_state_vector_fn: environment_to_state_vector_fn,
-      num_actions: num_actions,
-      noise_stddev: noise_stddev,
       action_lower_limit: action_lower_limit,
-      action_upper_limit: action_upper_limit
+      action_upper_limit: action_upper_limit,
+      ou_process: ou_process,
+      epsilon_greedy_eps: epsilon_greedy_eps
     } = agent_state
 
     state_vector = environment_to_state_vector_fn.(state.environment_state)
 
     action_vector = actor_predict_fn.(actor_params, state_vector)
 
-    {additive_noise, random_key} =
-      if noise_stddev <= 0 do
-        # pass 0 or negative to turn off randomness
-        {0, random_key}
-      else
-        Nx.Random.normal(random_key, 0, noise_stddev, shape: {1, num_actions}, type: :f32)
-      end
+    {%OUProcess{x: additive_noise} = ou_process, random_key} =
+      OUProcess.sample(random_key, ou_process)
 
-    action_vector = action_vector + additive_noise
+    action_vector = action_vector + additive_noise * epsilon_greedy_eps
 
     clipped_action_vector =
       action_vector
@@ -335,7 +354,11 @@ defmodule ReinforcementLearning.Agents.DDPG do
       |> Nx.min(action_upper_limit)
 
     {clipped_action_vector,
-     %{state | agent_state: %{agent_state | state_vector: state_vector}, random_key: random_key}}
+     %{
+       state
+       | agent_state: %{agent_state | ou_process: ou_process, state_vector: state_vector},
+         random_key: random_key
+     }}
   end
 
   @impl true
