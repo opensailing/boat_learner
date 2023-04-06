@@ -132,7 +132,7 @@ loss_widget =
       ]
     )
   ])
-  |> Vl.param("max_y", value: 1, bind: [input: "number"])
+  |> Vl.param("max_y", value: 10, bind: [input: "number"])
   |> Vl.param("min_y", value: 0, bind: [input: "number"])
   |> Kino.VegaLite.new()
   |> Kino.render()
@@ -181,8 +181,8 @@ reward_widget =
       axis: [tick_count: 10]
     )
   ])
-  |> Vl.param("max_y", value: 100, bind: [input: "number"])
-  |> Vl.param("min_y", value: -10, bind: [input: "number"])
+  |> Vl.param("max_y", value: 50, bind: [input: "number"])
+  |> Vl.param("min_y", value: -150, bind: [input: "number"])
   |> Vl.encode_field(:order, "episode")
   |> Kino.VegaLite.new()
   |> Kino.render()
@@ -486,7 +486,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 100_000
+episodes = 30_000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
@@ -510,9 +510,12 @@ AccumulateAndExportData.reset()
         persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
         experience_replay_buffer_index: experience_replay_buffer_index,
         experience_replay_buffer: experience_replay_buffer,
+        experience_replay_buffer_max_size: 100_000,
         environment_to_state_vector_fn: environment_to_state_vector_fn,
         state_vector_to_input_fn: state_vector_to_input_fn,
-        noise_stddev: 0.25
+        noise_stddev: 0.05,
+        training_frequency: 10,
+        target_update_frequency: 50
       },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,

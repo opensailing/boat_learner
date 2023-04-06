@@ -51,7 +51,7 @@ defmodule BoatLearner.Environments.DoubleTack do
     :tack_count
   ]
 
-  @min_x 0
+  @min_x -125
   @max_x 125
   @min_y 0
   @max_y 250
@@ -153,12 +153,14 @@ defmodule BoatLearner.Environments.DoubleTack do
     zero = Nx.tensor(0, type: :f32)
     vmg = previous_vmg = y = speed = x = reward = zero
 
-    {heading, random_key} = Nx.Random.uniform(random_key, 0, :math.pi() / 2 - @one_deg_in_rad)
+    {heading, random_key} =
+      Nx.Random.uniform(
+        random_key,
+        -:math.pi() / 2 + @one_deg_in_rad,
+        :math.pi() / 2 - @one_deg_in_rad
+      )
 
-    heading = Nx.floor(heading)
-
-    x = Nx.add(x, 1)
-    y = Nx.add(y, 1)
+    heading = Nx.select(Nx.less(heading, 0), Nx.add(2 * :math.pi(), heading), heading)
 
     state = %__MODULE__{
       state
