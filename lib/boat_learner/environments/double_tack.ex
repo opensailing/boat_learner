@@ -190,16 +190,15 @@ defmodule BoatLearner.Environments.DoubleTack do
 
     new_env =
       env
-      |> turn_and_move(action * pi())
+      |> turn_and_move(action * pi() / 2)
       |> is_terminal_state()
       |> calculate_reward()
 
     %ReinforcementLearning{rl_state | environment_state: new_env}
   end
 
-  defn turn_and_move(env, target_heading) do
+  defn turn_and_move(env, dtheta) do
     prev_heading = env.heading
-    dtheta = target_heading - prev_heading
 
     turning_time = Nx.abs(dtheta) / @turning_rate
     dt = turning_time / @iters_per_action

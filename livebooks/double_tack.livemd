@@ -73,7 +73,7 @@ grid_widget =
     |> Vl.encode_field(:color, "group", type: :nominal, scale: [scheme: "blues"], legend: false),
     Vl.new()
     |> Vl.data(name: "trajectory")
-    |> Vl.mark(:line, opacity: 1, tooltip: [content: "data"])
+    |> Vl.mark(:line, point: true, opacity: 1, tooltip: [content: "data"])
     |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x], clamp: true])
     |> Vl.encode_field(:y, "y",
       type: :quantitative,
@@ -393,7 +393,8 @@ fields = [
   :target_y,
   :heading,
   :previous_heading,
-  :tack_count
+  :tack_count,
+  :optimal_angle
 ]
 
 num_actions = BoatLearner.Environments.DoubleTack.num_actions()
@@ -449,7 +450,8 @@ environment_to_state_vector_fn = fn env_state ->
     normalize_speed.(env_state.previous_vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.prev_heading),
-    env_state.tack_count
+    env_state.tack_count,
+    normalize_angle.(42.7 / 180 * :math.pi())
   ]
   |> Nx.stack()
   |> Nx.new_axis(0)
@@ -459,14 +461,14 @@ state_vector_to_input_fn = fn state_vector ->
   %{"state" => state_vector}
 end
 
-# actor_params = %{} 
-# actor_target_params = %{} 
-# critic_params = %{} 
-# critic_target_params = %{}
-# total_episodes = 0
-# experience_replay_buffer = nil
-# persisted_experience_replay_buffer_entries = 0
-# experience_replay_buffer_index = 0
+actor_params = %{}
+actor_target_params = %{}
+critic_params = %{}
+critic_target_params = %{}
+total_episodes = 0
+experience_replay_buffer = nil
+persisted_experience_replay_buffer_entries = 0
+experience_replay_buffer_index = 0
 
 IO.inspect(
   {actor_params, actor_target_params, critic_params, critic_target_params, total_episodes},
@@ -509,7 +511,8 @@ AccumulateAndExportData.reset()
         experience_replay_buffer_index: experience_replay_buffer_index,
         experience_replay_buffer: experience_replay_buffer,
         environment_to_state_vector_fn: environment_to_state_vector_fn,
-        state_vector_to_input_fn: state_vector_to_input_fn
+        state_vector_to_input_fn: state_vector_to_input_fn,
+        noise_stddev: 0.25
       },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,
@@ -540,7 +543,6 @@ contents =
   :erlang.term_to_binary(%{serialized: serialized, total_episodes: total_episodes + episodes})
 
 File.write!(filename, contents)
-result.step_state.agent_state.q_policy
 ```
 
 ## Grid Search

@@ -162,23 +162,17 @@ defmodule ReinforcementLearning.Agents.DDPG do
     end
 
     {actor_optimizer_init_fn, actor_optimizer_update_fn} =
-      Axon.Updates.clip_by_global_norm()
-      |> Axon.Updates.compose(
-        Axon.Optimizers.adamw(
-          actor_optimizer_params[:learning_rate],
-          eps: actor_optimizer_params[:eps],
-          decay: actor_optimizer_params[:adamw_decay]
-        )
+      Axon.Optimizers.adamw(
+        actor_optimizer_params[:learning_rate],
+        eps: actor_optimizer_params[:eps],
+        decay: actor_optimizer_params[:adamw_decay]
       )
 
     {critic_optimizer_init_fn, critic_optimizer_update_fn} =
-      Axon.Updates.clip_by_global_norm()
-      |> Axon.Updates.compose(
-        Axon.Optimizers.adamw(
-          critic_optimizer_params[:learning_rate],
-          eps: critic_optimizer_params[:eps],
-          decay: critic_optimizer_params[:adamw_decay]
-        )
+      Axon.Optimizers.adamw(
+        critic_optimizer_params[:learning_rate],
+        eps: critic_optimizer_params[:eps],
+        decay: critic_optimizer_params[:adamw_decay]
       )
 
     initial_actor_params_state = opts[:actor_params]
