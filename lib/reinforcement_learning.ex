@@ -102,7 +102,8 @@ defmodule ReinforcementLearning do
     loop
     |> Axon.Loop.handle_event(
       :epoch_started,
-      &{:continue, %{&1 | step_state: reset_state(&1.step_state, agent, environment)}}
+      &{:continue,
+       %{&1 | step_state: reset_state(&1.step_state, agent, environment, state_to_trajectory_fn)}}
     )
     |> Axon.Loop.handle_event(:epoch_completed, fn loop_state ->
       loop_state = tap(loop_state, epoch_completed_callback)
@@ -133,13 +134,14 @@ defmodule ReinforcementLearning do
            random_key: random_key
          } = loop_state,
          agent,
-         environment
+         environment,
+         state_to_trajectory_fn
        ) do
     {agent_state, random_key} = agent.reset(random_key, loop_state)
 
     {environment_state, random_key} = environment.reset(random_key, environment_state)
 
-    %{
+    state = %{
       loop_state
       | agent_state: agent_state,
         environment_state: environment_state,
@@ -148,6 +150,8 @@ defmodule ReinforcementLearning do
         episode: Nx.add(loop_state.episode, 1),
         iteration: Nx.tensor(0, type: :s64)
     }
+
+    persist_trajectory(state, state_to_trajectory_fn)
   end
 
   defp batch_step(
@@ -174,7 +178,7 @@ defmodule ReinforcementLearning do
   end
 
   defnp persist_trajectory(
-          %{trajectory: trajectory, iteration: iteration} = step_state,
+          %__MODULE__{trajectory: trajectory, iteration: iteration} = step_state,
           state_to_trajectory_fn
         ) do
     updates = state_to_trajectory_fn.(step_state)

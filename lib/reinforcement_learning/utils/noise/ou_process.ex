@@ -11,12 +11,14 @@ defmodule ReinforcementLearning.Utils.Noise.OUProcess do
 
   deftransform init(shape, opts \\ []) do
     opts = Keyword.validate!(opts, theta: 0.15, sigma: 0.2, type: :f32, mu: 0)
+
     theta = opts[:theta]
     sigma = opts[:sigma]
     type = opts[:type]
     mu = opts[:mu]
+    mu = Nx.as_type(mu, type)
 
-    x = Nx.broadcast(Nx.as_type(mu, type), shape)
+    x = Nx.broadcast(mu, shape)
     %__MODULE__{theta: theta, sigma: sigma, mu: mu, x: x}
   end
 

@@ -13,6 +13,16 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
   @behaviour ReinforcementLearning.Agent
 
+  @derive {Inspect,
+           except: [
+             :actor_params,
+             :actor_target_params,
+             :critic_params,
+             :critic_target_params,
+             :experience_replay_buffer,
+             :actor_optimizer_state,
+             :critic_optimizer_state
+           ]}
   @derive {Nx.Container,
            containers: [
              :actor_params,
@@ -33,10 +43,13 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :action_upper_limit,
              :state_vector,
              :ou_process,
-             :epsilon_greedy_eps,
-             :eps_start,
-             :eps_end,
-             :eps_decay_rate
+             :max_sigma,
+             :min_sigma,
+             :exploration_decay_rate,
+             :performance_memory,
+             :performance_threshold,
+             :gamma,
+             :tau
            ],
            keep: [
              :environment_to_state_vector_fn,
@@ -47,9 +60,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :num_actions,
              :actor_optimizer_update_fn,
              :critic_optimizer_update_fn,
-             :batch_size,
-             :gamma,
-             :tau
+             :batch_size
            ]}
   defstruct [
     :state_vector,
@@ -83,10 +94,11 @@ defmodule ReinforcementLearning.Agents.DDPG do
     :actor_optimizer_update_fn,
     :critic_optimizer_update_fn,
     :ou_process,
-    :epsilon_greedy_eps,
-    :eps_start,
-    :eps_end,
-    :eps_decay_rate
+    :max_sigma,
+    :min_sigma,
+    :exploration_decay_rate,
+    :performance_memory,
+    :performance_threshold
   ]
 
   @impl true
@@ -104,10 +116,9 @@ defmodule ReinforcementLearning.Agents.DDPG do
       :environment_to_state_vector_fn,
       :state_vector_to_input_fn,
       ou_process_opts: [],
-      epsilon_greedy_eps: 1,
-      eps_start: 1,
-      eps_end: 0.01,
-      eps_decay_rate: 0.9995,
+      performance_memory_length: 100,
+      exploration_decay_rate: 0.9995,
+      performance_threshold: 0.01,
       gamma: 0.99,
       experience_replay_buffer_max_size: 1_000_000,
       tau: 0.005,
@@ -116,8 +127,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
       target_update_frequency: 100,
       actor_optimizer_params: [learning_rate: 1.0e-3, eps: 1.0e-7, adamw_decay: 1.0e-2],
       critic_optimizer_params: [learning_rate: 2.0e-3, eps: 1.0e-7, adamw_decay: 1.0e-2],
-      action_lower_limit: -1,
-      action_upper_limit: 1
+      action_lower_limit: -1.0,
+      action_upper_limit: 1.0
     ]
 
     opts = Keyword.validate!(opts, expected_opts)
@@ -209,7 +220,18 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     {1, num_actions} = Axon.get_output_shape(actor_net, input_template)
 
-    ou_process = OUProcess.init({1, num_actions}, opts[:ou_process_opts])
+    {max_sigma, ou_process_opts} = Keyword.pop!(opts[:ou_process_opts], :max_sigma)
+    {min_sigma, ou_process_opts} = Keyword.pop!(ou_process_opts, :min_sigma)
+
+    unless max_sigma do
+      raise ArgumentError, "option [:ou_process_opts][:max_sigma] cannot be nil"
+    end
+
+    unless min_sigma do
+      raise ArgumentError, "option [:ou_process_opts][:min_sigma] cannot be nil"
+    end
+
+    ou_process = OUProcess.init({1, num_actions}, ou_process_opts)
 
     critic_template = input_template(critic_net)
 
@@ -245,10 +267,9 @@ defmodule ReinforcementLearning.Agents.DDPG do
     experience_replay_buffer_max_size = opts[:experience_replay_buffer_max_size]
 
     state = %__MODULE__{
-      epsilon_greedy_eps: opts[:eps_start],
-      eps_start: opts[:eps_start],
-      eps_end: opts[:eps_end],
-      eps_decay_rate: opts[:eps_decay_rate],
+      max_sigma: max_sigma,
+      min_sigma: min_sigma,
+      exploration_decay_rate: opts[:exploration_decay_rate],
       state_vector: Nx.broadcast(0.0, {1, state_vector_size}),
       state_vector_size: state_vector_size,
       num_actions: num_actions,
@@ -260,6 +281,10 @@ defmodule ReinforcementLearning.Agents.DDPG do
       critic_net: critic_net,
       actor_predict_fn: actor_predict_fn,
       critic_predict_fn: critic_predict_fn,
+      performance_threshold: opts[:performance_threshold],
+      performance_memory:
+        opts[:performance_memory] ||
+          Nx.broadcast(total_reward, {opts[:performance_memory_length]}),
       experience_replay_buffer_max_size: experience_replay_buffer_max_size,
       experience_replay_buffer:
         opts[:experience_replay_buffer] ||
@@ -312,16 +337,85 @@ defmodule ReinforcementLearning.Agents.DDPG do
   def reset(random_key, %ReinforcementLearning{episode: episode, agent_state: state}) do
     total_reward = loss = loss_denominator = Nx.tensor(0, type: :f32)
 
-    eps =
-      Nx.max(Nx.multiply(state.eps_start, Nx.pow(state.eps_decay_rate, episode)), state.eps_end)
+    state = adapt_exploration(episode, state)
 
     {%{
        state
        | total_reward: total_reward,
          loss: loss,
-         loss_denominator: loss_denominator,
-         epsilon_greedy_eps: eps
+         loss_denominator: loss_denominator
      }, random_key}
+  end
+
+  defnp adapt_exploration(
+          episode,
+          %__MODULE__{
+            ou_process: ou_process,
+            exploration_decay_rate: exploration_decay_rate,
+            min_sigma: min_sigma,
+            max_sigma: max_sigma,
+            total_reward: reward,
+            performance_memory: %Nx.Tensor{shape: {n}} = performance_memory,
+            performance_threshold: performance_threshold
+          } = state
+        ) do
+    {ou_process, performance_memory} =
+      cond do
+        episode == 0 ->
+          {ou_process, performance_memory}
+
+        episode < n ->
+          performance_memory =
+            Nx.indexed_put(
+              performance_memory,
+              Nx.reshape(episode, {1, 1}),
+              Nx.reshape(reward, {1})
+            )
+
+          {ou_process, performance_memory}
+
+        true ->
+          index = Nx.remainder(episode, n)
+
+          performance_memory =
+            Nx.indexed_put(performance_memory, Nx.reshape(index, {1, 1}), Nx.reshape(reward, {1}))
+
+          index = Nx.remainder(index + 1, n)
+
+          # We want to get our 2 windows in sequence so that we can compare them.
+          # The rem(iota + index + 1, n) operation will effectively set it so that
+          # we have the oldest window starting at the first position, and then all elements
+          # in the circular buffer fall into sequence
+          window_indices = Nx.remainder(Nx.iota({n}) + index, n)
+
+          # After we take and reshape, the first row contains the oldest `n//2` samples
+          # and the second row, the remaining newest samples.
+          windows =
+            performance_memory
+            |> Nx.take(window_indices)
+            |> Nx.reshape({2, :auto})
+
+          # avg[0]: avg of the previous performance window
+          # avg[1]: avg of the current performance window
+          avg = Nx.mean(windows, axes: [1])
+
+          abs_diff = Nx.abs(avg[0] - avg[1])
+
+          sigma =
+            if abs_diff < performance_threshold do
+              Nx.min(ou_process.sigma / exploration_decay_rate, max_sigma)
+            else
+              Nx.max(ou_process.sigma * exploration_decay_rate, min_sigma)
+            end
+
+          {%OUProcess{ou_process | sigma: sigma}, performance_memory}
+      end
+
+    %__MODULE__{
+      state
+      | ou_process: OUProcess.reset(ou_process),
+        performance_memory: performance_memory
+    }
   end
 
   @impl true
@@ -335,8 +429,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       environment_to_state_vector_fn: environment_to_state_vector_fn,
       action_lower_limit: action_lower_limit,
       action_upper_limit: action_upper_limit,
-      ou_process: ou_process,
-      epsilon_greedy_eps: epsilon_greedy_eps
+      ou_process: ou_process
     } = agent_state
 
     state_vector = environment_to_state_vector_fn.(state.environment_state)
@@ -346,7 +439,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
     {%OUProcess{x: additive_noise} = ou_process, random_key} =
       OUProcess.sample(random_key, ou_process)
 
-    action_vector = action_vector + additive_noise * epsilon_greedy_eps
+    action_vector = action_vector + additive_noise
 
     clipped_action_vector =
       action_vector

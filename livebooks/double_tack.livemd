@@ -27,8 +27,8 @@ target_y = 100
 
 max_y = min(target_y, max_y)
 
-width = 600
-height = 600
+width = 500
+height = 500
 
 scale_max_x = max_x / 250
 scale_min_x = min_x / -250
@@ -65,8 +65,13 @@ grid_widget =
     Vl.new()
     |> Vl.data_from_values(angle_templates, name: "angles")
     |> Vl.mark(:line, opacity: 0.25)
-    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x], clamp: false])
+    |> Vl.encode_field(:x, "x",
+      legend: false,
+      type: :quantitative,
+      scale: [domain: [min_x, max_x], clamp: false]
+    )
     |> Vl.encode_field(:y, "y",
+      legend: false,
       type: :quantitative,
       scale: [domain: [min_y, max_y], clamp: false]
     )
@@ -74,20 +79,25 @@ grid_widget =
     Vl.new()
     |> Vl.data(name: "trajectory")
     |> Vl.mark(:line, point: true, opacity: 1, tooltip: [content: "data"])
-    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x], clamp: true])
+    |> Vl.encode_field(:x, "x",
+      legend: false,
+      type: :quantitative,
+      scale: [domain: [min_x, max_x], clamp: true]
+    )
     |> Vl.encode_field(:y, "y",
+      legend: false,
       type: :quantitative,
       scale: [domain: [min_y, max_y], clamp: true]
     )
     |> Vl.encode_field(:color, "episode",
+      legend: false,
       type: :nominal,
       scale: [scheme: "blues"],
       legend: false
     )
-    |> Vl.encode_field(:order, "index")
+    |> Vl.encode_field(:order, "index", legend: false)
   ])
   |> Kino.VegaLite.new()
-  |> Kino.render()
 
 loss_widget =
   Vl.new(width: width, height: div(height, 2), title: "Loss")
@@ -100,9 +110,10 @@ loss_widget =
       color: "red",
       opacity: 0.25
     )
-    |> Vl.encode_field(:x, "episode", type: :quantitative)
-    |> Vl.encode_field(:order, "episode")
+    |> Vl.encode_field(:x, "episode", legend: false, type: :quantitative)
+    |> Vl.encode_field(:order, "episode", legend: false)
     |> Vl.encode_field(:y, "loss",
+      legend: false,
       type: :quantitative,
       scale: [
         domain: %{expr: "[min_y, max_y]"},
@@ -122,9 +133,10 @@ loss_widget =
         ]
       ]
     )
-    |> Vl.encode_field(:x, "episode", type: :quantitative)
-    |> Vl.encode_field(:order, "episode")
+    |> Vl.encode_field(:x, "episode", legend: false, type: :quantitative)
+    |> Vl.encode_field(:order, "episode", legend: false)
     |> Vl.encode_field(:y, "rolling_mean_loss",
+      legend: false,
       type: :quantitative,
       scale: [
         domain: %{expr: "[min_y, max_y]"},
@@ -132,10 +144,9 @@ loss_widget =
       ]
     )
   ])
-  |> Vl.param("max_y", value: 10, bind: [input: "number"])
+  |> Vl.param("max_y", value: 50, bind: [input: "number"])
   |> Vl.param("min_y", value: 0, bind: [input: "number"])
   |> Kino.VegaLite.new()
-  |> Kino.render()
 
 reward_widget =
   Vl.new(width: width, height: div(height, 2), title: "Total Reward per Epoch")
@@ -149,8 +160,9 @@ reward_widget =
       color: "red",
       opacity: 0.25
     )
-    |> Vl.encode_field(:x, "episode", type: :quantitative)
+    |> Vl.encode_field(:x, "episode", legend: false, type: :quantitative)
     |> Vl.encode_field(:y, "reward",
+      legend: false,
       type: :quantitative,
       scale: [
         domain: %{expr: "[min_y, max_y]"},
@@ -170,9 +182,10 @@ reward_widget =
         ]
       ]
     )
-    |> Vl.encode_field(:x, "episode", type: :quantitative)
-    |> Vl.encode_field(:order, "episode")
+    |> Vl.encode_field(:x, "episode", legend: false, type: :quantitative)
+    |> Vl.encode_field(:order, "episode", legend: false)
     |> Vl.encode_field(:y, "rolling_mean_reward",
+      legend: false,
       type: :quantitative,
       scale: [
         domain: %{expr: "[min_y, max_y]"},
@@ -181,13 +194,51 @@ reward_widget =
       axis: [tick_count: 10]
     )
   ])
-  |> Vl.param("max_y", value: 50, bind: [input: "number"])
+  |> Vl.param("max_y", value: 150, bind: [input: "number"])
   |> Vl.param("min_y", value: -150, bind: [input: "number"])
-  |> Vl.encode_field(:order, "episode")
+  |> Vl.encode_field(:order, "episode", legend: false)
   |> Kino.VegaLite.new()
-  |> Kino.render()
 
-nil
+global_kv_key = :rl_training_metadata_key
+data = %{sigma: nil, episode: nil, total_reward: nil}
+:persistent_term.put(global_kv_key, data)
+
+metadata_widget = Kino.Frame.new()
+
+Kino.Frame.periodically(metadata_widget, 250, nil, fn prev_data ->
+  data = :persistent_term.get(global_kv_key)
+
+  if data != prev_data do
+    Kino.Frame.render(
+      metadata_widget,
+      [
+        "| Field | Value |\n",
+        "| ----- | ----- |\n",
+        Enum.map(data, fn {k, v} ->
+          ["|", to_string(k), " | ", if(v, do: to_string(v), else: " "), " |\n"]
+        end)
+      ]
+      |> IO.iodata_to_binary()
+      |> Kino.Markdown.new()
+    )
+  end
+
+  {:cont, data}
+end)
+
+simulation_widget =
+  Kino.Layout.grid([
+    Kino.Layout.grid([grid_widget], boxed: true),
+    Kino.Layout.grid([metadata_widget], boxed: true)
+  ])
+
+training_widget =
+  Kino.Layout.grid([
+    Kino.Layout.grid([loss_widget], boxed: true),
+    Kino.Layout.grid([reward_widget], boxed: true)
+  ])
+
+Kino.Layout.tabs([{"Simulation", simulation_widget}, {"Training", training_widget}])
 ```
 
 ```elixir
@@ -332,15 +383,25 @@ plot_fn = fn axon_state ->
       )
     end
 
+    total_reward = Nx.to_number(axon_state.step_state.agent_state.total_reward)
+
     Kino.VegaLite.push(
       reward_widget,
       %{
         episode: axon_state.epoch,
-        reward: Nx.to_number(axon_state.step_state.agent_state.total_reward),
+        reward: total_reward,
         iterations: axon_state.iteration
       },
       dataset: "reward"
     )
+
+    global_kv_key = :rl_training_metadata_key
+
+    :persistent_term.put(global_kv_key, %{
+      sigma: Nx.to_number(axon_state.step_state.agent_state.ou_process.sigma),
+      episode: episode,
+      total_reward: total_reward
+    })
   end
 
   axon_state
@@ -389,12 +450,12 @@ fields = [
   :x,
   :y,
   :vmg,
-  :previous_vmg,
+  nil,
   :target_y,
   :heading,
-  :previous_heading,
   :tack_count,
-  :optimal_angle
+  :optimal_angle,
+  :angle_to_target
 ]
 
 num_actions = BoatLearner.Environments.DoubleTack.num_actions()
@@ -445,11 +506,11 @@ environment_to_state_vector_fn = fn env_state ->
   [
     normalize_x.(env_state.x),
     normalize_y.(env_state.y),
+    0,
     normalize_y.(env_state.target_y),
     normalize_speed.(env_state.vmg),
-    normalize_speed.(env_state.previous_vmg),
     normalize_angle.(env_state.heading),
-    normalize_angle.(env_state.prev_heading),
+    normalize_angle.(env_state.angle_to_target),
     env_state.tack_count,
     normalize_angle.(42.7 / 180 * :math.pi())
   ]
@@ -461,14 +522,14 @@ state_vector_to_input_fn = fn state_vector ->
   %{"state" => state_vector}
 end
 
-# actor_params = %{}
-# actor_target_params = %{}
-# critic_params = %{}
-# critic_target_params = %{}
-# total_episodes = 0
-# experience_replay_buffer = nil
-# persisted_experience_replay_buffer_entries = 0
-# experience_replay_buffer_index = 0
+actor_params = %{}
+actor_target_params = %{}
+critic_params = %{}
+critic_target_params = %{}
+total_episodes = 0
+experience_replay_buffer = nil
+persisted_experience_replay_buffer_entries = 0
+experience_replay_buffer_index = 0
 
 IO.inspect(
   {actor_params, actor_target_params, critic_params, critic_target_params, total_episodes},
@@ -486,15 +547,24 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 30_000
+episodes = 50_000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
 
-eps_start = 1
-eps_end = 0.01
-eps_decay_rate = (0.5 / eps_start) ** (1 / 10_000)
+sigma = 0.2
+max_sigma = 0.5
+min_sigma = 0.01
+
+# (i) sigma = sigma_0 * eps_decay_rate ** target_num_episodes
+# (ii) sigma = k * sigma_0
+# k = eps_decay_rate ** target_num_episodes
+# eps_decay_rate = k ** (1 / target_num_episodes)
+# k: constant between 0 and 1
+# target_num_episodes: tipically in the hundreds or thousands
+k = min_sigma / sigma
+exploration_decay_rate = k ** (1 / 5_000)
 
 {t, result} =
   :timer.tc(fn ->
@@ -519,15 +589,18 @@ eps_decay_rate = (0.5 / eps_start) ** (1 / 10_000)
         state_vector_to_input_fn: state_vector_to_input_fn,
         training_frequency: 10,
         target_update_frequency: 50,
-        eps_start: eps_start,
-        eps_end: eps_end,
-        eps_decay_rate: eps_decay_rate
+        exploration_decay_rate: exploration_decay_rate,
+        ou_process_opts: [
+          max_sigma: max_sigma,
+          min_sigma: min_sigma,
+          sigma: sigma
+        ]
       },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter,
-      accumulated_episodes: 0
+      accumulated_episodes: total_episodes
     )
   end)
 

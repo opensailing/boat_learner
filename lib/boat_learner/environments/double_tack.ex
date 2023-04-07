@@ -8,6 +8,7 @@ defmodule BoatLearner.Environments.DoubleTack do
 
   @behaviour ReinforcementLearning.Environment
 
+  @derive {Inspect, except: [:polar_chart]}
   @derive {Nx.Container,
            keep: [],
            containers: [
@@ -21,6 +22,7 @@ defmodule BoatLearner.Environments.DoubleTack do
              :polar_chart,
              :speed,
              :prev_speed,
+             :angle_to_target,
              :heading,
              :prev_heading,
              :remaining_seconds,
@@ -39,6 +41,7 @@ defmodule BoatLearner.Environments.DoubleTack do
     :prev_speed,
     :heading,
     :prev_heading,
+    :angle_to_target,
     :target_y,
     :reward,
     :is_terminal,
@@ -151,7 +154,9 @@ defmodule BoatLearner.Environments.DoubleTack do
   @impl true
   def reset(random_key, state) do
     zero = Nx.tensor(0, type: :f32)
-    vmg = previous_vmg = y = speed = x = reward = zero
+    vmg = previous_vmg = y = speed = reward = zero
+
+    {x, random_key} = Nx.Random.uniform(random_key, @min_x, @max_x)
 
     {heading, random_key} =
       Nx.Random.uniform(
@@ -168,6 +173,7 @@ defmodule BoatLearner.Environments.DoubleTack do
         y: y,
         heading: heading,
         prev_heading: heading,
+        angle_to_target: heading,
         speed: speed,
         prev_speed: speed,
         prev_x: x,
@@ -252,9 +258,9 @@ defmodule BoatLearner.Environments.DoubleTack do
     dx = target_x - x
     dy = env.target_y - y
 
-    angle_to_mark = Nx.atan2(dx, dy)
+    angle_to_target = Nx.atan2(dx, dy)
 
-    vmg = speed * Nx.cos(heading - angle_to_mark)
+    vmg = speed * Nx.cos(heading - angle_to_target)
 
     %__MODULE__{
       env
@@ -269,7 +275,8 @@ defmodule BoatLearner.Environments.DoubleTack do
         x: x,
         y: y,
         prev_x: env.x,
-        prev_y: env.y
+        prev_y: env.y,
+        angle_to_target: angle_to_target
     }
   end
 
@@ -325,7 +332,7 @@ defmodule BoatLearner.Environments.DoubleTack do
     reward =
       cond do
         has_reached_target ->
-          1000 * remaining_seconds / max_remaining_seconds
+          1000 * Nx.sqrt(remaining_seconds / max_remaining_seconds)
 
         is_terminal ->
           # Calculate the Euclidean distance between the updated position and the target position
@@ -335,12 +342,12 @@ defmodule BoatLearner.Environments.DoubleTack do
 
           # Normalize the distance to the range [-1, 1],
           # such that initial_distance maps to 0 and 0 maps to 1
-          distance_reward = Nx.clip(m * distance + b, -1, 1) * 100
+          distance_reward = Nx.clip(m * distance + b, -1, 1) * 200
 
-          -100 + distance_reward * remaining_seconds / max_remaining_seconds
+          -50 + distance_reward * (remaining_seconds / max_remaining_seconds) ** 2
 
         true ->
-          vmg / @max_speed * 10 * remaining_seconds / max_remaining_seconds
+          vmg / @max_speed * 10 * Nx.sqrt(remaining_seconds / max_remaining_seconds)
       end
 
     %__MODULE__{env | reward: reward}
