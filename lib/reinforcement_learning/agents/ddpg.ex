@@ -114,14 +114,15 @@ defmodule ReinforcementLearning.Agents.DDPG do
       :experience_replay_buffer_index,
       :persisted_experience_replay_buffer_entries,
       :environment_to_state_vector_fn,
+      :performance_memory,
       :state_vector_to_input_fn,
       ou_process_opts: [],
-      performance_memory_length: 100,
+      performance_memory_length: 500,
       exploration_decay_rate: 0.9995,
       performance_threshold: 0.01,
       gamma: 0.99,
-      experience_replay_buffer_max_size: 1_000_000,
-      tau: 0.005,
+      experience_replay_buffer_max_size: 100_000,
+      tau: 0.001,
       batch_size: 64,
       training_frequency: 32,
       target_update_frequency: 100,
@@ -187,17 +188,15 @@ defmodule ReinforcementLearning.Agents.DDPG do
     end
 
     {actor_optimizer_init_fn, actor_optimizer_update_fn} =
-      Axon.Optimizers.adamw(
+      Axon.Optimizers.adam(
         actor_optimizer_params[:learning_rate],
-        eps: actor_optimizer_params[:eps],
-        decay: actor_optimizer_params[:adamw_decay]
+        eps: actor_optimizer_params[:eps]
       )
 
     {critic_optimizer_init_fn, critic_optimizer_update_fn} =
-      Axon.Optimizers.adamw(
+      Axon.Optimizers.adam(
         critic_optimizer_params[:learning_rate],
-        eps: critic_optimizer_params[:eps],
-        decay: critic_optimizer_params[:adamw_decay]
+        eps: critic_optimizer_params[:eps]
       )
 
     initial_actor_params_state = opts[:actor_params]
@@ -350,6 +349,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
   defnp adapt_exploration(
           episode,
           %__MODULE__{
+            persisted_experience_replay_buffer_entries:
+              persisted_experience_replay_buffer_entries,
             ou_process: ou_process,
             exploration_decay_rate: exploration_decay_rate,
             min_sigma: min_sigma,
@@ -364,11 +365,13 @@ defmodule ReinforcementLearning.Agents.DDPG do
         episode == 0 ->
           {ou_process, performance_memory}
 
-        episode < n ->
+        episode < n or persisted_experience_replay_buffer_entries < n ->
+          index = Nx.remainder(episode, n)
+
           performance_memory =
             Nx.indexed_put(
               performance_memory,
-              Nx.reshape(episode, {1, 1}),
+              Nx.reshape(index, {1, 1}),
               Nx.reshape(reward, {1})
             )
 

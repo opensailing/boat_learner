@@ -156,7 +156,8 @@ defmodule BoatLearner.Environments.DoubleTack do
     zero = Nx.tensor(0, type: :f32)
     vmg = previous_vmg = y = speed = reward = zero
 
-    {x, random_key} = Nx.Random.uniform(random_key, @min_x, @max_x)
+    x = zero
+    # {x, random_key} = Nx.Random.uniform(random_key, @min_x, @max_x)
 
     {heading, random_key} =
       Nx.Random.uniform(
@@ -300,12 +301,13 @@ defmodule BoatLearner.Environments.DoubleTack do
       y: y,
       remaining_seconds: remaining_seconds,
       tack_count: tack_count,
-      target_y: target_y
+      target_y: target_y,
+      heading: heading
     } = env
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
-        remaining_seconds < 2 or tack_count > 1
+        remaining_seconds < 2
 
     %__MODULE__{env | is_terminal: is_terminal}
   end

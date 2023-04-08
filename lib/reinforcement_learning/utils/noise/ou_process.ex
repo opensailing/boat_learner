@@ -29,9 +29,14 @@ defmodule ReinforcementLearning.Utils.Noise.OUProcess do
 
   defn sample(random_key, state) do
     %__MODULE__{x: x, sigma: sigma, theta: theta, mu: mu} = state
-    {sample, random_key} = Nx.Random.normal(random_key, shape: Nx.shape(x))
-    dx = theta * (mu - x) + sigma * sample
-    x = x + dx
-    {%__MODULE__{state | x: x}, random_key}
+
+    if sigma == 0 do
+      {state, random_key}
+    else
+      {sample, random_key} = Nx.Random.normal(random_key, shape: Nx.shape(x))
+      dx = theta * (mu - x) + sigma * sample
+      x = x + dx
+      {%__MODULE__{state | x: x}, random_key}
+    end
   end
 end
