@@ -1,4 +1,4 @@
-# Double Tack
+# Double Tack - Discrete
 
 ```elixir
 my_app_root = Path.join(__DIR__, "..")
@@ -344,8 +344,8 @@ end
 ```
 
 ```elixir
-filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.bin")
-export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat")
+filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark_discrete.bin")
+export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark_discrete.dat")
 
 {
   q_policy,
@@ -391,14 +391,10 @@ q_target =
   end
 
 fields = [
-  :x,
-  :y,
   :vmg,
-  :previous_vmg,
   :target_y,
   :heading,
-  :previous_heading,
-  :tack_count
+  :angle_to_target
 ]
 
 single_tack_num_actions = BoatLearner.Environments.SingleTack.num_actions()
@@ -407,19 +403,9 @@ num_observations = length(fields)
 
 input = Axon.input("state", shape: {nil, num_observations})
 
-single_tack_policy_net =
+policy_net =
   input
   |> Axon.dense(128, activation: :relu)
-  |> Axon.dense(64, activation: :relu)
-  |> Axon.dense(32, activation: :relu)
-  |> Axon.dense(single_tack_num_actions)
-  |> Axon.pop_node()
-  |> elem(1)
-  |> Axon.freeze()
-  |> Axon.namespace(single_tack_namespace)
-
-policy_net =
-  single_tack_policy_net
   |> Axon.dense(64, activation: :relu)
   |> Axon.dense(32, activation: :relu)
   |> Axon.dense(num_actions)
@@ -451,14 +437,10 @@ end
 
 environment_to_state_vector_fn = fn env_state ->
   [
-    normalize_x.(env_state.x),
-    normalize_y.(env_state.y),
     normalize_y.(env_state.target_y),
     normalize_speed.(env_state.vmg),
-    normalize_speed.(env_state.previous_vmg),
     normalize_angle.(env_state.heading),
-    normalize_angle.(env_state.prev_heading),
-    env_state.tack_count
+    normalize_angle.(env_state.angle_to_target)
   ]
   |> Nx.stack()
   |> Nx.new_axis(0)
@@ -472,12 +454,12 @@ state_vector_to_input_fn = fn state_vector ->
   %{"state" => state_vector}
 end
 
-# q_policy = %{}
-# q_target = q_policy
-# total_episodes = 0
-# experience_replay_buffer = nil
-# persisted_experience_replay_buffer_entries = 0
-# experience_replay_buffer_index = 0
+q_policy = %{}
+q_target = q_policy
+total_episodes = 0
+experience_replay_buffer = nil
+persisted_experience_replay_buffer_entries = 0
+experience_replay_buffer_index = 0
 
 IO.inspect({q_policy, q_target, total_episodes}, label: "{q_policy, q_target, total_episodes}")
 :ok
@@ -498,32 +480,36 @@ AccumulateAndExportData.reset()
 
 {learning_rate, gamma, training_frequency} = {0.001, 0.99, 32}
 
-eps_start = 1
-eps_end = 0.01
-
-eps_decay_rate = (0.5 / eps_start) ** (1 / 10_000)
-
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
-      {BoatLearner.Environments.DoubleTackDiscrete, max_remaining_seconds: max_iter, target_y: target_y},
-      {ReinforcementLearning.Agents.DQN,
-       policy_net: policy_net,
-       q_policy: q_policy,
-       q_target: q_target,
-       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
-       experience_replay_buffer_index: experience_replay_buffer_index,
-       experience_replay_buffer: experience_replay_buffer,
-       environment_to_input_fn: environment_to_input_fn,
-       environment_to_state_vector_fn: environment_to_state_vector_fn,
-       state_vector_to_input_fn: state_vector_to_input_fn,
-       learning_rate: learning_rate,
-       gamma: gamma,
-       training_frequency: training_frequency,
-       target_training_frequency: 100,
-       eps_start: eps_start,
-       eps_end: eps_end,
-       eps_decay_rate: eps_decay_rate},
+      {
+        BoatLearner.Environments.DoubleTackDiscrete,
+        max_remaining_seconds: max_iter, target_y: target_y
+      },
+      {
+        ReinforcementLearning.Agents.DQN,
+        policy_net: policy_net,
+        q_policy: q_policy,
+        q_target: q_target,
+        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
+        experience_replay_buffer_index: experience_replay_buffer_index,
+        experience_replay_buffer: experience_replay_buffer,
+        environment_to_input_fn: environment_to_input_fn,
+        environment_to_state_vector_fn: environment_to_state_vector_fn,
+        state_vector_to_input_fn: state_vector_to_input_fn,
+        learning_rate: learning_rate,
+        gamma: gamma,
+        training_frequency: training_frequency,
+        target_training_frequency: 100,
+        max_eps: 1.0,
+        min_eps: 0.01,
+        batch_size: 256,
+        exploration_decay_rate: 0.95,
+        exploration_increase_rate: 1.05,
+        performance_threshold: 0.01,
+        performance_memory_length: 512
+      },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
