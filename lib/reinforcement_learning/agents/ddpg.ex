@@ -46,6 +46,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :max_sigma,
              :min_sigma,
              :exploration_decay_rate,
+             :exploration_increase_rate,
              :performance_memory,
              :performance_threshold,
              :gamma,
@@ -97,6 +98,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
     :max_sigma,
     :min_sigma,
     :exploration_decay_rate,
+    :exploration_increase_rate,
     :performance_memory,
     :performance_threshold
   ]
@@ -119,6 +121,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       ou_process_opts: [],
       performance_memory_length: 500,
       exploration_decay_rate: 0.9995,
+      exploration_increase_rate: 1.1,
       performance_threshold: 0.01,
       gamma: 0.99,
       experience_replay_buffer_max_size: 100_000,
@@ -188,15 +191,21 @@ defmodule ReinforcementLearning.Agents.DDPG do
     end
 
     {actor_optimizer_init_fn, actor_optimizer_update_fn} =
-      Axon.Optimizers.adam(
-        actor_optimizer_params[:learning_rate],
-        eps: actor_optimizer_params[:eps]
+      Axon.Updates.compose(
+        Axon.Updates.clip_by_global_norm(),
+        Axon.Optimizers.adam(
+          actor_optimizer_params[:learning_rate],
+          eps: actor_optimizer_params[:eps]
+        )
       )
 
     {critic_optimizer_init_fn, critic_optimizer_update_fn} =
-      Axon.Optimizers.adam(
-        critic_optimizer_params[:learning_rate],
-        eps: critic_optimizer_params[:eps]
+      Axon.Updates.compose(
+        Axon.Updates.clip_by_global_norm(),
+        Axon.Optimizers.adam(
+          critic_optimizer_params[:learning_rate],
+          eps: critic_optimizer_params[:eps]
+        )
       )
 
     initial_actor_params_state = opts[:actor_params]
@@ -269,6 +278,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       max_sigma: max_sigma,
       min_sigma: min_sigma,
       exploration_decay_rate: opts[:exploration_decay_rate],
+      exploration_increase_rate: opts[:exploration_increase_rate],
       state_vector: Nx.broadcast(0.0, {1, state_vector_size}),
       state_vector_size: state_vector_size,
       num_actions: num_actions,
@@ -353,6 +363,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
               persisted_experience_replay_buffer_entries,
             ou_process: ou_process,
             exploration_decay_rate: exploration_decay_rate,
+            exploration_increase_rate: exploration_increase_rate,
             min_sigma: min_sigma,
             max_sigma: max_sigma,
             total_reward: reward,
@@ -406,8 +417,11 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
           sigma =
             if abs_diff < performance_threshold do
-              Nx.min(ou_process.sigma / exploration_decay_rate, max_sigma)
+              # If decayed to less than an "eps" value,
+              # we force it to increase from that "eps" instead.
+              Nx.min(ou_process.sigma * exploration_increase_rate, max_sigma)
             else
+              # can decay to 0
               Nx.max(ou_process.sigma * exploration_decay_rate, min_sigma)
             end
 
@@ -550,21 +564,19 @@ defmodule ReinforcementLearning.Agents.DDPG do
     should_update_policy_net = rem(experience_replay_buffer_index, training_frequency) == 0
     should_update_target_net = rem(experience_replay_buffer_index, target_update_frequency) == 0
 
-    cond do
-      not has_at_least_one_batch ->
-        state
+    {state, _, _, _} =
+      while {state, i = 0, training_frequency, has_at_least_one_batch},
+            has_at_least_one_batch and i < 4 do
+        {train(state), i + 1, training_frequency, has_at_least_one_batch}
+      end
 
-      should_update_policy_net and not should_update_target_net ->
-        train(state)
+    {state, _, _, _} =
+      while {state, i = 0, target_update_frequency, has_at_least_one_batch},
+            has_at_least_one_batch and i < 4 do
+        {soft_update_targets(state), i + 1, target_update_frequency, has_at_least_one_batch}
+      end
 
-      should_update_policy_net and should_update_target_net ->
-        state
-        |> train()
-        |> soft_update_targets()
-
-      true ->
-        state
-    end
+    state
   end
 
   defnp train(state) do
@@ -612,7 +624,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
           target_actions = actor_predict_fn.(actor_target_params, next_state_batch)
 
           target_critic_prediction =
-            critic_predict_fn.(critic_target_params, state_batch, target_actions)
+            critic_predict_fn.(critic_target_params, next_state_batch, target_actions)
 
           %{shape: {n, 1}} =
             critic_prediction = critic_predict_fn.(critic_params, state_batch, action_batch)

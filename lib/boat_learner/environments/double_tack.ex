@@ -29,7 +29,6 @@ defmodule BoatLearner.Environments.DoubleTack do
              :max_remaining_seconds,
              :vmg,
              :previous_vmg,
-             :has_turned,
              :tack_count
            ]}
   defstruct [
@@ -50,7 +49,6 @@ defmodule BoatLearner.Environments.DoubleTack do
     :max_remaining_seconds,
     :vmg,
     :previous_vmg,
-    :has_turned,
     :tack_count
   ]
 
@@ -97,7 +95,7 @@ defmodule BoatLearner.Environments.DoubleTack do
   # @turning_rate Enum.sum(turning_rates) / length(turning_rates) * @one_deg_in_rad -> 12.5 * @one_deg_in_rad
 
   @turning_rate 12.5 * @one_deg_in_rad
-  @iters_per_action 20
+  @iters_per_action 10
   @speed_penalty 0.4
   @speed_recovery_in_seconds 4
 
@@ -154,19 +152,20 @@ defmodule BoatLearner.Environments.DoubleTack do
   @impl true
   def reset(random_key, state) do
     zero = Nx.tensor(0, type: :f32)
-    vmg = previous_vmg = y = speed = reward = zero
+    vmg = previous_vmg = speed = reward = zero
 
     x = zero
+    y = zero
     # {x, random_key} = Nx.Random.uniform(random_key, @min_x, @max_x)
 
     {heading, random_key} =
       Nx.Random.uniform(
         random_key,
-        -:math.pi() / 2 + @one_deg_in_rad,
-        :math.pi() / 2 - @one_deg_in_rad
+        -:math.pi() / 2 + 15 * @one_deg_in_rad,
+        :math.pi() / 2 - 15 * @one_deg_in_rad
       )
 
-    heading = Nx.select(Nx.less(heading, 0), Nx.add(2 * :math.pi(), heading), heading)
+    heading = wrap_phase(heading)
 
     state = %__MODULE__{
       state
@@ -181,7 +180,6 @@ defmodule BoatLearner.Environments.DoubleTack do
         prev_y: y,
         reward: reward,
         is_terminal: Nx.tensor(0, type: :u8),
-        has_turned: Nx.tensor(0, type: :u8),
         remaining_seconds: state.max_remaining_seconds,
         previous_vmg: previous_vmg,
         vmg: vmg,
@@ -190,6 +188,16 @@ defmodule BoatLearner.Environments.DoubleTack do
 
     {state, random_key}
   end
+
+  # defnp calculate_elapsed_seconds_from_origin(state) do
+  #   # calculate the linear distance from the origin so we can estimate
+  #   # a penalty in elapsed time so that the initial reward is estimated more properly.
+  #   linear_distance = Nx.sqrt(state.x ** 2 + state.y ** 2)
+  #   # if speed is 0, we will instead use a default of @max_speed * 0.5
+  #   avg_time = linear_distance / Nx.select(state.speed, state.speed, 0.5 * @max_speed)
+
+  #   %{state | remaining_seconds: state.remaining_seconds - avg_time}
+  # end
 
   @impl true
   defn apply_action(rl_state, action) do
@@ -215,28 +223,30 @@ defmodule BoatLearner.Environments.DoubleTack do
     dtheta_steps = Nx.broadcast(@turning_rate * dt * Nx.sign(dtheta), {@iters_per_action})
     heading_steps = Nx.cumulative_sum(dtheta_steps) + prev_heading
 
-    two_pi = 2 * pi()
-    heading_steps = Nx.select(heading_steps >= two_pi, heading_steps - two_pi, heading_steps)
-    heading_steps = Nx.select(heading_steps < 0, heading_steps + two_pi, heading_steps)
+    heading_steps = wrap_phase(heading_steps)
 
     # Calculate the speed and apply the speed penalty
     speed_steps = speed_from_heading(env.polar_chart, heading_steps)
-    target_speed = speed_steps[-1]
-    speed_steps = @speed_penalty * speed_steps
 
     # because we are normalizing angles to be between 0 and 2pi,
     # this check is equivalent to checking for 0 crossings if
     # the angles were normalized between -pi and pi
-    tack_count =
-      if heading_steps[-1] < pi() != prev_heading < pi() do
-        env.tack_count + 1
-      else
-        env.tack_count
-      end
+
+    # 1 if that position has tacked since the beginning
+    tacking_mask = heading_steps < pi() != prev_heading < pi()
+
+    speed_penalty_multiplier = 1 - @speed_penalty
+
+    penalized_speed_steps =
+      Nx.select(tacking_mask, speed_penalty_multiplier * speed_steps, speed_steps)
+
+    has_tacked = Nx.any(tacking_mask)
+
+    tack_count = env.tack_count + Nx.any(tacking_mask)
 
     # Calculate the position changes in x and y directions for each interval
-    dx = dt * Nx.sin(heading_steps) * speed_steps
-    dy = dt * Nx.cos(heading_steps) * speed_steps
+    dy = dt * Nx.cos(heading_steps) * penalized_speed_steps
+    dx = dt * Nx.sin(heading_steps) * penalized_speed_steps
 
     x = env.x + Nx.sum(dx)
     y = env.y + Nx.sum(dy)
@@ -245,31 +255,48 @@ defmodule BoatLearner.Environments.DoubleTack do
     speed = speed_steps[-1]
 
     # Recover the speed over `@speed_recovery_in_seconds` seconds
-    speed_steps = Nx.linspace(speed, target_speed, n: @speed_recovery_in_seconds)
-    # because the heading won't change, the calculation would be:
-    # dx = Nx.sin(heading) * speed_steps[0] + Nx.sin(heading) * speed_steps[1] + ... + Nx.sin(heading) * speed_steps[-1]
-    # which means that: dx = Nx.sin(heading) * (speed_steps[0] + speed_steps[1] + ... + speed_steps[-1])
-    # which simplifies to dx = Nx.sin(heading) * Nx.sum(speed_steps), and likewise for dy
+    speed_steps =
+      Nx.linspace(speed, speed / speed_penalty_multiplier, n: @speed_recovery_in_seconds)
+
+    # dx = Nx.sin(heading_steps[0]) * speed_steps[0] + Nx.sin(heading_steps[1]) * speed_steps[1] + ... + Nx.sin(heading_steps[n-1]) * speed_steps[n-1]
+    # because the heading won't change, the calculation can be simplified:
+    # dx = Nx.sin(heading) * speed_steps[0] + Nx.sin(heading) * speed_steps[1] + ... + Nx.sin(heading) * speed_steps[n-1]
+    # dx = Nx.sin(heading) * (speed_steps[0] + speed_steps[1] + ... + speed_steps[-1])
+    # dx = Nx.sin(heading) * Nx.sum(speed_steps), and likewise for dy, changing sin for cos
 
     x = x + Nx.sin(heading) * Nx.sum(speed_steps)
     y = y + Nx.cos(heading) * Nx.sum(speed_steps)
-    speed = target_speed
+
+    speed = speed_steps[-1]
 
     target_x = 0
     dx = target_x - x
     dy = env.target_y - y
 
-    angle_to_target = Nx.atan2(dx, dy)
+    angle_to_target = wrap_phase(Nx.atan2(dx, dy))
 
-    vmg = speed * Nx.cos(heading - angle_to_target)
+    # cos(theta) = cos(angle_to_target + heading)
+
+    wind_direction = 0
+
+    target_unit =
+      Nx.stack([
+        Nx.cos(angle_to_target - wind_direction),
+        Nx.sin(angle_to_target - wind_direction)
+      ])
+
+    speed_vector =
+      Nx.stack([Nx.cos(heading - wind_direction), Nx.sin(heading - wind_direction)]) * speed
+
+    vmg = Nx.dot(target_unit, speed_vector)
 
     %__MODULE__{
       env
-      | remaining_seconds: env.remaining_seconds - (turning_time + @speed_recovery_in_seconds),
+      | remaining_seconds:
+          Nx.max(env.remaining_seconds - (turning_time + @speed_recovery_in_seconds), 0),
         heading: heading,
         prev_heading: prev_heading,
         speed: speed,
-        has_turned: heading != prev_heading,
         tack_count: tack_count,
         vmg: vmg,
         previous_vmg: env.vmg,
@@ -300,9 +327,7 @@ defmodule BoatLearner.Environments.DoubleTack do
       x: x,
       y: y,
       remaining_seconds: remaining_seconds,
-      tack_count: tack_count,
-      target_y: target_y,
-      heading: heading
+      target_y: target_y
     } = env
 
     is_terminal =
@@ -326,7 +351,8 @@ defmodule BoatLearner.Environments.DoubleTack do
       max_remaining_seconds: max_remaining_seconds,
       target_y: target_y,
       y: y,
-      x: x
+      x: x,
+      heading: heading
     } = env
 
     has_reached_target = has_reached_target(env)
@@ -334,24 +360,39 @@ defmodule BoatLearner.Environments.DoubleTack do
     reward =
       cond do
         has_reached_target ->
-          1000 * Nx.sqrt(remaining_seconds / max_remaining_seconds)
+          100 * Nx.sqrt(remaining_seconds / max_remaining_seconds)
 
-        is_terminal ->
-          # Calculate the Euclidean distance between the updated position and the target position
-          distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
-          m = -1 / target_y
-          b = 1
+        # is_terminal ->
+        # Calculate the Euclidean distance between the updated position and the target position
+        # distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
+        # m = -1 / target_y
+        # b = 1
 
-          # Normalize the distance to the range [-1, 1],
-          # such that initial_distance maps to 0 and 0 maps to 1
-          distance_reward = Nx.clip(m * distance + b, -1, 1) * 200
+        # # Normalize the distance to the range [-1, 1],
+        # # such that initial_distance maps to 0 and 0 maps to 1
+        # distance_reward = Nx.clip(m * distance + b, -1, 1) * 10
 
-          -50 + distance_reward * (remaining_seconds / max_remaining_seconds) ** 2
+        # distance_reward =
+        #   Nx.select(
+        #     heading > pi() / 2 and heading < 3 * pi() / 2 and distance_reward > 0,
+        #     -distance_reward,
+        #     distance_reward
+        #   )
+
+        # distance_reward * (remaining_seconds / max_remaining_seconds) ** 2
 
         true ->
-          vmg / @max_speed * 10 * Nx.sqrt(remaining_seconds / max_remaining_seconds)
+          vmg / @max_speed * Nx.select(vmg > 0, 1, 4) *
+            Nx.sqrt(remaining_seconds / max_remaining_seconds)
       end
 
     %__MODULE__{env | reward: reward}
+  end
+
+  defnp wrap_phase(angle) do
+    angle
+    |> Nx.remainder(2 * pi())
+    |> Nx.add(2 * pi())
+    |> Nx.remainder(2 * pi())
   end
 end
