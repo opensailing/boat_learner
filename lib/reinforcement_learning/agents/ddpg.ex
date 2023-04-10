@@ -565,15 +565,14 @@ defmodule ReinforcementLearning.Agents.DDPG do
     should_update_target_net = rem(experience_replay_buffer_index, target_update_frequency) == 0
 
     {state, _, _, _} =
-      while {state, i = 0, training_frequency, has_at_least_one_batch},
-            has_at_least_one_batch and i < 2 do
-        {train(state), i + 1, training_frequency, has_at_least_one_batch}
+      while {state, i = 0, training_frequency, pred = has_at_least_one_batch and should_update_policy_net}, pred and i < training_frequency do
+        {train(state), i + 1, training_frequency, pred}
       end
 
     {state, _, _, _} =
-      while {state, i = 0, target_update_frequency, has_at_least_one_batch},
-            has_at_least_one_batch and i < 2 do
-        {soft_update_targets(state), i + 1, target_update_frequency, has_at_least_one_batch}
+      while {state, i = 0, target_update_frequency, pred = has_at_least_one_batch and should_update_target_net},
+            pred and i < target_update_frequency do
+        {soft_update_targets(state), i + 1, target_update_frequency, pred}
       end
 
     state
@@ -624,7 +623,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
           target_actions = actor_predict_fn.(actor_target_params, next_state_batch)
 
           target_critic_prediction =
-            critic_predict_fn.(critic_target_params, next_state_batch, target_actions)
+            critic_predict_fn.(critic_target_params, next_state_batch, target_actions) |> stop_grad()
 
           %{shape: {n, 1}} =
             critic_prediction = critic_predict_fn.(critic_params, state_batch, action_batch)
