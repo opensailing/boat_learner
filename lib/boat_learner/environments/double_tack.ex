@@ -327,12 +327,13 @@ defmodule BoatLearner.Environments.DoubleTack do
       x: x,
       y: y,
       remaining_seconds: remaining_seconds,
-      target_y: target_y
+      target_y: target_y,
+      tack_count: tack_count
     } = env
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
-        remaining_seconds < 2
+        remaining_seconds < 2 or tack_count > 1
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
@@ -360,30 +361,23 @@ defmodule BoatLearner.Environments.DoubleTack do
     reward =
       cond do
         has_reached_target ->
-          100 * Nx.sqrt(remaining_seconds / max_remaining_seconds)
+          1000 * remaining_seconds / max_remaining_seconds
 
-        # is_terminal ->
-        # Calculate the Euclidean distance between the updated position and the target position
-        # distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
-        # m = -1 / target_y
-        # b = 1
+        is_terminal ->
+        Calculate the Euclidean distance between the updated position and the target position
+        distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
+        m = -1 / target_y
+        b = 1
 
-        # # Normalize the distance to the range [-1, 1],
-        # # such that initial_distance maps to 0 and 0 maps to 1
-        # distance_reward = Nx.clip(m * distance + b, -1, 1) * 10
+        # Normalize the distance to the range [-1, 1],
+        # such that initial_distance maps to 0 and 0 maps to 1,
+        # and then clip-off negative rewards
+        distance_reward = Nx.clip(m * distance + b, 0, 1) * 100
 
-        # distance_reward =
-        #   Nx.select(
-        #     heading > pi() / 2 and heading < 3 * pi() / 2 and distance_reward > 0,
-        #     -distance_reward,
-        #     distance_reward
-        #   )
-
-        # distance_reward * (remaining_seconds / max_remaining_seconds) ** 2
+        distance_reward * (remaining_seconds / max_remaining_seconds) ** 2
 
         true ->
-          vmg / @max_speed * Nx.select(vmg > 0, 1, 4) *
-            Nx.sqrt(remaining_seconds / max_remaining_seconds)
+          vmg / @max_speed * Nx.select(vmg > 0, 1, 4)
       end
 
     %__MODULE__{env | reward: reward}
