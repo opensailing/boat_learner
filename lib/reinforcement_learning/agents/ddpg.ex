@@ -564,14 +564,16 @@ defmodule ReinforcementLearning.Agents.DDPG do
     should_update_policy_net = rem(experience_replay_buffer_index, training_frequency) == 0
     should_update_target_net = rem(experience_replay_buffer_index, target_update_frequency) == 0
 
-    {batch_list, batch_idx_list, random_key} = sample_experience_replay_buffer(state.random_key, state.agent_state)
+    {batch_list, batch_idx_list, random_key} =
+      sample_experience_replay_buffer(state.random_key, state.agent_state)
 
     {state, _, _, _, _, _} =
       while {state = %{state | random_key: random_key}, i = 0, training_frequency,
-             pred = has_at_least_one_batch and should_update_policy_net, batch_list, batch_idx_list},
+             pred = has_at_least_one_batch and should_update_policy_net, batch_list,
+             batch_idx_list},
             pred and i < training_frequency do
-
-        {train(state, batch_list[i], batch_idx_list[i]), i + 1, training_frequency, pred, batch_list, batch_idx_list}
+        {train(state, batch_list[i], batch_idx_list[i]), i + 1, training_frequency, pred,
+         batch_list, batch_idx_list}
       end
 
     {state, _, _, _} =
@@ -767,7 +769,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
         replace: false,
         axis: 0
       )
-      |> Nx.reshape({training_frequency, batch_size})
+
+    batch_idx = Nx.reshape(batch_idx, {training_frequency, batch_size})
 
     batch = Nx.take(exp_replay_buffer, batch_idx)
 

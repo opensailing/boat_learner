@@ -364,16 +364,16 @@ defmodule BoatLearner.Environments.DoubleTack do
           1000 * remaining_seconds / max_remaining_seconds
 
         is_terminal ->
-        distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
-        m = -1 / target_y
-        b = 1
+          distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
+          m = -1 / target_y
+          b = 1
 
-        # Normalize the distance to the range [-1, 1],
-        # such that initial_distance maps to 0 and 0 maps to 1,
-        # and then clip-off negative rewards
-        distance_reward = Nx.clip(m * distance + b, 0, 1) * 100
+          # Normalize the distance to the range [-1, 1],
+          # such that initial_distance maps to 0 and 0 maps to 1,
+          # and then clip-off negative rewards
+          distance_reward = Nx.clip(m * distance + b, 0, 1) * 100
 
-        distance_reward * (remaining_seconds / max_remaining_seconds) ** 2
+          distance_reward * (remaining_seconds / max_remaining_seconds) ** 2
 
         true ->
           vmg / @max_speed * Nx.select(vmg > 0, 1, 4)
