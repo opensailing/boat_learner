@@ -364,7 +364,6 @@ defmodule BoatLearner.Environments.DoubleTack do
           1000 * remaining_seconds / max_remaining_seconds
 
         is_terminal ->
-        Calculate the Euclidean distance between the updated position and the target position
         distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
         m = -1 / target_y
         b = 1
