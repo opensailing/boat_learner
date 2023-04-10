@@ -566,13 +566,13 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     {state, _, _, _} =
       while {state, i = 0, training_frequency, has_at_least_one_batch},
-            has_at_least_one_batch and i < 4 do
+            has_at_least_one_batch and i < 2 do
         {train(state), i + 1, training_frequency, has_at_least_one_batch}
       end
 
     {state, _, _, _} =
       while {state, i = 0, target_update_frequency, has_at_least_one_batch},
-            has_at_least_one_batch and i < 4 do
+            has_at_least_one_batch and i < 2 do
         {soft_update_targets(state), i + 1, target_update_frequency, has_at_least_one_batch}
       end
 

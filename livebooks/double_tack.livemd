@@ -579,7 +579,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 10_000
+episodes = 5000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
