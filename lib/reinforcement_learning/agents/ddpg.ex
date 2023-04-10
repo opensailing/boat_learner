@@ -32,7 +32,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :experience_replay_buffer,
              :experience_replay_buffer_index,
              :persisted_experience_replay_buffer_entries,
-             :training_frequency,
              :target_update_frequency,
              :loss,
              :loss_denominator,
@@ -61,7 +60,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :num_actions,
              :actor_optimizer_update_fn,
              :critic_optimizer_update_fn,
-             :batch_size
+             :batch_size,
+             :training_frequency
            ]}
   defstruct [
     :state_vector,
@@ -564,11 +564,14 @@ defmodule ReinforcementLearning.Agents.DDPG do
     should_update_policy_net = rem(experience_replay_buffer_index, training_frequency) == 0
     should_update_target_net = rem(experience_replay_buffer_index, target_update_frequency) == 0
 
+    {batch_list, batch_idx_list, random_key} = sample_experience_replay_buffer(random_key, state.agent_state)
+
     {state, _, _, _} =
       while {state, i = 0, training_frequency,
              pred = has_at_least_one_batch and should_update_policy_net},
             pred and i < training_frequency do
-        {train(state), i + 1, training_frequency, pred}
+
+        {train(state, batch_list[i], batch_idx_list[i]), i + 1, training_frequency, pred}
       end
 
     {state, _, _, _} =
@@ -581,7 +584,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
     state
   end
 
-  defnp train(state) do
+  defnp train(state, batch, batch_idx) do
     %{
       agent_state: %{
         actor_params: actor_params,
@@ -601,9 +604,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
       },
       random_key: random_key
     } = state
-
-    {batch, batch_idx, random_key} =
-      sample_experience_replay_buffer(random_key, state.agent_state)
 
     state_batch = Nx.slice_along_axis(batch, 0, state_vector_size, axis: 1)
 
@@ -729,6 +729,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
   defnp sample_experience_replay_buffer(
           random_key,
           %{
+            training_frequency: training_frequency,
             batch_size: batch_size,
             state_vector_size: state_vector_size,
             num_actions: num_actions,
@@ -760,13 +761,16 @@ defmodule ReinforcementLearning.Agents.DDPG do
     probs = priorities / Nx.sum(priorities)
 
     {batch_idx, random_key} =
-      Nx.Random.choice(random_key, Nx.iota(temporal_difference.shape), probs,
-        samples: batch_size,
+      random_key
+      |> Nx.Random.choice(Nx.iota(temporal_difference.shape), probs,
+        samples: batch_size * training_frequency,
         replace: false,
         axis: 0
       )
+      |> Nx.reshape({training_frequency, batch_size})
 
     batch = Nx.take(exp_replay_buffer, batch_idx)
+
     {batch, batch_idx, random_key}
   end
 
