@@ -566,12 +566,12 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     {batch_list, batch_idx_list, random_key} = sample_experience_replay_buffer(random_key, state.agent_state)
 
-    {state, _, _, _} =
+    {state, _, _, _, _, _} =
       while {state, i = 0, training_frequency,
-             pred = has_at_least_one_batch and should_update_policy_net},
+             pred = has_at_least_one_batch and should_update_policy_net, batch_list, batch_idx_list},
             pred and i < training_frequency do
 
-        {train(state, batch_list[i], batch_idx_list[i]), i + 1, training_frequency, pred}
+        {train(state, batch_list[i], batch_idx_list[i]), i + 1, training_frequency, pred, batch_list, batch_idx_list}
       end
 
     {state, _, _, _} =
