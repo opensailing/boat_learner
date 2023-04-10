@@ -1,4 +1,4 @@
-defmodule BoatLearner.Environments.DoubleTack do
+defmodule BoatLearner.Environments.DoubleTackDiscrete do
   @moduledoc """
   Simple environment that provides an upwind mark
   and simulates the physics for wind at 0 degrees.
@@ -8,7 +8,6 @@ defmodule BoatLearner.Environments.DoubleTack do
 
   @behaviour ReinforcementLearning.Environment
 
-  @derive {Inspect, except: [:polar_chart]}
   @derive {Nx.Container,
            keep: [],
            containers: [
@@ -22,14 +21,15 @@ defmodule BoatLearner.Environments.DoubleTack do
              :polar_chart,
              :speed,
              :prev_speed,
-             :angle_to_target,
              :heading,
              :prev_heading,
              :remaining_seconds,
              :max_remaining_seconds,
              :vmg,
              :previous_vmg,
-             :tack_count
+             :has_turned,
+             :tack_count,
+             :angle_to_target
            ]}
   defstruct [
     :x,
@@ -40,7 +40,6 @@ defmodule BoatLearner.Environments.DoubleTack do
     :prev_speed,
     :heading,
     :prev_heading,
-    :angle_to_target,
     :target_y,
     :reward,
     :is_terminal,
@@ -49,10 +48,12 @@ defmodule BoatLearner.Environments.DoubleTack do
     :max_remaining_seconds,
     :vmg,
     :previous_vmg,
-    :tack_count
+    :has_turned,
+    :tack_count,
+    :angle_to_target
   ]
 
-  @min_x -125
+  @min_x 0
   @max_x 125
   @min_y 0
   @max_y 250
@@ -95,16 +96,15 @@ defmodule BoatLearner.Environments.DoubleTack do
   # @turning_rate Enum.sum(turning_rates) / length(turning_rates) * @one_deg_in_rad -> 12.5 * @one_deg_in_rad
 
   @turning_rate 12.5 * @one_deg_in_rad
-  @iters_per_action 10
+  @iters_per_action 20
   @speed_penalty 0.4
   @speed_recovery_in_seconds 4
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
-  # We have a single action in the interval [-1, 1]
-  # that maps linearly to angles [-pi, pi]
+  # 0, +- 1, +- 10, +- 30
   @impl true
-  def num_actions, do: 1
+  def num_actions, do: 7
 
   @impl true
   def init(random_key, opts) do
@@ -125,6 +125,7 @@ defmodule BoatLearner.Environments.DoubleTack do
 
   def init_polar_chart do
     # data for the boat at TWS=6
+
     theta = Nx.tensor(@theta)
     speed = Nx.tensor(@speed)
 
@@ -152,20 +153,14 @@ defmodule BoatLearner.Environments.DoubleTack do
   @impl true
   def reset(random_key, state) do
     zero = Nx.tensor(0, type: :f32)
-    vmg = previous_vmg = speed = reward = zero
+    vmg = previous_vmg = y = speed = x = reward = zero
 
-    x = zero
-    y = zero
-    # {x, random_key} = Nx.Random.uniform(random_key, @min_x, @max_x)
+    {heading, random_key} = Nx.Random.uniform(random_key, 0, :math.pi() / 2 - @one_deg_in_rad)
 
-    {heading, random_key} =
-      Nx.Random.uniform(
-        random_key,
-        -:math.pi() / 2 + 15 * @one_deg_in_rad,
-        :math.pi() / 2 - 15 * @one_deg_in_rad
-      )
+    heading = Nx.floor(heading)
 
-    heading = wrap_phase(heading)
+    x = Nx.add(x, 1)
+    y = Nx.add(y, 1)
 
     state = %__MODULE__{
       state
@@ -173,41 +168,54 @@ defmodule BoatLearner.Environments.DoubleTack do
         y: y,
         heading: heading,
         prev_heading: heading,
-        angle_to_target: heading,
         speed: speed,
         prev_speed: speed,
         prev_x: x,
         prev_y: y,
         reward: reward,
         is_terminal: Nx.tensor(0, type: :u8),
+        has_turned: Nx.tensor(0, type: :u8),
         remaining_seconds: state.max_remaining_seconds,
         previous_vmg: previous_vmg,
         vmg: vmg,
-        tack_count: Nx.tensor(0, type: :s64)
+        tack_count: Nx.tensor(0, type: :s64),
+        angle_to_target: heading
     }
 
     {state, random_key}
   end
 
-  # defnp calculate_elapsed_seconds_from_origin(state) do
-  #   # calculate the linear distance from the origin so we can estimate
-  #   # a penalty in elapsed time so that the initial reward is estimated more properly.
-  #   linear_distance = Nx.sqrt(state.x ** 2 + state.y ** 2)
-  #   # if speed is 0, we will instead use a default of @max_speed * 0.5
-  #   avg_time = linear_distance / Nx.select(state.speed, state.speed, 0.5 * @max_speed)
-
-  #   %{state | remaining_seconds: state.remaining_seconds - avg_time}
-  # end
-
   @impl true
   defn apply_action(rl_state, action) do
     %__MODULE__{} = env = rl_state.environment_state
 
-    action = Nx.reshape(action, {})
+    # 0: turn left, 1: keep heading, 2: turn right
+    new_env =
+      cond do
+        action == 0 ->
+          turn_and_move(env, -30 * @one_deg_in_rad)
+
+        action == 1 ->
+          turn_and_move(env, -10 * @one_deg_in_rad)
+
+        action == 2 ->
+          turn_and_move(env, -1 * @one_deg_in_rad)
+
+        action == 3 ->
+          turn_and_move(env, 0)
+
+        action == 4 ->
+          turn_and_move(env, @one_deg_in_rad)
+
+        action == 5 ->
+          turn_and_move(env, 10 * @one_deg_in_rad)
+
+        true ->
+          turn_and_move(env, 30 * @one_deg_in_rad)
+      end
 
     new_env =
-      env
-      |> turn_and_move(action * pi() / 2)
+      new_env
       |> is_terminal_state()
       |> calculate_reward()
 
@@ -327,8 +335,8 @@ defmodule BoatLearner.Environments.DoubleTack do
       x: x,
       y: y,
       remaining_seconds: remaining_seconds,
-      target_y: target_y,
-      tack_count: tack_count
+      tack_count: tack_count,
+      target_y: target_y
     } = env
 
     is_terminal =
@@ -361,22 +369,11 @@ defmodule BoatLearner.Environments.DoubleTack do
     reward =
       cond do
         has_reached_target ->
-          1000 * remaining_seconds / max_remaining_seconds
-
-        is_terminal ->
-          distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
-          m = -1 / target_y
-          b = 1
-
-          # Normalize the distance to the range [-1, 1],
-          # such that initial_distance maps to 0 and 0 maps to 1,
-          # and then clip-off negative rewards
-          distance_reward = Nx.clip(m * distance + b, 0, 1) * 100
-
-          distance_reward * (remaining_seconds / max_remaining_seconds) ** 2
+          100 * Nx.sqrt(remaining_seconds / max_remaining_seconds)
 
         true ->
-          vmg / @max_speed * Nx.select(vmg > 0, 1, 4)
+          vmg / @max_speed * Nx.select(vmg > 0, 1, 4) *
+            Nx.sqrt(remaining_seconds / max_remaining_seconds)
       end
 
     %__MODULE__{env | reward: reward}

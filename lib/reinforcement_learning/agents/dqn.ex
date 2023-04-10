@@ -31,7 +31,13 @@ defmodule ReinforcementLearning.Agents.DQN do
              :experience_replay_buffer_index,
              :persisted_experience_replay_buffer_entries,
              :total_reward,
-             :epsilon_greedy_eps
+             :epsilon_greedy_eps,
+             :exploration_decay_rate,
+             :exploration_increase_rate,
+             :min_eps,
+             :max_eps,
+             :performance_memory,
+             :performance_threshold
            ],
            keep: [
              :optimizer_update_fn,
@@ -46,11 +52,9 @@ defmodule ReinforcementLearning.Agents.DQN do
              :batch_size,
              :training_frequency,
              :target_training_frequency,
-             :gamma,
-             :eps_start,
-             :eps_end,
-             :decay_rate
+             :gamma
            ]}
+
   defstruct [
     :state_vector_size,
     :num_actions,
@@ -75,9 +79,12 @@ defmodule ReinforcementLearning.Agents.DQN do
     :target_training_frequency,
     :gamma,
     :epsilon_greedy_eps,
-    :eps_start,
-    :eps_end,
-    :decay_rate
+    :exploration_decay_rate,
+    :exploration_increase_rate,
+    :min_eps,
+    :max_eps,
+    :performance_memory,
+    :performance_threshold
   ]
 
   @impl true
@@ -93,14 +100,19 @@ defmodule ReinforcementLearning.Agents.DQN do
         :environment_to_input_fn,
         :environment_to_state_vector_fn,
         :state_vector_to_input_fn,
+        :performance_memory,
         target_training_frequency: @train_every_steps * 4,
         learning_rate: @learning_rate,
         batch_size: @batch_size,
         training_frequency: @train_every_steps,
         gamma: @gamma,
-        eps_start: @eps_start,
-        eps_end: @eps_end,
-        eps_decay_rate: @eps_decay_rate
+        eps_decay_rate: @eps_decay_rate,
+        exploration_decay_rate: @eps_decay_rate,
+        exploration_increase_rate: @eps_increase_rate,
+        min_eps: @eps_end,
+        max_eps: @eps_start,
+        performance_memory_length: 500,
+        performance_threshold: 0.01
       ])
 
     policy_net = opts[:policy_net] || raise ArgumentError, "missing :policy_net option"
@@ -139,18 +151,11 @@ defmodule ReinforcementLearning.Agents.DQN do
 
     state_vector_size = state_vector_size(input_template)
 
-    loss = loss_denominator = Nx.tensor(0, type: :f32)
-
-    eps_start = opts[:eps_start]
-    eps_end = opts[:eps_end]
-    decay_rate = opts[:eps_decay_rate]
+    loss = loss_denominator = total_reward = Nx.tensor(0, type: :f32)
 
     state = %__MODULE__{
-      epsilon_greedy_eps: eps_start,
-      eps_start: eps_start,
-      eps_end: eps_end,
-      decay_rate: decay_rate,
       learning_rate: opts[:learning_rate],
+      total_reward: total_reward,
       batch_size: opts[:batch_size],
       training_frequency: opts[:training_frequency],
       target_training_frequency: opts[:target_training_frequency],
@@ -178,7 +183,16 @@ defmodule ReinforcementLearning.Agents.DQN do
       experience_replay_buffer_index:
         opts[:experience_replay_buffer_index] || Nx.tensor(0, type: :s64),
       persisted_experience_replay_buffer_entries:
-        opts[:persisted_experience_replay_buffer_entries] || Nx.tensor(0, type: :s64)
+        opts[:persisted_experience_replay_buffer_entries] || Nx.tensor(0, type: :s64),
+      performance_threshold: opts[:performance_threshold],
+      performance_memory:
+        opts[:performance_memory] ||
+          Nx.broadcast(total_reward, {opts[:performance_memory_length]}),
+      max_eps: opts[:max_eps],
+      min_eps: opts[:min_eps],
+      epsilon_greedy_eps: opts[:max_eps],
+      exploration_decay_rate: opts[:exploration_decay_rate],
+      exploration_increase_rate: opts[:exploration_increase_rate]
     }
 
     {state, random_key}
@@ -204,15 +218,91 @@ defmodule ReinforcementLearning.Agents.DQN do
   def reset(random_key, %ReinforcementLearning{agent_state: state, episode: episode}) do
     total_reward = loss = loss_denominator = Nx.tensor(0, type: :f32)
 
-    eps = Nx.max(Nx.multiply(state.eps_start, Nx.pow(state.decay_rate, episode)), state.eps_end)
+    state = adapt_exploration(episode, state)
 
     {%{
        state
-       | epsilon_greedy_eps: eps,
-         total_reward: total_reward,
+       | total_reward: total_reward,
          loss: loss,
          loss_denominator: loss_denominator
      }, random_key}
+  end
+
+  defnp adapt_exploration(
+          episode,
+          %__MODULE__{
+            exploration_decay_rate: exploration_decay_rate,
+            exploration_increase_rate: exploration_increase_rate,
+            epsilon_greedy_eps: eps,
+            min_eps: min_eps,
+            max_eps: max_eps,
+            total_reward: reward,
+            performance_memory: %Nx.Tensor{shape: {n}} = performance_memory,
+            performance_threshold: performance_threshold
+          } = state
+        ) do
+    {eps, performance_memory} =
+      cond do
+        episode == 0 ->
+          {eps, performance_memory}
+
+        episode < n ->
+          index = Nx.remainder(episode, n)
+
+          performance_memory =
+            Nx.indexed_put(
+              performance_memory,
+              Nx.reshape(index, {1, 1}),
+              Nx.reshape(reward, {1})
+            )
+
+          {eps, performance_memory}
+
+        true ->
+          index = Nx.remainder(episode, n)
+
+          performance_memory =
+            Nx.indexed_put(performance_memory, Nx.reshape(index, {1, 1}), Nx.reshape(reward, {1}))
+
+          index = Nx.remainder(index + 1, n)
+
+          # We want to get our 2 windows in sequence so that we can compare them.
+          # The rem(iota + index + 1, n) operation will effectively set it so that
+          # we have the oldest window starting at the first position, and then all elements
+          # in the circular buffer fall into sequence
+          window_indices = Nx.remainder(Nx.iota({n}) + index, n)
+
+          # After we take and reshape, the first row contains the oldest `n//2` samples
+          # and the second row, the remaining newest samples.
+          windows =
+            performance_memory
+            |> Nx.take(window_indices)
+            |> Nx.reshape({2, :auto})
+
+          # avg[0]: avg of the previous performance window
+          # avg[1]: avg of the current performance window
+          avg = Nx.mean(windows, axes: [1])
+
+          abs_diff = Nx.abs(avg[0] - avg[1])
+
+          eps =
+            if abs_diff < performance_threshold do
+              # If decayed to less than an "eps" value,
+              # we force it to increase from that "eps" instead.
+              Nx.min(eps * exploration_increase_rate, max_eps)
+            else
+              # can decay to 0
+              Nx.max(eps * exploration_decay_rate, min_eps)
+            end
+
+          {eps, performance_memory}
+      end
+
+    %__MODULE__{
+      state
+      | epsilon_greedy_eps: eps,
+        performance_memory: performance_memory
+    }
   end
 
   @impl true
@@ -333,24 +423,24 @@ defmodule ReinforcementLearning.Agents.DQN do
     should_update_policy_net = rem(experience_replay_buffer_index, training_frequency) == 0
     should_update_target_net = rem(experience_replay_buffer_index, target_training_frequency) == 0
 
-    cond do
-      not has_at_least_one_batch ->
-        state
+    {state, _, _, _} =
+      while {state, i = 0, training_frequency,
+             pred = has_at_least_one_batch and should_update_policy_net},
+            pred and i < training_frequency do
+        {train(state), i + 1, training_frequency, pred}
+      end
 
-      should_update_policy_net and not should_update_target_net ->
-        update_policy_network(state)
+    {state, _, _, _} =
+      while {state, i = 0, target_training_frequency,
+             pred = has_at_least_one_batch and should_update_target_net},
+            pred and i < target_training_frequency do
+        {soft_update_targets(state), i + 1, target_training_frequency, pred}
+      end
 
-      should_update_policy_net and should_update_target_net ->
-        state
-        |> update_policy_network()
-        |> soft_update_target_network()
-
-      true ->
-        state
-    end
+    state
   end
 
-  defnp update_policy_network(state) do
+  defnp train(state) do
     %{
       agent_state: %{
         q_policy: q_policy,
@@ -450,7 +540,7 @@ defmodule ReinforcementLearning.Agents.DQN do
     }
   end
 
-  defnp soft_update_target_network(state) do
+  defnp soft_update_targets(state) do
     %{agent_state: %{q_target: q_target, q_policy: q_policy} = agent_state} = state
 
     q_target = Axon.Shared.deep_merge(q_policy, q_target, &(&1 * @tau + &2 * (1 - @tau)))
