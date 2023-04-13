@@ -49,7 +49,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :performance_memory,
              :performance_threshold,
              :gamma,
-             :tau
+             :tau,
+             :exploration_warmup_episodes
            ],
            keep: [
              :environment_to_state_vector_fn,
@@ -100,7 +101,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
     :exploration_decay_rate,
     :exploration_increase_rate,
     :performance_memory,
-    :performance_threshold
+    :performance_threshold,
+    :exploration_warmup_episodes
   ]
 
   @impl true
@@ -123,13 +125,14 @@ defmodule ReinforcementLearning.Agents.DDPG do
       exploration_decay_rate: 0.9995,
       exploration_increase_rate: 1.1,
       performance_threshold: 0.01,
+      exploration_warmup_episodes: 750,
       gamma: 0.99,
       experience_replay_buffer_max_size: 100_000,
-      tau: 0.001,
+      tau: 0.005,
       batch_size: 64,
       training_frequency: 32,
       target_update_frequency: 100,
-      actor_optimizer_params: [learning_rate: 1.0e-3, eps: 1.0e-7, adamw_decay: 1.0e-2],
+      actor_optimizer_params: [learning_rate: 1.0e-3, eps: 1.0e-7],
       critic_optimizer_params: [learning_rate: 2.0e-3, eps: 1.0e-7, adamw_decay: 1.0e-2],
       action_lower_limit: -1.0,
       action_upper_limit: 1.0
@@ -156,15 +159,15 @@ defmodule ReinforcementLearning.Agents.DDPG do
     actor_optimizer_params = opts[:actor_optimizer_params]
     critic_optimizer_params = opts[:critic_optimizer_params]
 
-    optimizer_keys = [:learning_rate, :eps, :adamw_decay]
+    optimizer_keys = [:learning_rate, :eps]
 
     for {name, opts} <- [actor: actor_optimizer_params, critic: critic_optimizer_params],
         k <- optimizer_keys do
       v = opts[k]
 
-      unless is_number(v) do
+      unless is_number(v) or is_function(v) do
         raise ArgumentError,
-              "expected [:#{name}_optimizer_params][#{k}] option to be a number, got: #{v}"
+              "expected [:#{name}_optimizer_params][#{k}] option to be a number, got: #{inspect(v)}"
       end
     end
 
@@ -202,9 +205,10 @@ defmodule ReinforcementLearning.Agents.DDPG do
     {critic_optimizer_init_fn, critic_optimizer_update_fn} =
       Axon.Updates.compose(
         Axon.Updates.clip_by_global_norm(),
-        Axon.Optimizers.adam(
+        Axon.Optimizers.adamw(
           critic_optimizer_params[:learning_rate],
-          eps: critic_optimizer_params[:eps]
+          eps: critic_optimizer_params[:eps],
+          decay: critic_optimizer_params[:adamw_decay]
         )
       )
 
@@ -277,6 +281,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
     state = %__MODULE__{
       max_sigma: max_sigma,
       min_sigma: min_sigma,
+      exploration_warmup_episodes: opts[:exploration_warmup_episodes],
       exploration_decay_rate: opts[:exploration_decay_rate],
       exploration_increase_rate: opts[:exploration_increase_rate],
       state_vector: Nx.broadcast(0.0, {1, state_vector_size}),
@@ -359,6 +364,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
   defnp adapt_exploration(
           episode,
           %__MODULE__{
+            exploration_warmup_episodes: exploration_warmup_episodes,
             persisted_experience_replay_buffer_entries:
               persisted_experience_replay_buffer_entries,
             ou_process: ou_process,
@@ -376,7 +382,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
         episode == 0 ->
           {ou_process, performance_memory}
 
-        episode < n or persisted_experience_replay_buffer_entries < n ->
+        episode < n or persisted_experience_replay_buffer_entries < n or
+            episode < exploration_warmup_episodes ->
           index = Nx.remainder(episode, n)
 
           performance_memory =
@@ -556,34 +563,26 @@ defmodule ReinforcementLearning.Agents.DDPG do
       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
       experience_replay_buffer_index: experience_replay_buffer_index,
       batch_size: batch_size,
-      training_frequency: training_frequency,
-      target_update_frequency: target_update_frequency
+      training_frequency: training_frequency
     } = state.agent_state
 
     has_at_least_one_batch = persisted_experience_replay_buffer_entries > batch_size
-    should_update_policy_net = rem(experience_replay_buffer_index, training_frequency) == 0
-    should_update_target_net = rem(experience_replay_buffer_index, target_update_frequency) == 0
+    should_train = rem(experience_replay_buffer_index, training_frequency) == 0
 
-    {batch_list, batch_idx_list, random_key} =
-      sample_experience_replay_buffer(state.random_key, state.agent_state)
+    cond do
+      not has_at_least_one_batch or not should_train ->
+        state
 
-    {state, _, _, _, _, _} =
-      while {state = %{state | random_key: random_key}, i = 0, training_frequency,
-             pred = has_at_least_one_batch and should_update_policy_net, batch_list,
-             batch_idx_list},
-            pred and i < training_frequency do
-        {train(state, batch_list[i], batch_idx_list[i]), i + 1, training_frequency, pred,
-         batch_list, batch_idx_list}
-      end
+      true ->
+        while state, _ <- 0..(training_frequency - 1)//1, unroll: 50 do
+          {batch, batch_idx, random_key} =
+            sample_experience_replay_buffer(state.random_key, state.agent_state)
 
-    {state, _, _, _} =
-      while {state, i = 0, target_update_frequency,
-             pred = has_at_least_one_batch and should_update_target_net},
-            pred and i < target_update_frequency do
-        {soft_update_targets(state), i + 1, target_update_frequency, pred}
-      end
-
-    state
+          %{state | random_key: random_key}
+          |> train(batch, batch_idx)
+          |> soft_update_targets()
+        end
+    end
   end
 
   defnp train(state, batch, batch_idx) do
@@ -603,8 +602,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
         experience_replay_buffer: experience_replay_buffer,
         num_actions: num_actions,
         gamma: gamma
-      },
-      random_key: random_key
+      }
     } = state
 
     state_batch = Nx.slice_along_axis(batch, 0, state_vector_size, axis: 1)
@@ -620,22 +618,19 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     non_final_mask = not is_terminal_batch
 
-    # train critic network
+    ### Train Critic
+
     {{experience_replay_buffer, critic_loss}, critic_gradient} =
       value_and_grad(
         critic_params,
         fn critic_params ->
           target_actions = actor_predict_fn.(actor_target_params, next_state_batch)
 
-          target_critic_prediction =
-            critic_predict_fn.(critic_target_params, next_state_batch, target_actions)
-            |> stop_grad()
+          q_target = critic_predict_fn.(critic_target_params, next_state_batch, target_actions)
 
-          %{shape: {n, 1}} =
-            critic_prediction = critic_predict_fn.(critic_params, state_batch, action_batch)
+          %{shape: {n, 1}} = q = critic_predict_fn.(critic_params, state_batch, action_batch)
 
-          %{shape: {m, 1}} =
-            target = reward_batch + gamma * non_final_mask * target_critic_prediction
+          %{shape: {m, 1}} = backup = reward_batch + gamma * non_final_mask * q_target
 
           case {m, n} do
             {m, n} when m != n ->
@@ -645,7 +640,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
               1
           end
 
-          td_errors = Nx.abs(target - critic_prediction)
+          td_errors = Nx.abs(backup - q)
 
           {
             update_priorities(
@@ -654,7 +649,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
               state_vector_size * 2 + num_actions + 2,
               td_errors
             ),
-            huber_loss(target, critic_prediction)
+            Axon.Losses.huber(backup, q, reduction: :mean)
           }
         end,
         &elem(&1, 1)
@@ -665,16 +660,17 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     critic_params = Axon.Updates.apply_updates(critic_params, critic_updates)
 
-    # train actor network
-    {_actor_loss, actor_gradient} =
-      value_and_grad(
+    ### Train Actor
+
+    actor_gradient =
+      grad(
         actor_params,
         fn actor_params ->
           actions = actor_predict_fn.(actor_params, state_batch)
           # the training comes from us using the new critic_params to predict new values
           critic_prediction = critic_predict_fn.(critic_params, state_batch, actions)
           # negate because we want to perform gradient ascent using a gradient descent optimizer
-          Nx.mean(-critic_prediction)
+          -Nx.mean(critic_prediction)
         end
       )
 
@@ -694,8 +690,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
             loss: state.agent_state.loss + critic_loss,
             loss_denominator: state.agent_state.loss_denominator + 1,
             experience_replay_buffer: experience_replay_buffer
-        },
-        random_key: random_key
+        }
     }
   end
 
@@ -712,10 +707,18 @@ defmodule ReinforcementLearning.Agents.DDPG do
     } = state
 
     actor_target_params =
-      Axon.Shared.deep_merge(actor_params, actor_target_params, &(&1 * tau + &2 * (1 - tau)))
+      Axon.Shared.deep_merge(
+        actor_params,
+        actor_target_params,
+        &Nx.as_type(&1 * tau + &2 * (1 - tau), Nx.type(&1))
+      )
 
     critic_target_params =
-      Axon.Shared.deep_merge(critic_params, critic_target_params, &(&1 * tau + &2 * (1 - tau)))
+      Axon.Shared.deep_merge(
+        critic_params,
+        critic_target_params,
+        &Nx.as_type(&1 * tau + &2 * (1 - tau), Nx.type(&1))
+      )
 
     %{
       state
@@ -731,7 +734,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
   defnp sample_experience_replay_buffer(
           random_key,
           %{
-            training_frequency: training_frequency,
+            # training_frequency: training_frequency,
             batch_size: batch_size,
             state_vector_size: state_vector_size,
             num_actions: num_actions,
@@ -765,12 +768,10 @@ defmodule ReinforcementLearning.Agents.DDPG do
     {batch_idx, random_key} =
       random_key
       |> Nx.Random.choice(Nx.iota(temporal_difference.shape), probs,
-        samples: batch_size * training_frequency,
+        samples: batch_size,
         replace: false,
         axis: 0
       )
-
-    batch_idx = Nx.reshape(batch_idx, {training_frequency, batch_size})
 
     batch = Nx.take(exp_replay_buffer, batch_idx)
 
@@ -807,15 +808,5 @@ defmodule ReinforcementLearning.Agents.DDPG do
     indices = Nx.stack([row_idx, Nx.broadcast(target_column, {n})], axis: -1)
 
     Nx.indexed_put(buffer, indices, Nx.reshape(td_errors, {n}))
-  end
-
-  defnp huber_loss(y_true, y_pred, opts \\ [delta: 1.0]) do
-    delta = opts[:delta]
-
-    abs_diff = Nx.abs(y_pred - y_true)
-
-    (abs_diff <= delta)
-    |> Nx.select(0.5 * abs_diff ** 2, delta * abs_diff - 0.5 * delta ** 2)
-    |> Nx.mean()
   end
 end

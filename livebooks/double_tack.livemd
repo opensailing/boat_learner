@@ -9,9 +9,9 @@ Mix.install(
   ],
   config_path: Path.join(my_app_root, "config/config.exs"),
   lockfile: Path.join(my_app_root, "mix.lock"),
-  consolidate_protocols: false
+  consolidate_protocols: false,
   # change to "cuda118" to use CUDA
-  # system_env: %{"XLA_TARGET" => "cuda118"}
+  system_env: %{"XLA_TARGET" => "cuda118"}
   # force: true
 )
 ```
@@ -46,7 +46,7 @@ angle_templates =
 
       {x, y} =
         if y + delta_y > max_y do
-          x = (max_y - delta_y) * x / y
+          x = (max_y - delta_y) * x / (y - min_y)
           y = max_y
           {x, y}
         else
@@ -254,14 +254,14 @@ defmodule AccumulateAndExportData do
     Nx.select(angle > 180, angle - 360, angle)
   end
 
-  def state_to_trajectory_entry(%{environment_state: env}) do
+  def state_to_trajectory_entry(%{environment_state: env, agent_state: agent}) do
     distance_to_mark = Nx.abs(Nx.subtract(env.target_y, env.y))
 
     Nx.stack([
       env.x,
       env.y,
       env.remaining_seconds,
-      env.reward,
+      agent.total_reward,
       rad_to_deg(env.heading),
       env.speed,
       env.vmg,
@@ -280,10 +280,6 @@ defmodule AccumulateAndExportData do
     {:noreply, state}
   end
 
-  def handle_cast({:add_epoch, _epoch, _, _trajectory_tensor}, state) do
-    {:noreply, state}
-  end
-
   def handle_cast({:add_epoch, _epoch, 0, _trajectory_tensor}, state) do
     {:noreply, state}
   end
@@ -296,6 +292,8 @@ defmodule AccumulateAndExportData do
       |> Enum.with_index(fn [
                               x,
                               y,
+                              remaining_seconds,
+                              reward,
                               angle,
                               speed,
                               vmg,
@@ -310,7 +308,9 @@ defmodule AccumulateAndExportData do
           boat_speed: speed,
           distance_to_mark: distance_to_mark,
           vmg: vmg,
-          index: index
+          index: index,
+          remaining_seconds: remaining_seconds,
+          reward: reward
         }
       end)
 
@@ -348,18 +348,19 @@ plot_fn = fn axon_state ->
   IO.inspect("Episode #{episode} ended")
 
   trajectory = axon_state.step_state.trajectory
+  iteration = Nx.to_number(axon_state.step_state.iteration)
 
   if rem(episode, 25) == 0 do
     GenServer.cast(
       AccumulateAndExportData,
-      {:add_epoch, episode, axon_state.iteration, trajectory}
+      {:add_epoch, episode, iteration, trajectory}
     )
   end
 
-  if rem(episode, 5) == 0 do
+  if rem(episode, 5) == 0 and iteration > 0 do
     Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
 
-    traj = trajectory[[0..(axon_state.iteration - 1)//1, 0..3]]
+    traj = trajectory[[0..(iteration - 1)//1, 0..3]]
 
     points =
       traj
@@ -459,10 +460,13 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat"
   end
 
 fields = [
+  :x,
+  :y,
+  :distance,
   :vmg,
   :heading,
-  :optimal_angle,
-  :angle_to_target
+  :angle_to_target,
+  :optimal_angle
 ]
 
 num_actions = BoatLearner.Environments.DoubleTack.num_actions()
@@ -473,15 +477,15 @@ action_input = Axon.input("actions", shape: {nil, num_actions})
 
 actor_net =
   state_input
-  |> Axon.dense(32, activation: :relu)
-  |> Axon.dense(32, activation: :relu)
+  |> Axon.dense(40, activation: :relu)
+  |> Axon.dense(30, activation: :relu)
   |> Axon.dense(num_actions, activation: :tanh)
 
 critic_net =
-  [state_input, action_input]
-  |> Axon.concatenate()
-  |> Axon.dense(32, activation: :relu)
-  |> Axon.dense(16, activation: :relu)
+  state_input
+  |> Axon.dense(40, activation: :relu)
+  |> then(&Axon.concatenate([&1, action_input]))
+  |> Axon.dense(30, activation: :relu)
   |> Axon.dense(1)
 
 # These might seem redundant, but will make more sense for multi-input models
@@ -519,6 +523,9 @@ environment_to_state_vector_fn = fn env_state ->
   distance_squared_norm = Nx.divide(distance_squared, 2)
 
   [
+    norm_x,
+    norm_y,
+    distance_squared_norm,
     normalize_speed.(env_state.vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.angle_to_target),
@@ -529,7 +536,9 @@ environment_to_state_vector_fn = fn env_state ->
 end
 
 state_vector_to_input_fn = fn state_vector ->
-  %{"state" => state_vector}
+  %{
+    "state" => state_vector
+  }
 end
 
 actor_params = %{}
@@ -558,7 +567,7 @@ input_template =
   end)
 
 Axon.Display.as_graph(actor_net, input_template)
-|> Kino.Mermaid.new()
+# |> Kino.Mermaid.new()
 
 input_template =
   critic_net
@@ -579,18 +588,31 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 5000
+episodes = 70_000
 max_iter = 200
 
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
 
-sigma = 0.25
-max_sigma = 0.5
+sigma = 0.2
+max_sigma = 0.6
 min_sigma = 0.01
 exploration_decay_rate = 0.95
-exploration_increase_rate = 1.32
-exploration_threshold = 0.05
+exploration_increase_rate = 1.05
+exploration_threshold = 0.1
+
+defmodule LR do
+  import Nx.Defn
+
+  def schedule(start, stop, period) do
+    r = (stop / start) ** (1 / period)
+    &decay(&1, r, period)
+  end
+
+  defnp decay(step, r, period) do
+    r ** Nx.remainder(step, period)
+  end
+end
 
 {t, result} =
   :timer.tc(fn ->
@@ -601,7 +623,8 @@ exploration_threshold = 0.05
       },
       {
         ReinforcementLearning.Agents.DDPG,
-        performance_memory_length: 512,
+        tau: 0.005,
+        performance_memory_length: 256,
         performance_memory: performance_memory,
         actor_net: actor_net,
         actor_params: actor_params,
@@ -612,12 +635,11 @@ exploration_threshold = 0.05
         persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
         experience_replay_buffer_index: experience_replay_buffer_index,
         experience_replay_buffer: experience_replay_buffer,
-        experience_replay_buffer_max_size: 250_000,
+        experience_replay_buffer_max_size: 500_000,
         environment_to_state_vector_fn: environment_to_state_vector_fn,
         state_vector_to_input_fn: state_vector_to_input_fn,
-        training_frequency: 128,
-        batch_size: 128,
-        target_update_frequency: 256,
+        training_frequency: 100,
+        batch_size: 64,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
         performance_threshold: exploration_threshold,
@@ -625,6 +647,15 @@ exploration_threshold = 0.05
           max_sigma: max_sigma,
           min_sigma: min_sigma,
           sigma: sigma
+        ],
+        actor_optimizer_params: [
+          learning_rate: LR.schedule(1.0e-4, 1.0e-5, 5000),
+          eps: 1.0e-7
+        ],
+        critic_optimizer_params: [
+          learning_rate: LR.schedule(1.0e-3, 5.0e-4, 2000),
+          eps: 1.0e-7,
+          adamw_decay: 1.0e-2
         ]
       },
       plot_fn,
