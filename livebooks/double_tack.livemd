@@ -466,27 +466,56 @@ fields = [
   :vmg,
   :heading,
   :angle_to_target,
-  :optimal_angle
+  :optimal_angle,
+  :has_tacked
 ]
 
 num_actions = BoatLearner.Environments.DoubleTack.num_actions()
 num_observations = length(fields)
 
 state_input = Axon.input("state", shape: {nil, num_observations})
+
 action_input = Axon.input("actions", shape: {nil, num_actions})
 
 actor_net =
   state_input
-  |> Axon.dense(40, activation: :relu)
-  |> Axon.dense(30, activation: :relu)
-  |> Axon.dense(num_actions, activation: :tanh)
+  |> Axon.dense(128, activation: :linear)
+  |> Axon.batch_norm()
+  |> Axon.activation(:relu)
+  |> Axon.dropout()
+  |> Axon.dense(64, activation: :linear)
+  |> Axon.batch_norm()
+  |> Axon.activation(:relu)
+  |> Axon.dropout()
+  |> Axon.dense(32, activation: :linear)
+  |> Axon.batch_norm()
+  |> Axon.activation(:relu)
+  |> Axon.dropout()
+  |> Axon.dense(num_actions,
+    activation: :tanh,
+    kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3),
+    bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3)
+  )
 
 critic_net =
   state_input
-  |> Axon.dense(40, activation: :relu)
+  |> Axon.dense(128, activation: :linear)
+  |> Axon.batch_norm()
+  |> Axon.activation(:relu)
+  |> Axon.dropout()
   |> then(&Axon.concatenate([&1, action_input]))
-  |> Axon.dense(30, activation: :relu)
-  |> Axon.dense(1)
+  |> Axon.dense(64, activation: :linear)
+  |> Axon.batch_norm()
+  |> Axon.activation(:relu)
+  |> Axon.dropout()
+  |> Axon.dense(64, activation: :linear)
+  |> Axon.batch_norm()
+  |> Axon.activation(:relu)
+  |> Axon.dropout()
+  |> Axon.dense(1,
+    kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3),
+    bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3)
+  )
 
 # These might seem redundant, but will make more sense for multi-input models
 normalize_x = fn x ->
@@ -529,27 +558,26 @@ environment_to_state_vector_fn = fn env_state ->
     normalize_speed.(env_state.vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.angle_to_target),
-    normalize_angle.(42.7 / 180 * :math.pi())
+    normalize_angle.(42.7 / 180 * :math.pi()),
+    env_state.has_tacked
   ]
   |> Nx.stack()
   |> Nx.new_axis(0)
 end
 
 state_vector_to_input_fn = fn state_vector ->
-  %{
-    "state" => state_vector
-  }
+  %{"state" => state_vector}
 end
 
-actor_params = %{}
-actor_target_params = %{}
-critic_params = %{}
-critic_target_params = %{}
-total_episodes = 0
-experience_replay_buffer = nil
-performance_memory = nil
-persisted_experience_replay_buffer_entries = 0
-experience_replay_buffer_index = 0
+# actor_params = %{}
+# actor_target_params = %{}
+# critic_params = %{}
+# critic_target_params = %{}
+# total_episodes = 0
+# experience_replay_buffer = nil
+# performance_memory = nil
+# persisted_experience_replay_buffer_entries = 0
+# experience_replay_buffer_index = 0
 
 IO.inspect(
   {actor_params, actor_target_params, critic_params, critic_target_params, total_episodes},
@@ -566,8 +594,7 @@ input_template =
     {name, Nx.template(shape, :f32)}
   end)
 
-Axon.Display.as_graph(actor_net, input_template)
-# |> Kino.Mermaid.new()
+actor = Axon.Display.as_graph(actor_net, input_template)
 
 input_template =
   critic_net
@@ -578,7 +605,9 @@ input_template =
     {name, Nx.template(shape, :f32)}
   end)
 
-Axon.Display.as_graph(critic_net, input_template)
+critic = Axon.Display.as_graph(critic_net, input_template)
+
+Kino.Layout.grid([actor, critic], columns: 2)
 ```
 
 ## Train
@@ -588,43 +617,30 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 70_000
-max_iter = 200
+episodes = 2500
+max_iter = 40
 
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
 
-sigma = 0.2
-max_sigma = 0.6
+sigma = 0.1
+max_sigma = 0.1
 min_sigma = 0.01
 exploration_decay_rate = 0.95
 exploration_increase_rate = 1.05
-exploration_threshold = 0.1
-
-defmodule LR do
-  import Nx.Defn
-
-  def schedule(start, stop, period) do
-    r = (stop / start) ** (1 / period)
-    &decay(&1, r, period)
-  end
-
-  defnp decay(step, r, period) do
-    r ** Nx.remainder(step, period)
-  end
-end
+exploration_threshold = 0.005
 
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
       {
         BoatLearner.Environments.DoubleTack,
-        max_remaining_seconds: max_iter * 5, target_y: target_y
+        max_remaining_seconds: 500, target_y: target_y
       },
       {
         ReinforcementLearning.Agents.DDPG,
-        tau: 0.005,
-        performance_memory_length: 256,
+        tau: 0.001,
+        performance_memory_length: 512,
         performance_memory: performance_memory,
         actor_net: actor_net,
         actor_params: actor_params,
@@ -635,13 +651,14 @@ end
         persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
         experience_replay_buffer_index: experience_replay_buffer_index,
         experience_replay_buffer: experience_replay_buffer,
-        experience_replay_buffer_max_size: 500_000,
+        experience_replay_buffer_max_size: 250_000,
         environment_to_state_vector_fn: environment_to_state_vector_fn,
         state_vector_to_input_fn: state_vector_to_input_fn,
-        training_frequency: 100,
-        batch_size: 64,
+        training_frequency: 32,
+        batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
+        exploration_warmup_episodes: 1000,
         performance_threshold: exploration_threshold,
         ou_process_opts: [
           max_sigma: max_sigma,
@@ -649,11 +666,11 @@ end
           sigma: sigma
         ],
         actor_optimizer_params: [
-          learning_rate: LR.schedule(1.0e-4, 1.0e-5, 5000),
+          learning_rate: 1.0e-4,
           eps: 1.0e-7
         ],
         critic_optimizer_params: [
-          learning_rate: LR.schedule(1.0e-3, 5.0e-4, 2000),
+          learning_rate: 1.0e-3,
           eps: 1.0e-7,
           adamw_decay: 1.0e-2
         ]

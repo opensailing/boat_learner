@@ -194,22 +194,23 @@ defmodule ReinforcementLearning.Agents.DDPG do
     end
 
     {actor_optimizer_init_fn, actor_optimizer_update_fn} =
-      Axon.Updates.compose(
-        Axon.Updates.clip_by_global_norm(),
+      Axon.Updates.clip(delta: 10)
+      |> Axon.Updates.compose(
         Axon.Optimizers.adam(
           actor_optimizer_params[:learning_rate],
           eps: actor_optimizer_params[:eps]
         )
       )
+      |> Axon.Updates.clip(delta: 1)
 
     {critic_optimizer_init_fn, critic_optimizer_update_fn} =
       Axon.Updates.compose(
-        Axon.Updates.clip_by_global_norm(),
-        Axon.Optimizers.adamw(
+        Axon.Optimizers.adam(
           critic_optimizer_params[:learning_rate],
-          eps: critic_optimizer_params[:eps],
-          decay: critic_optimizer_params[:adamw_decay]
-        )
+          eps: critic_optimizer_params[:eps]
+          # decay: critic_optimizer_params[:adamw_decay]
+        ),
+        Axon.Updates.clip()
       )
 
     initial_actor_params_state = opts[:actor_params]
@@ -303,7 +304,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       experience_replay_buffer:
         opts[:experience_replay_buffer] ||
           Nx.broadcast(
-            Nx.tensor(:nan, type: :f32),
+            Nx.tensor(0, type: :f32),
             {experience_replay_buffer_max_size, 2 * state_vector_size + num_actions + 3}
           ),
       experience_replay_buffer_index:
@@ -563,25 +564,32 @@ defmodule ReinforcementLearning.Agents.DDPG do
       persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
       experience_replay_buffer_index: experience_replay_buffer_index,
       batch_size: batch_size,
-      training_frequency: training_frequency
+      training_frequency: training_frequency,
+      exploration_warmup_episodes: exploration_warmup_episodes
     } = state.agent_state
 
+    warming_up = state.episode < exploration_warmup_episodes
     has_at_least_one_batch = persisted_experience_replay_buffer_entries > batch_size
-    should_train = rem(experience_replay_buffer_index, training_frequency) == 0
 
-    cond do
-      not has_at_least_one_batch or not should_train ->
-        state
+    should_train =
+      not warming_up and has_at_least_one_batch and
+        rem(experience_replay_buffer_index, training_frequency) == 0
 
-      true ->
-        while state, _ <- 0..(training_frequency - 1)//1, unroll: 50 do
-          {batch, batch_idx, random_key} =
-            sample_experience_replay_buffer(state.random_key, state.agent_state)
+    if should_train do
+      train_loop(state, training_frequency)
+    else
+      state
+    end
+  end
 
-          %{state | random_key: random_key}
-          |> train(batch, batch_idx)
-          |> soft_update_targets()
-        end
+  defnp train_loop(state, training_frequency) do
+    while state, _ <- 0..(training_frequency - 1)//1, unroll: true do
+      {batch, batch_indices, random_key} =
+        sample_experience_replay_buffer(state.random_key, state.agent_state)
+
+      %{state | random_key: random_key}
+      |> train(batch, batch_indices)
+      |> soft_update_targets()
     end
   end
 
@@ -649,7 +657,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
               state_vector_size * 2 + num_actions + 2,
               td_errors
             ),
-            Axon.Losses.huber(backup, q, reduction: :mean)
+            Nx.mean(td_errors ** 2)
           }
         end,
         &elem(&1, 1)
@@ -663,16 +671,11 @@ defmodule ReinforcementLearning.Agents.DDPG do
     ### Train Actor
 
     actor_gradient =
-      grad(
-        actor_params,
-        fn actor_params ->
-          actions = actor_predict_fn.(actor_params, state_batch)
-          # the training comes from us using the new critic_params to predict new values
-          critic_prediction = critic_predict_fn.(critic_params, state_batch, actions)
-          # negate because we want to perform gradient ascent using a gradient descent optimizer
-          -Nx.mean(critic_prediction)
-        end
-      )
+      grad(actor_params, fn actor_params ->
+        actions = actor_predict_fn.(actor_params, state_batch)
+        q = critic_predict_fn.(critic_params, state_batch, actions)
+        -Nx.mean(q)
+      end)
 
     {actor_updates, actor_optimizer_state} =
       actor_optimizer_update_fn.(actor_gradient, actor_optimizer_state, actor_params)
@@ -734,14 +737,13 @@ defmodule ReinforcementLearning.Agents.DDPG do
   defnp sample_experience_replay_buffer(
           random_key,
           %{
-            # training_frequency: training_frequency,
             batch_size: batch_size,
             state_vector_size: state_vector_size,
             num_actions: num_actions,
             experience_replay_buffer_max_size: experience_replay_buffer_max_size
           } = agent_state
         ) do
-    %{shape: shape} = exp_replay_buffer = slice_experience_replay_buffer(agent_state)
+    %{shape: shape} = exp_replay_buffer = agent_state.experience_replay_buffer
 
     case shape do
       {^experience_replay_buffer_max_size, _} ->
@@ -776,22 +778,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
     batch = Nx.take(exp_replay_buffer, batch_idx)
 
     {batch, batch_idx, random_key}
-  end
-
-  defnp slice_experience_replay_buffer(state) do
-    %{
-      experience_replay_buffer: experience_replay_buffer,
-      persisted_experience_replay_buffer_entries: entries,
-      experience_replay_buffer_max_size: experience_replay_buffer_max_size
-    } = state
-
-    if entries < experience_replay_buffer_max_size do
-      t = Nx.iota({experience_replay_buffer_max_size})
-      idx = Nx.select(t < entries, t, 0)
-      Nx.take(experience_replay_buffer, idx)
-    else
-      experience_replay_buffer
-    end
   end
 
   defn update_priorities(

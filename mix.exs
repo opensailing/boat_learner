@@ -32,7 +32,7 @@ defmodule BoatLearner.MixProject do
       {:jason, "~> 1.2"},
       {:nx, github: "elixir-nx/nx", sparse: "nx", override: true},
       {:scholar, github: "elixir-nx/scholar"},
-      {:axon, github: "elixir-nx/axon"},
+      {:axon, path: "~/coding/axon"},
       {:kino, "~> 0.8"},
       {:kino_vega_lite, "~> 0.1"},
       {:table_rex, "~> 3.1"}
