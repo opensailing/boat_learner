@@ -516,7 +516,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
         Nx.flatten(action_vector),
         Nx.new_axis(reward, 0),
         Nx.new_axis(is_terminal, 0),
-        Nx.flatten(next_state_data),
+        Nx.flatten(next_state_features),
         Nx.reshape(temporal_difference, {1})
       ])
 
@@ -600,10 +600,33 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     is_terminal_batch = Nx.slice_along_axis(batch, input_entry_size + num_actions + 1, 1, axis: 1)
 
+    # we only persisted the new state, so we need to manipulate the `state_batch` to get the actual state
     next_state_batch =
       batch
-      |> Nx.slice_along_axis(input_entry_size + num_actions + 2, input_entry_size, axis: 1)
-      |> Nx.reshape({batch_len, num_states, state_features_size})
+      |> Nx.slice_along_axis(input_entry_size + num_actions + 2, state_features_size, axis: 1)
+      |> Nx.reshape({batch_len, 1, state_features_size})
+
+    next_state_batch =
+      if num_states == 1 do
+        next_state_batch
+      else
+        next_state_batch =
+          [
+          state_batch,
+          next_state_batch
+        ]
+        |> Nx.concatenate(axis: 1)
+        |> Nx.slice_along_axis(1, num_states, axis: 1)
+
+        expected_shape = {batch_len, num_states, state_features_size}
+         actual_shape = Nx.shape(next_state_batch)
+
+      if actual_shape != expected_shape do
+        raise "incorrect size for next_state_batch, expected #{inspect(expected_shape)}, got: #{actual_shape}"
+      end
+
+      next_state_batch
+      end
 
     non_final_mask = not is_terminal_batch
 
