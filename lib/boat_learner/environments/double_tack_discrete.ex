@@ -248,8 +248,6 @@ defmodule BoatLearner.Environments.DoubleTackDiscrete do
     penalized_speed_steps =
       Nx.select(tacking_mask, speed_penalty_multiplier * speed_steps, speed_steps)
 
-    has_tacked = Nx.any(tacking_mask)
-
     tack_count = env.tack_count + Nx.any(tacking_mask)
 
     # Calculate the position changes in x and y directions for each interval
@@ -354,14 +352,9 @@ defmodule BoatLearner.Environments.DoubleTackDiscrete do
 
   defnp calculate_reward(env) do
     %__MODULE__{
-      is_terminal: is_terminal,
       vmg: vmg,
       remaining_seconds: remaining_seconds,
-      max_remaining_seconds: max_remaining_seconds,
-      target_y: target_y,
-      y: y,
-      x: x,
-      heading: heading
+      max_remaining_seconds: max_remaining_seconds
     } = env
 
     has_reached_target = has_reached_target(env)
