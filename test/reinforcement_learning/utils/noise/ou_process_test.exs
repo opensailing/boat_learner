@@ -4,31 +4,35 @@ defmodule ReinforcementLearning.Utils.Noise.OUProcessTest do
   alias ReinforcementLearning.Utils.Noise.OUProcess
 
   test "generates samples with given shape" do
+    Nx.Defn.default_options(compiler: Nx.Defn.Evaluator)
+    Nx.default_backend(Nx.BinaryBackend)
+
     key = Nx.Random.key(1)
 
-    state = OUProcess.init(2)
+    state = OUProcess.init({2})
     range = 1..10
 
     {values, _key} =
       Enum.map_reduce(range, {key, state}, fn _, {prev_key, state} ->
         {state, key} = OUProcess.sample(prev_key, state)
 
-        refute Nx.backend_copy(key) == Nx.backend_copy(prev_key)
+        assert key.data.__struct__ == Nx.BinaryBackend
+        refute key == prev_key
 
         {state.x, {key, state}}
       end)
 
-    assert Enum.map(values, &Nx.backend_copy/1) == [
-             Nx.tensor([-0.161521315574646, -0.04836982861161232], backend: Nx.BinaryBackend),
-             Nx.tensor([-0.02224855124950409, -0.040264032781124115], backend: Nx.BinaryBackend),
-             Nx.tensor([-0.09898111969232559, 0.007571592926979065], backend: Nx.BinaryBackend),
-             Nx.tensor([0.2752320468425751, 0.27117180824279785], backend: Nx.BinaryBackend),
-             Nx.tensor([0.19806110858917236, 0.374011367559433], backend: Nx.BinaryBackend),
-             Nx.tensor([0.33261623978614807, 0.45093613862991333], backend: Nx.BinaryBackend),
-             Nx.tensor([0.5560829043388367, 0.3771272897720337], backend: Nx.BinaryBackend),
-             Nx.tensor([0.418714702129364, 0.24803754687309265], backend: Nx.BinaryBackend),
-             Nx.tensor([0.043423742055892944, 0.10074643790721893], backend: Nx.BinaryBackend),
-             Nx.tensor([-0.3225523829460144, 0.020469389855861664], backend: Nx.BinaryBackend)
+    assert values == [
+             Nx.tensor([-0.161521315574646, -0.04836982488632202]),
+             Nx.tensor([-0.022248566150665283, -0.040264029055833817]),
+             Nx.tensor([-0.09898112714290619, 0.007571600377559662]),
+             Nx.tensor([0.2752320170402527, 0.27117177844047546]),
+             Nx.tensor([0.19806107878684998, 0.3740113377571106]),
+             Nx.tensor([0.3326162099838257, 0.45093610882759094]),
+             Nx.tensor([0.5560828447341919, 0.3771272897720337]),
+             Nx.tensor([0.41871464252471924, 0.24803756177425385]),
+             Nx.tensor([0.04342368245124817, 0.10074643790721893]),
+             Nx.tensor([-0.3225524425506592, 0.020469389855861664])
            ]
   end
 end

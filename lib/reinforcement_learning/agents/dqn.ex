@@ -10,6 +10,7 @@ defmodule ReinforcementLearning.Agents.DQN do
 
   @eps_start 1
   @eps_decay_rate 0.995
+  @eps_increase_rate 1.005
   @eps_end 0.01
 
   @train_every_steps 32

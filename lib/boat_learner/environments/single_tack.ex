@@ -271,8 +271,7 @@ defmodule BoatLearner.Environments.SingleTack do
       y: y,
       remaining_iterations: remaining_iterations,
       tack_count: tack_count,
-      target_y: target_y,
-      vmg: vmg
+      target_y: target_y
     } = env
 
     is_terminal =
