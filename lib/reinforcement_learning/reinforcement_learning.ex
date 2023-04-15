@@ -55,14 +55,15 @@ defmodule ReinforcementLearning do
     {init_agent_state, random_key} = agent.init(random_key, agent_init_opts)
     episode = Nx.tensor(opts[:accumulated_episodes], type: :s64)
 
+    {environment_state, random_key} = environment.init(random_key, environment_init_opts)
+
     {agent_state, random_key} =
       agent.reset(random_key, %__MODULE__{
+        environment_state: environment_state,
         agent: agent,
         agent_state: init_agent_state,
         episode: episode
       })
-
-    {environment_state, random_key} = environment.init(random_key, environment_init_opts)
 
     initial_state = %__MODULE__{
       agent: agent,
@@ -137,9 +138,10 @@ defmodule ReinforcementLearning do
          environment,
          state_to_trajectory_fn
        ) do
-    {agent_state, random_key} = agent.reset(random_key, loop_state)
-
     {environment_state, random_key} = environment.reset(random_key, environment_state)
+
+    {agent_state, random_key} =
+      agent.reset(random_key, %{loop_state | environment_state: environment_state})
 
     state = %{
       loop_state

@@ -9,9 +9,8 @@ Mix.install(
   ],
   config_path: Path.join(my_app_root, "config/config.exs"),
   lockfile: Path.join(my_app_root, "mix.lock"),
-  consolidate_protocols: false
-  # change to "cuda118" to use CUDA
-  # system_env: %{"XLA_TARGET" => "cuda118"}
+  consolidate_protocols: false,
+  system_env: %{"XLA_TARGET" => System.get_env("XLA_TARGET", "cpu")}
   # force: true
 )
 ```
@@ -430,7 +429,8 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat"
   critic_target_params,
   experience_replay_buffer,
   total_episodes,
-  performance_memory
+  performance_memory,
+  state_features_memory
 } =
   try do
     contents = File.read!(filename)
@@ -444,14 +444,15 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat"
       critic_params: critic_params,
       critic_target_params: critic_target_params,
       experience_replay_buffer: exp_replay_buffer,
-      performance_memory: performance_memory
+      performance_memory: performance_memory,
+      state_features_memory: state_features_memory
     } = Nx.deserialize(serialized)
 
     {actor_params, actor_target_params, critic_params, critic_target_params, exp_replay_buffer,
-     total_episodes, performance_memory}
+     total_episodes, performance_memory, state_features_memory}
   rescue
     _ in [File.Error, MatchError] ->
-      {%{}, %{}, %{}, %{}, nil, 0, nil}
+      {%{}, %{}, %{}, %{}, nil, 0, nil, nil}
   end
 
 fields = [
@@ -466,9 +467,10 @@ fields = [
 ]
 
 num_actions = BoatLearner.Environments.DoubleTack.num_actions()
-num_observations = length(fields)
+state_features_size = length(fields)
+state_features_memory_length = 1
 
-state_input = Axon.input("state", shape: {nil, num_observations})
+state_input = Axon.input("state", shape: {nil, state_features_size})
 
 action_input = Axon.input("actions", shape: {nil, num_actions})
 
@@ -537,7 +539,7 @@ normalize_angle = fn a ->
   a / (2 * :math.pi())
 end
 
-environment_to_state_vector_fn = fn env_state ->
+environment_to_state_features_fn = fn env_state ->
   norm_x = normalize_x.(env_state.x)
   norm_y = normalize_y.(env_state.y)
 
@@ -557,11 +559,10 @@ environment_to_state_vector_fn = fn env_state ->
     env_state.has_tacked
   ]
   |> Nx.stack()
-  |> Nx.new_axis(0)
 end
 
-state_vector_to_input_fn = fn state_vector ->
-  %{"state" => state_vector}
+state_features_memory_to_input_fn = fn state_features ->
+  %{"state" => Nx.reshape(state_features, {:auto, state_features_size})}
 end
 
 actor_params = %{}
@@ -571,6 +572,7 @@ critic_target_params = %{}
 total_episodes = 0
 experience_replay_buffer = nil
 performance_memory = nil
+state_features_memory = nil
 
 IO.inspect(
   {actor_params, actor_target_params, critic_params, critic_target_params, total_episodes},
@@ -641,10 +643,13 @@ exploration_threshold = 0.005
         critic_net: critic_net,
         critic_params: critic_params,
         critic_target_params: critic_target_params,
+        state_features_memory: state_features_memory,
+        state_features_memory_length: state_features_memory_length,
         experience_replay_buffer: experience_replay_buffer,
         experience_replay_buffer_max_size: 250_000,
-        environment_to_state_vector_fn: environment_to_state_vector_fn,
-        state_vector_to_input_fn: state_vector_to_input_fn,
+        environment_to_state_features_fn: environment_to_state_features_fn,
+        state_features_memory_to_input_fn: state_features_memory_to_input_fn,
+        state_features_size: state_features_size,
         training_frequency: 32,
         batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
