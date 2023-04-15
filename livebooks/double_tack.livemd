@@ -9,9 +9,9 @@ Mix.install(
   ],
   config_path: Path.join(my_app_root, "config/config.exs"),
   lockfile: Path.join(my_app_root, "mix.lock"),
-  consolidate_protocols: false,
+  consolidate_protocols: false
   # change to "cuda118" to use CUDA
-  system_env: %{"XLA_TARGET" => "cuda118"}
+  # system_env: %{"XLA_TARGET" => "cuda118"}
   # force: true
 )
 ```
@@ -428,8 +428,6 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat"
   actor_target_params,
   critic_params,
   critic_target_params,
-  experience_replay_buffer_index,
-  persisted_experience_replay_buffer_entries,
   experience_replay_buffer,
   total_episodes,
   performance_memory
@@ -445,18 +443,15 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat"
       actor_target_params: actor_target_params,
       critic_params: critic_params,
       critic_target_params: critic_target_params,
-      experience_replay_buffer_index: experience_replay_buffer_index,
-      persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
       experience_replay_buffer: exp_replay_buffer,
       performance_memory: performance_memory
     } = Nx.deserialize(serialized)
 
-    {actor_params, actor_target_params, critic_params, critic_target_params,
-     experience_replay_buffer_index, persisted_experience_replay_buffer_entries,
-     exp_replay_buffer, total_episodes, performance_memory}
+    {actor_params, actor_target_params, critic_params, critic_target_params, exp_replay_buffer,
+     total_episodes, performance_memory}
   rescue
     _ in [File.Error, MatchError] ->
-      {%{}, %{}, %{}, %{}, 0, 0, nil, 0, nil}
+      {%{}, %{}, %{}, %{}, nil, 0, nil}
   end
 
 fields = [
@@ -569,15 +564,13 @@ state_vector_to_input_fn = fn state_vector ->
   %{"state" => state_vector}
 end
 
-# actor_params = %{}
-# actor_target_params = %{}
-# critic_params = %{}
-# critic_target_params = %{}
-# total_episodes = 0
-# experience_replay_buffer = nil
-# performance_memory = nil
-# persisted_experience_replay_buffer_entries = 0
-# experience_replay_buffer_index = 0
+actor_params = %{}
+actor_target_params = %{}
+critic_params = %{}
+critic_target_params = %{}
+total_episodes = 0
+experience_replay_buffer = nil
+performance_memory = nil
 
 IO.inspect(
   {actor_params, actor_target_params, critic_params, critic_target_params, total_episodes},
@@ -648,8 +641,6 @@ exploration_threshold = 0.005
         critic_net: critic_net,
         critic_params: critic_params,
         critic_target_params: critic_target_params,
-        persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
-        experience_replay_buffer_index: experience_replay_buffer_index,
         experience_replay_buffer: experience_replay_buffer,
         experience_replay_buffer_max_size: 250_000,
         environment_to_state_vector_fn: environment_to_state_vector_fn,
@@ -692,9 +683,7 @@ serialized =
       :actor_target_params,
       :critic_params,
       :critic_target_params,
-      :experience_replay_buffer_index,
       :experience_replay_buffer,
-      :persisted_experience_replay_buffer_entries,
       :performance_memory
     ])
   )

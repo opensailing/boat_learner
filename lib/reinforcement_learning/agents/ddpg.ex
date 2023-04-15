@@ -10,6 +10,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
   import Nx.Defn
 
   alias ReinforcementLearning.Utils.Noise.OUProcess
+  alias ReinforcementLearning.Utils.CircularBuffer
 
   @behaviour ReinforcementLearning.Agent
 
@@ -30,8 +31,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :critic_params,
              :critic_target_params,
              :experience_replay_buffer,
-             :experience_replay_buffer_index,
-             :persisted_experience_replay_buffer_entries,
              :target_update_frequency,
              :loss,
              :loss_denominator,
@@ -54,7 +53,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
            ],
            keep: [
              :environment_to_state_vector_fn,
-             :experience_replay_buffer_max_size,
              :actor_predict_fn,
              :critic_predict_fn,
              :state_vector_size,
@@ -77,11 +75,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
     :actor_predict_fn,
     :critic_predict_fn,
     :experience_replay_buffer,
-    :experience_replay_buffer_index,
-    :persisted_experience_replay_buffer_entries,
     :environment_to_state_vector_fn,
     :gamma,
-    :experience_replay_buffer_max_size,
     :tau,
     :batch_size,
     :training_frequency,
@@ -115,8 +110,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
       :critic_target_params,
       :critic_net,
       :experience_replay_buffer,
-      :experience_replay_buffer_index,
-      :persisted_experience_replay_buffer_entries,
       :environment_to_state_vector_fn,
       :performance_memory,
       :state_vector_to_input_fn,
@@ -298,19 +291,12 @@ defmodule ReinforcementLearning.Agents.DDPG do
       critic_predict_fn: critic_predict_fn,
       performance_threshold: opts[:performance_threshold],
       performance_memory:
-        opts[:performance_memory] ||
-          Nx.broadcast(total_reward, {opts[:performance_memory_length]}),
-      experience_replay_buffer_max_size: experience_replay_buffer_max_size,
+        opts[:performance_memory] || CircularBuffer.new({opts[:performance_memory_length]}),
       experience_replay_buffer:
         opts[:experience_replay_buffer] ||
-          Nx.broadcast(
-            Nx.tensor(0, type: :f32),
+          CircularBuffer.new(
             {experience_replay_buffer_max_size, 2 * state_vector_size + num_actions + 3}
           ),
-      experience_replay_buffer_index:
-        opts[:experience_replay_buffer_index] || Nx.tensor(0, type: :s64),
-      persisted_experience_replay_buffer_entries:
-        opts[:persisted_experience_replay_buffer_entries] || Nx.tensor(0, type: :s64),
       environment_to_state_vector_fn: environment_to_state_vector_fn,
       gamma: opts[:gamma],
       tau: opts[:tau],
@@ -366,55 +352,36 @@ defmodule ReinforcementLearning.Agents.DDPG do
           episode,
           %__MODULE__{
             exploration_warmup_episodes: exploration_warmup_episodes,
-            persisted_experience_replay_buffer_entries:
-              persisted_experience_replay_buffer_entries,
+            experience_replay_buffer: experience_replay_buffer,
             ou_process: ou_process,
             exploration_decay_rate: exploration_decay_rate,
             exploration_increase_rate: exploration_increase_rate,
             min_sigma: min_sigma,
             max_sigma: max_sigma,
             total_reward: reward,
-            performance_memory: %Nx.Tensor{shape: {n}} = performance_memory,
+            performance_memory: performance_memory,
             performance_threshold: performance_threshold
           } = state
         ) do
+    n = Nx.axis_size(performance_memory.data, 0)
+
     {ou_process, performance_memory} =
       cond do
         episode == 0 ->
           {ou_process, performance_memory}
 
-        episode < n or persisted_experience_replay_buffer_entries < n or
+        episode < n or experience_replay_buffer.size < n or
             episode < exploration_warmup_episodes ->
-          index = Nx.remainder(episode, n)
-
-          performance_memory =
-            Nx.indexed_put(
-              performance_memory,
-              Nx.reshape(index, {1, 1}),
-              Nx.reshape(reward, {1})
-            )
-
-          {ou_process, performance_memory}
+          {ou_process, CircularBuffer.append(performance_memory, reward)}
 
         true ->
-          index = Nx.remainder(episode, n)
-
-          performance_memory =
-            Nx.indexed_put(performance_memory, Nx.reshape(index, {1, 1}), Nx.reshape(reward, {1}))
-
-          index = Nx.remainder(index + 1, n)
-
-          # We want to get our 2 windows in sequence so that we can compare them.
-          # The rem(iota + index + 1, n) operation will effectively set it so that
-          # we have the oldest window starting at the first position, and then all elements
-          # in the circular buffer fall into sequence
-          window_indices = Nx.remainder(Nx.iota({n}) + index, n)
+          performance_memory = CircularBuffer.append(performance_memory, reward)
 
           # After we take and reshape, the first row contains the oldest `n//2` samples
           # and the second row, the remaining newest samples.
           windows =
             performance_memory
-            |> Nx.take(window_indices)
+            |> CircularBuffer.ordered_data()
             |> Nx.reshape({2, :auto})
 
           # avg[0]: avg of the previous performance window
@@ -490,6 +457,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
              critic_predict_fn: critic_predict_fn,
              state_vector: state_vector,
              environment_to_state_vector_fn: as_state_vector_fn,
+             experience_replay_buffer: experience_replay_buffer,
              gamma: gamma
            }
          },
@@ -500,12 +468,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
        ) do
     next_state_vector = as_state_vector_fn.(next_env_state)
 
-    idx = Nx.stack([state.agent_state.experience_replay_buffer_index, 0]) |> Nx.new_axis(0)
-
-    shape = {2 * Nx.size(state_vector) + Nx.size(action_vector) + 3, 1}
-
-    index_template = Nx.concatenate([Nx.broadcast(0, shape), Nx.iota(shape, axis: 0)], axis: 1)
-
     target_action_vector = actor_predict_fn.(actor_target_params, next_state_vector)
 
     target_prediction =
@@ -515,7 +477,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       reward + gamma * target_prediction * (1 - is_terminal) -
         critic_predict_fn.(critic_params, state_vector, action_vector)
 
-    temporal_difference = temporal_difference |> Nx.abs() |> Nx.reshape({1})
+    temporal_difference = Nx.abs(temporal_difference)
 
     updates =
       Nx.concatenate([
@@ -524,35 +486,17 @@ defmodule ReinforcementLearning.Agents.DDPG do
         Nx.new_axis(reward, 0),
         Nx.new_axis(is_terminal, 0),
         Nx.flatten(next_state_vector),
-        temporal_difference
+        Nx.reshape(temporal_difference, {1})
       ])
 
     experience_replay_buffer =
-      Nx.indexed_put(state.agent_state.experience_replay_buffer, idx + index_template, updates)
-
-    experience_replay_buffer_index =
-      Nx.remainder(
-        state.agent_state.experience_replay_buffer_index + 1,
-        state.agent_state.experience_replay_buffer_max_size
-      )
-
-    entries = state.agent_state.persisted_experience_replay_buffer_entries
-
-    persisted_experience_replay_buffer_entries =
-      Nx.select(
-        entries < state.agent_state.experience_replay_buffer_max_size,
-        entries + 1,
-        entries
-      )
+      CircularBuffer.append(experience_replay_buffer, updates)
 
     %{
       state
       | agent_state: %{
           state.agent_state
           | experience_replay_buffer: experience_replay_buffer,
-            experience_replay_buffer_index: experience_replay_buffer_index,
-            persisted_experience_replay_buffer_entries:
-              persisted_experience_replay_buffer_entries,
             total_reward: state.agent_state.total_reward + reward
         }
     }
@@ -561,19 +505,18 @@ defmodule ReinforcementLearning.Agents.DDPG do
   @impl true
   defn optimize_model(state) do
     %{
-      persisted_experience_replay_buffer_entries: persisted_experience_replay_buffer_entries,
-      experience_replay_buffer_index: experience_replay_buffer_index,
+      experience_replay_buffer: experience_replay_buffer,
       batch_size: batch_size,
       training_frequency: training_frequency,
       exploration_warmup_episodes: exploration_warmup_episodes
     } = state.agent_state
 
     warming_up = state.episode < exploration_warmup_episodes
-    has_at_least_one_batch = persisted_experience_replay_buffer_entries > batch_size
+    has_at_least_one_batch = experience_replay_buffer.size > batch_size
 
     should_train =
       not warming_up and has_at_least_one_batch and
-        rem(experience_replay_buffer_index, training_frequency) == 0
+        rem(experience_replay_buffer.index, training_frequency) == 0
 
     if should_train do
       train_loop(state, training_frequency)
@@ -654,7 +597,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
             update_priorities(
               experience_replay_buffer,
               batch_idx,
-              state_vector_size * 2 + num_actions + 2,
               td_errors
             ),
             Nx.mean(td_errors ** 2)
@@ -739,28 +681,13 @@ defmodule ReinforcementLearning.Agents.DDPG do
           %{
             batch_size: batch_size,
             state_vector_size: state_vector_size,
-            num_actions: num_actions,
-            experience_replay_buffer_max_size: experience_replay_buffer_max_size
+            num_actions: num_actions
           } = agent_state
         ) do
-    %{shape: shape} = exp_replay_buffer = agent_state.experience_replay_buffer
-
-    case shape do
-      {^experience_replay_buffer_max_size, _} ->
-        :ok
-
-      shape ->
-        raise "expected shape {#{experience_replay_buffer_max_size}, _}, got: #{inspect(shape)}"
-    end
-
-    # Temporal Difference prioritizing:
-    # We are going to sort experiences by temporal difference
-    # and divide our buffer into 4 slices, from which we will
-    # then uniformily sample.
-    # The temporal difference is already stored in the end of our buffer.
+    data = agent_state.experience_replay_buffer.data
 
     temporal_difference =
-      exp_replay_buffer
+      data
       |> Nx.slice_along_axis(state_vector_size * 2 + num_actions + 2, 1, axis: 1)
       |> Nx.flatten()
 
@@ -768,31 +695,26 @@ defmodule ReinforcementLearning.Agents.DDPG do
     probs = priorities / Nx.sum(priorities)
 
     {batch_idx, random_key} =
-      random_key
-      |> Nx.Random.choice(Nx.iota(temporal_difference.shape), probs,
+      Nx.Random.choice(random_key, Nx.iota(temporal_difference.shape), probs,
         samples: batch_size,
         replace: false,
         axis: 0
       )
 
-    batch = Nx.take(exp_replay_buffer, batch_idx)
+    batch = Nx.take(data, batch_idx)
 
     {batch, batch_idx, random_key}
   end
 
-  defn update_priorities(
-         buffer,
-         %{shape: {n}} = row_idx,
-         target_column,
-         td_errors
-       ) do
+  defn update_priorities(%{data: %{shape: {_, item_size}}} = buffer, %{shape: {n}} = entry_indices, td_errors) do
     case td_errors.shape do
       {^n, 1} -> :ok
       shape -> raise "invalid shape for td_errors, got: #{inspect(shape)}"
     end
 
-    indices = Nx.stack([row_idx, Nx.broadcast(target_column, {n})], axis: -1)
+    indices =
+      Nx.stack([entry_indices, Nx.broadcast(item_size - 1, {n})], axis: -1)
 
-    Nx.indexed_put(buffer, indices, Nx.reshape(td_errors, {n}))
+    %{buffer | data: Nx.indexed_put(buffer.data, indices, Nx.reshape(td_errors, {n}))}
   end
 end
