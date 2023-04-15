@@ -612,20 +612,20 @@ defmodule ReinforcementLearning.Agents.DDPG do
       else
         next_state_batch =
           [
-          state_batch,
-          next_state_batch
-        ]
-        |> Nx.concatenate(axis: 1)
-        |> Nx.slice_along_axis(1, num_states, axis: 1)
+            state_batch,
+            next_state_batch
+          ]
+          |> Nx.concatenate(axis: 1)
+          |> Nx.slice_along_axis(1, num_states, axis: 1)
 
         expected_shape = {batch_len, num_states, state_features_size}
-         actual_shape = Nx.shape(next_state_batch)
+        actual_shape = Nx.shape(next_state_batch)
 
-      if actual_shape != expected_shape do
-        raise "incorrect size for next_state_batch, expected #{inspect(expected_shape)}, got: #{actual_shape}"
-      end
+        if actual_shape != expected_shape do
+          raise "incorrect size for next_state_batch, expected #{inspect(expected_shape)}, got: #{actual_shape}"
+        end
 
-      next_state_batch
+        next_state_batch
       end
 
     non_final_mask = not is_terminal_batch
