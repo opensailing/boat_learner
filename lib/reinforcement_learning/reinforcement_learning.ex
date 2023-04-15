@@ -76,7 +76,7 @@ defmodule ReinforcementLearning do
 
     %Nx.Tensor{shape: {trajectory_points}} = state_to_trajectory_fn.(initial_state)
 
-    trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f32), {max_iter, trajectory_points})
+    trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f32), {max_iter + 1, trajectory_points})
 
     initial_state = %__MODULE__{initial_state | trajectory: trajectory}
 

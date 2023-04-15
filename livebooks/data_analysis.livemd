@@ -19,7 +19,7 @@ Any other values will be shown in the tooltip for each data point.
 The `:mark` field is used to encode the mark for that given field and represents the type and options to be given to VegaLite.
 
 ```elixir
-filepath = Path.join(System.fetch_env!("HOME"), "Desktop/double_mark.dat")
+filepath = Path.join(System.fetch_env!("HOME"), "Desktop/double-tack-12k5.dat")
 contents = File.read!(filepath)
 ```
 

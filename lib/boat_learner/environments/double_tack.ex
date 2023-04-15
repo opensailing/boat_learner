@@ -14,32 +14,24 @@ defmodule BoatLearner.Environments.DoubleTack do
            containers: [
              :x,
              :y,
-             :prev_x,
-             :prev_y,
              :target_y,
              :reward,
              :is_terminal,
              :polar_chart,
              :speed,
-             :prev_speed,
              :angle_to_target,
              :heading,
-             :prev_heading,
              :remaining_seconds,
              :max_remaining_seconds,
              :vmg,
-             :previous_vmg,
-             :tack_count
+             :tack_count,
+             :has_tacked
            ]}
   defstruct [
     :x,
     :y,
-    :prev_x,
-    :prev_y,
     :speed,
-    :prev_speed,
     :heading,
-    :prev_heading,
     :angle_to_target,
     :target_y,
     :reward,
@@ -48,14 +40,14 @@ defmodule BoatLearner.Environments.DoubleTack do
     :remaining_seconds,
     :max_remaining_seconds,
     :vmg,
-    :previous_vmg,
-    :tack_count
+    :tack_count,
+    :has_tacked
   ]
 
   @min_x -125
   @max_x 125
-  @min_y 0
-  @max_y 250
+  @min_y -25
+  @max_y 125
 
   @one_deg_in_rad 1 * :math.pi() / 180
 
@@ -152,11 +144,10 @@ defmodule BoatLearner.Environments.DoubleTack do
   @impl true
   def reset(random_key, state) do
     zero = Nx.tensor(0, type: :f32)
-    vmg = previous_vmg = speed = reward = zero
+    vmg = speed = reward = zero
 
     x = zero
     y = zero
-    # {x, random_key} = Nx.Random.uniform(random_key, @min_x, @max_x)
 
     {heading, random_key} =
       Nx.Random.uniform(
@@ -172,18 +163,14 @@ defmodule BoatLearner.Environments.DoubleTack do
       | x: x,
         y: y,
         heading: heading,
-        prev_heading: heading,
         angle_to_target: heading,
         speed: speed,
-        prev_speed: speed,
-        prev_x: x,
-        prev_y: y,
         reward: reward,
         is_terminal: Nx.tensor(0, type: :u8),
         remaining_seconds: state.max_remaining_seconds,
-        previous_vmg: previous_vmg,
         vmg: vmg,
-        tack_count: Nx.tensor(0, type: :s64)
+        tack_count: Nx.tensor(0, type: :s64),
+        has_tacked: Nx.tensor(0, type: :u8)
     }
 
     {state, random_key}
@@ -241,8 +228,7 @@ defmodule BoatLearner.Environments.DoubleTack do
       Nx.select(tacking_mask, speed_penalty_multiplier * speed_steps, speed_steps)
 
     has_tacked = Nx.any(tacking_mask)
-
-    tack_count = env.tack_count + Nx.any(tacking_mask)
+    tack_count = env.tack_count + has_tacked
 
     # Calculate the position changes in x and y directions for each interval
     dy = dt * Nx.cos(heading_steps) * penalized_speed_steps
@@ -275,35 +261,31 @@ defmodule BoatLearner.Environments.DoubleTack do
 
     angle_to_target = wrap_phase(Nx.atan2(dx, dy))
 
-    # cos(theta) = cos(angle_to_target + heading)
-
-    wind_direction = 0
-
     target_unit =
       Nx.stack([
-        Nx.cos(angle_to_target - wind_direction),
-        Nx.sin(angle_to_target - wind_direction)
+        Nx.cos(angle_to_target),
+        Nx.sin(angle_to_target)
       ])
 
-    speed_vector =
-      Nx.stack([Nx.cos(heading - wind_direction), Nx.sin(heading - wind_direction)]) * speed
+    heading_unit =
+      Nx.stack([
+        Nx.cos(heading),
+        Nx.sin(heading)
+      ])
 
-    vmg = Nx.dot(target_unit, speed_vector)
+    vmg = Nx.dot(target_unit, heading_unit) * speed
 
     %__MODULE__{
       env
       | remaining_seconds:
           Nx.max(env.remaining_seconds - (turning_time + @speed_recovery_in_seconds), 0),
         heading: heading,
-        prev_heading: prev_heading,
         speed: speed,
         tack_count: tack_count,
+        has_tacked: has_tacked,
         vmg: vmg,
-        previous_vmg: env.vmg,
         x: x,
         y: y,
-        prev_x: env.x,
-        prev_y: env.y,
         angle_to_target: angle_to_target
     }
   end
@@ -327,21 +309,21 @@ defmodule BoatLearner.Environments.DoubleTack do
       x: x,
       y: y,
       remaining_seconds: remaining_seconds,
-      target_y: target_y,
-      tack_count: tack_count
+      target_y: target_y
     } = env
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
-        remaining_seconds < 2 or tack_count > 1
+        remaining_seconds < 2
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
 
   defnp has_reached_target(env) do
-    %__MODULE__{x: x, y: y, target_y: target_y} = env
+    # has reached if distance < 10
+    distance_sq = (env.target_y - env.y) ** 2 + env.x ** 2
 
-    target_y - y < 1.5 and x < 1.5
+    distance_sq < 100
   end
 
   defnp calculate_reward(env) do
@@ -353,15 +335,16 @@ defmodule BoatLearner.Environments.DoubleTack do
       target_y: target_y,
       y: y,
       x: x,
-      heading: heading
+      has_tacked: has_tacked
     } = env
 
     has_reached_target = has_reached_target(env)
+    time_decay = remaining_seconds / max_remaining_seconds
 
     reward =
       cond do
         has_reached_target ->
-          1000 * remaining_seconds / max_remaining_seconds
+          time_decay
 
         is_terminal ->
           distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
@@ -371,12 +354,21 @@ defmodule BoatLearner.Environments.DoubleTack do
           # Normalize the distance to the range [-1, 1],
           # such that initial_distance maps to 0 and 0 maps to 1,
           # and then clip-off negative rewards
-          distance_reward = Nx.clip(m * distance + b, 0, 1) * 100
+          distance_reward =
+            if vmg < 0 do
+              Nx.clip(m * distance + b, -0.01, 1)
+            else
+              # we want to not penalize too much if
+              # we were at least heading in the right direction
+              Nx.clip(m * distance + b, 0, 1)
+            end
 
-          distance_reward * (remaining_seconds / max_remaining_seconds) ** 2
+          distance_reward * time_decay
 
         true ->
-          vmg / @max_speed * Nx.select(vmg > 0, 1, 4)
+          # penalize tacks in the iteration where they happened only
+          # this should also help with avoiding loops since they include 2 tacks
+          0.01 * (vmg / @max_speed * time_decay - 2 * has_tacked)
       end
 
     %__MODULE__{env | reward: reward}
