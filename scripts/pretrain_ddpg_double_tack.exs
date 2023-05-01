@@ -307,7 +307,7 @@ model_params =
 optimizer_state = optimizer_init_fn.(model_params)
 
 loop_result =
-  Axon.Loop.loop(&StepState.run(&1, &2, predict_fn, optimizer_update_fn))
+  Axon.Loop.loop(&CriticStepState.run(&1, &2, predict_fn, optimizer_update_fn))
   |> Axon.Loop.log(
     &"Epoch: #{&1.epoch} Loss: #{Nx.to_number(&1.step_state.loss)}\n",
     event: :epoch_completed
