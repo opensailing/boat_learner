@@ -777,7 +777,7 @@ end
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter,
-      accumulated_episodes: 0 * total_episodes,
+      accumulated_episodes: total_episodes,
       model_name: model_name,
       checkpoint_path: checkpoint_path,
       checkpoint_serialization_fn: checkpoint_serialization_fn

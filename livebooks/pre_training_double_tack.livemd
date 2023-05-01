@@ -32,12 +32,12 @@ target_y = 100
 
 actions = Nx.linspace(-1, 1, n: 100)
 
-xs = Nx.linspace(min_x, max_x, n: 50)
-ys = Nx.linspace(min_y, max_y / 2, n: 50)
+xs = Nx.linspace(-25, 25, n: 25)
+ys = Nx.linspace(0, target_y * 0.75, n: 25)
 
 max_remaining_seconds = 500
 
-remaining_seconds = Nx.linspace(0, max_remaining_seconds, n: 100)
+remaining_seconds = Nx.linspace(0, max_remaining_seconds, n: 50)
 headings = Nx.linspace(0, :math.pi() * 2, n: 24)
 ```
 
@@ -297,8 +297,8 @@ predict_fn = fn params, state_features_memory, action_vector ->
   predict_fn.(params, input)
 end
 
-contents = File.read!(Path.join(System.fetch_env!("HOME"), "Desktop/double_tack_critic_init.nx"))
-model_init_params = Nx.deserialize(contents)
+# contents = File.read!(Path.join(System.fetch_env!("HOME"), "Desktop/double_tack_critic_init.nx"))
+# model_init_params = Nx.deserialize(contents)
 
 model_params =
   init_fn.(
@@ -306,13 +306,13 @@ model_params =
       "actions" => Nx.template({1, num_actions}, :f32),
       "state" => Nx.template({1, state_features_memory_length, state_features_size}, :f32)
     },
-    model_init_params
+    %{}
   )
 
 {optimizer_init_fn, optimizer_update_fn} =
   Axon.Updates.compose(
     Axon.Updates.clip(delta: 5),
-    Axon.Optimizers.adamw(1.0e-6, decay: 0.01, eps: 1.0e-8)
+    Axon.Optimizers.adamw(3.0e-4, decay: 0.01, eps: 1.0e-8)
   )
 
 optimizer_state = optimizer_init_fn.(model_params)

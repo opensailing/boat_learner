@@ -364,7 +364,7 @@ defmodule BoatLearner.Environments.DoubleTack do
         {} ->
           cond do
             has_reached_target ->
-              100 * time_decay
+              time_decay
 
             is_terminal ->
               distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
