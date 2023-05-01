@@ -43,7 +43,9 @@ defmodule ReinforcementLearning do
       Keyword.validate!(opts, [
         :random_key,
         :max_iter,
-        :state_to_trajectory_fn,
+        :model_name,
+        :checkpoint_path,
+        checkpoint_serialization_fn: &Nx.serialize/1,
         accumulated_episodes: 0,
         num_episodes: 100
       ])
@@ -51,6 +53,7 @@ defmodule ReinforcementLearning do
     random_key = opts[:random_key] || Nx.Random.key(System.system_time())
     max_iter = opts[:max_iter]
     num_episodes = opts[:num_episodes]
+    model_name = opts[:model_name]
 
     {init_agent_state, random_key} = agent.init(random_key, agent_init_opts)
     episode = Nx.tensor(opts[:accumulated_episodes], type: :s64)
@@ -88,7 +91,9 @@ defmodule ReinforcementLearning do
       epoch_completed_callback: epoch_completed_callback,
       state_to_trajectory_fn: state_to_trajectory_fn,
       num_episodes: num_episodes,
-      max_iter: max_iter
+      max_iter: max_iter,
+      model_name: model_name,
+      checkpoint_path: opts[:checkpoint_path]
     )
   end
 
@@ -123,6 +128,24 @@ defmodule ReinforcementLearning do
       loop_state = tap(loop_state, epoch_completed_callback)
       {:halt_epoch, loop_state}
     end)
+    |> Axon.Loop.checkpoint(
+      event: :epoch_halted,
+      filter: [every: 1000],
+      file_pattern: fn %{epoch: epoch} ->
+        "checkpoint_" <> opts[:model_name] <> "_#{epoch}.ckpt"
+      end,
+      path: opts[:checkpoint_path],
+      serialize_step_state: opts[:checkpoint_serialization_fn]
+    )
+    |> Axon.Loop.checkpoint(
+      event: :epoch_completed,
+      filter: [every: 100],
+      file_pattern: fn %{epoch: epoch} ->
+        "checkpoint_" <> opts[:model_name] <> "_#{epoch}.ckpt"
+      end,
+      path: opts[:checkpoint_path],
+      serialize_step_state: opts[:checkpoint_serialization_fn]
+    )
     |> Axon.Loop.run(Stream.cycle([Nx.tensor(1)]), initial_state,
       iterations: max_iter,
       epochs: num_episodes

@@ -12,6 +12,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
   alias ReinforcementLearning.Utils.Noise.OUProcess
   alias ReinforcementLearning.Utils.CircularBuffer
 
+  @actor_training_divisor 2
+
   @behaviour ReinforcementLearning.Agent
 
   @derive {Inspect,
@@ -64,6 +66,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :training_frequency,
              :input_entry_size
            ]}
+
   defstruct [
     :num_actions,
     :actor_params,
@@ -130,8 +133,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
       batch_size: 64,
       training_frequency: 32,
       target_update_frequency: 100,
-      actor_optimizer_params: [learning_rate: 1.0e-3, eps: 1.0e-7],
-      critic_optimizer_params: [learning_rate: 2.0e-3, eps: 1.0e-7, adamw_decay: 1.0e-2],
+      actor_optimizer_params: [learning_rate: 1.0e-3, eps: 1.0e-7, adamw_decay: 0.95],
+      critic_optimizer_params: [learning_rate: 2.0e-3, eps: 1.0e-7, adamw_decay: 0.95],
       action_lower_limit: -1.0,
       action_upper_limit: 1.0
     ]
@@ -192,23 +195,23 @@ defmodule ReinforcementLearning.Agents.DDPG do
     end
 
     {actor_optimizer_init_fn, actor_optimizer_update_fn} =
-      Axon.Updates.clip(delta: 10)
+      Axon.Updates.clip(delta: 5)
       |> Axon.Updates.compose(
-        Axon.Optimizers.adam(
+        Axon.Optimizers.adamw(
           actor_optimizer_params[:learning_rate],
-          eps: actor_optimizer_params[:eps]
+          eps: actor_optimizer_params[:eps],
+          decay: actor_optimizer_params[:adamw_decay]
         )
       )
-      |> Axon.Updates.clip(delta: 1)
 
     {critic_optimizer_init_fn, critic_optimizer_update_fn} =
       Axon.Updates.compose(
-        Axon.Optimizers.adam(
+        Axon.Updates.clip(delta: 5),
+        Axon.Optimizers.adamw(
           critic_optimizer_params[:learning_rate],
-          eps: critic_optimizer_params[:eps]
-          # decay: critic_optimizer_params[:adamw_decay]
-        ),
-        Axon.Updates.clip()
+          eps: critic_optimizer_params[:eps],
+          decay: critic_optimizer_params[:adamw_decay]
+        )
       )
 
     initial_actor_params_state = opts[:actor_params]
@@ -279,6 +282,37 @@ defmodule ReinforcementLearning.Agents.DDPG do
     state_features_memory_length = opts[:state_features_memory_length]
     input_entry_size = state_features_size * state_features_memory_length
 
+    {exp_replay_buffer, random_key} =
+      if buffer = opts[:experience_replay_buffer] do
+        {buffer, random_key}
+      else
+        {random_data_1, random_key} =
+          Nx.Random.normal(random_key, 0, 10,
+            shape: {experience_replay_buffer_max_size, input_entry_size + num_actions}
+          )
+
+        init_reward = Nx.broadcast(-1.0e-8, {experience_replay_buffer_max_size, 1})
+
+        {random_data_2, random_key} =
+          Nx.Random.normal(random_key, 0, 10,
+            shape: {experience_replay_buffer_max_size, input_entry_size + 1}
+          )
+
+        init_td_error = Nx.broadcast(1.0e-8, {experience_replay_buffer_max_size, 1})
+
+        buffer = %CircularBuffer{
+          data:
+            Nx.concatenate(
+              [random_data_1, init_reward, random_data_2, init_td_error],
+              axis: 1
+            ),
+          index: 0,
+          size: 0
+        }
+
+        {buffer, random_key}
+      end
+
     state = %__MODULE__{
       max_sigma: max_sigma,
       min_sigma: min_sigma,
@@ -301,11 +335,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       performance_threshold: opts[:performance_threshold],
       performance_memory:
         opts[:performance_memory] || CircularBuffer.new({opts[:performance_memory_length]}),
-      experience_replay_buffer:
-        opts[:experience_replay_buffer] ||
-          CircularBuffer.new(
-            {experience_replay_buffer_max_size, 2 * input_entry_size + num_actions + 3}
-          ),
+      experience_replay_buffer: exp_replay_buffer,
       environment_to_state_features_fn: environment_to_state_features_fn,
       gamma: opts[:gamma],
       tau: opts[:tau],
@@ -545,28 +575,33 @@ defmodule ReinforcementLearning.Agents.DDPG do
     has_at_least_one_batch = experience_replay_buffer.size > batch_size
 
     should_train =
-      not warming_up and has_at_least_one_batch and
-        rem(experience_replay_buffer.index, training_frequency) == 0
+      has_at_least_one_batch and rem(experience_replay_buffer.index, training_frequency) == 0
 
     if should_train do
-      train_loop(state, training_frequency)
+      train_loop(state, training_frequency, warming_up)
     else
       state
     end
   end
 
-  defnp train_loop(state, training_frequency) do
-    while state, _ <- 0..(training_frequency - 1)//1, unroll: true do
+  defnp train_loop(state, training_frequency, warming_up) do
+    while {state, warming_up}, i <- 0..(training_frequency - 1)//1, unroll: 2 do
       {batch, batch_indices, random_key} =
         sample_experience_replay_buffer(state.random_key, state.agent_state)
 
-      %{state | random_key: random_key}
-      |> train(batch, batch_indices)
-      |> soft_update_targets()
+      train_actor = not warming_up and Nx.remainder(i, @actor_training_divisor) == 0
+
+      state =
+        %{state | random_key: random_key}
+        |> train(batch, batch_indices, train_actor)
+        |> soft_update_targets(train_actor)
+
+      {state, warming_up}
     end
+    |> elem(0)
   end
 
-  defnp train(state, batch, batch_idx) do
+  defnp train(state, batch, batch_idx, train_actor) do
     %{
       agent_state: %{
         actor_params: actor_params,
@@ -621,8 +656,12 @@ defmodule ReinforcementLearning.Agents.DDPG do
         expected_shape = {batch_len, num_states, state_features_size}
         actual_shape = Nx.shape(next_state_batch)
 
-        if actual_shape != expected_shape do
-          raise "incorrect size for next_state_batch, expected #{inspect(expected_shape)}, got: #{actual_shape}"
+        case {actual_shape, expected_shape} do
+          {x, x} ->
+            :ok
+
+          {actual_shape, expected_shape} ->
+            raise "incorrect size for next_state_batch, expected #{inspect(expected_shape)}, got: #{inspect(actual_shape)}"
         end
 
         next_state_batch
@@ -673,17 +712,26 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     ### Train Actor
 
-    actor_gradient =
-      grad(actor_params, fn actor_params ->
-        actions = actor_predict_fn.(actor_params, state_batch)
-        q = critic_predict_fn.(critic_params, state_batch, actions)
-        -Nx.mean(q)
-      end)
+    # We train the actor 3x less than the critic to avoid
+    # training onto a moving target
 
-    {actor_updates, actor_optimizer_state} =
-      actor_optimizer_update_fn.(actor_gradient, actor_optimizer_state, actor_params)
+    {actor_params, actor_optimizer_state} =
+      if train_actor do
+        actor_gradient =
+          grad(actor_params, fn actor_params ->
+            actions = actor_predict_fn.(actor_params, state_batch)
+            q = critic_predict_fn.(critic_params, state_batch, actions)
+            -Nx.mean(q)
+          end)
 
-    actor_params = Axon.Updates.apply_updates(actor_params, actor_updates)
+        {actor_updates, actor_optimizer_state} =
+          actor_optimizer_update_fn.(actor_gradient, actor_optimizer_state, actor_params)
+
+        actor_params = Axon.Updates.apply_updates(actor_params, actor_updates)
+        {actor_params, actor_optimizer_state}
+      else
+        {actor_params, actor_optimizer_state}
+      end
 
     %{
       state
@@ -700,7 +748,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
     }
   end
 
-  defnp soft_update_targets(state) do
+  defnp soft_update_targets(state, train_actor) do
     %{
       agent_state:
         %{
@@ -713,11 +761,15 @@ defmodule ReinforcementLearning.Agents.DDPG do
     } = state
 
     actor_target_params =
-      Axon.Shared.deep_merge(
-        actor_params,
-        actor_target_params,
-        &Nx.as_type(&1 * tau + &2 * (1 - tau), Nx.type(&1))
-      )
+      if train_actor do
+        Axon.Shared.deep_merge(
+          actor_params,
+          actor_target_params,
+          &Nx.as_type(&1 * tau + &2 * (1 - tau), Nx.type(&1))
+        )
+      else
+        actor_target_params
+      end
 
     critic_target_params =
       Axon.Shared.deep_merge(

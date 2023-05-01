@@ -11,7 +11,7 @@ backend_env = System.get_env("BOAT_LEARNER_BACKEND")
       {Nx.BinaryBackend, []}
 
     _ ->
-      {EXLA.Backend, compiler: EXLA}
+      {EXLA.Backend, compiler: EXLA, memory_fraction: 0.5}
   end
 
 config :nx,

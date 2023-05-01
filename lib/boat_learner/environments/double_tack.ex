@@ -194,7 +194,7 @@ defmodule BoatLearner.Environments.DoubleTack do
 
     new_env =
       env
-      |> turn_and_move(action * pi() / 2)
+      |> turn_and_move(action * 0.6 * pi())
       |> is_terminal_state()
       |> calculate_reward()
 
@@ -207,7 +207,7 @@ defmodule BoatLearner.Environments.DoubleTack do
     turning_time = Nx.abs(dtheta) / @turning_rate
     dt = turning_time / @iters_per_action
 
-    dtheta_steps = Nx.broadcast(@turning_rate * dt * Nx.sign(dtheta), {@iters_per_action})
+    dtheta_steps = dt * Nx.sign(dtheta) * Nx.broadcast(@turning_rate, {@iters_per_action})
     heading_steps = Nx.cumulative_sum(dtheta_steps) + prev_heading
 
     heading_steps = wrap_phase(heading_steps)
@@ -237,8 +237,8 @@ defmodule BoatLearner.Environments.DoubleTack do
     x = env.x + Nx.sum(dx)
     y = env.y + Nx.sum(dy)
 
-    heading = heading_steps[-1]
-    speed = speed_steps[-1]
+    heading = Nx.take(heading_steps, Nx.axis_size(heading_steps, 0) - 1)
+    speed = Nx.take(speed_steps, Nx.axis_size(speed_steps, 0) - 1)
 
     # Recover the speed over `@speed_recovery_in_seconds` seconds
     speed_steps =
@@ -253,7 +253,7 @@ defmodule BoatLearner.Environments.DoubleTack do
     x = x + Nx.sin(heading) * Nx.sum(speed_steps)
     y = y + Nx.cos(heading) * Nx.sum(speed_steps)
 
-    speed = speed_steps[-1]
+    speed = Nx.take(speed_steps, Nx.axis_size(speed_steps, 0) - 1)
 
     target_x = 0
     dx = target_x - x
@@ -297,7 +297,14 @@ defmodule BoatLearner.Environments.DoubleTack do
     angle = Nx.select(angle > pi(), 2 * pi() - angle, angle)
 
     linear_pred = Scholar.Interpolation.Linear.predict(linear_model, angle)
-    spline_pred = Scholar.Interpolation.BezierSpline.predict(spline_model, angle)
+
+    spline_pred =
+      Scholar.Interpolation.BezierSpline.predict(
+        spline_model,
+        angle |> Nx.devectorize() |> Nx.flatten()
+      )
+      |> Nx.reshape(Nx.devectorize(angle) |> Nx.shape())
+      |> Nx.vectorize(angle.vectorized_axes)
 
     (angle <= cutoff_angle)
     |> Nx.select(linear_pred, spline_pred)
@@ -323,7 +330,8 @@ defmodule BoatLearner.Environments.DoubleTack do
     # has reached if distance < 10
     distance_sq = (env.target_y - env.y) ** 2 + env.x ** 2
 
-    distance_sq < 100
+    # distance_sq < 15 ** 2
+    distance_sq < 225
   end
 
   defnp calculate_reward(env) do
@@ -339,36 +347,96 @@ defmodule BoatLearner.Environments.DoubleTack do
     } = env
 
     has_reached_target = has_reached_target(env)
+
+    x = Nx.devectorize(x)
+    y = Nx.devectorize(y)
+    vmg = Nx.devectorize(vmg)
+    is_terminal = Nx.devectorize(is_terminal)
+    remaining_seconds = Nx.devectorize(remaining_seconds)
+    has_tacked = Nx.devectorize(has_tacked)
+    vec = has_reached_target.vectorized_axes
+    has_reached_target = Nx.devectorize(has_reached_target)
+
     time_decay = remaining_seconds / max_remaining_seconds
 
     reward =
-      cond do
-        has_reached_target ->
-          time_decay
+      case Nx.shape(has_reached_target) do
+        {} ->
+          cond do
+            has_reached_target ->
+              100 * time_decay
 
-        is_terminal ->
-          distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
-          m = -1 / target_y
-          b = 1
+            is_terminal ->
+              distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
+              m = -1 / target_y
+              b = 1
 
-          # Normalize the distance to the range [-1, 1],
-          # such that initial_distance maps to 0 and 0 maps to 1,
-          # and then clip-off negative rewards
-          distance_reward =
-            if vmg < 0 do
-              Nx.clip(m * distance + b, -0.01, 1)
-            else
-              # we want to not penalize too much if
-              # we were at least heading in the right direction
-              Nx.clip(m * distance + b, 0, 1)
+              # Normalize the distance to the range [-1, 1],
+              # such that initial_distance maps to 0 and 0 maps to 1,
+              # and then clip-off negative rewards
+              distance_reward =
+                if vmg < 0 do
+                  Nx.clip(m * distance + b, -1, 1)
+                else
+                  # we want to not penalize too much if
+                  # we were at least heading in the right direction
+                  Nx.clip(m * distance + b, -0.1, 1)
+                end
+
+              Nx.select(distance_reward > 0, distance_reward * time_decay, distance_reward)
+
+            true ->
+              # penalize tacks in the iteration where they happened only
+              # this should also help with avoiding loops since they include 2 tacks
+              0.01 * (vmg / @max_speed - 2 * has_tacked) * time_decay
+          end
+
+        _ ->
+          # this needs vectorized cond so that we can skip duplicating and iterating
+          {out, _, _, _, _, _, _, _, _} =
+            while {out = Nx.broadcast(0.0, has_reached_target), is_terminal, has_reached_target,
+                   x, y, target_y, vmg, time_decay, has_tacked},
+                  i <- 1..Nx.axis_size(has_reached_target, 0),
+                  unroll: 2 do
+              rew =
+                cond do
+                  has_reached_target[i] ->
+                    100 * time_decay[i]
+
+                  is_terminal[i] ->
+                    distance = Nx.sqrt(x[i] ** 2 + (y[i] - target_y) ** 2)
+                    m = -1 / target_y
+                    b = 1
+
+                    # Normalize the distance to the range [-1, 1],
+                    # such that initial_distance maps to 0 and 0 maps to 1,
+                    # and then clip-off negative rewards
+                    distance_reward =
+                      if vmg[i] < 0 do
+                        Nx.clip(m * distance + b, -1, 1)
+                      else
+                        # we want to not penalize too much if
+                        # we were at least heading in the right direction
+                        Nx.clip(m * distance + b, -0.1, 1)
+                      end
+
+                    Nx.select(
+                      distance_reward > 0,
+                      distance_reward * time_decay[i],
+                      distance_reward
+                    )
+
+                  true ->
+                    # penalize tacks in the iteration where they happened only
+                    # this should also help with avoiding loops since they include 2 tacks
+                    0.01 * (vmg[i] / @max_speed - 2 * has_tacked[i]) * time_decay[i]
+                end
+
+              {Nx.indexed_put(out, Nx.reshape(i, {1, 1}), Nx.reshape(rew, {1})), is_terminal,
+               has_reached_target, x, y, target_y, vmg, time_decay, has_tacked}
             end
 
-          distance_reward * time_decay
-
-        true ->
-          # penalize tacks in the iteration where they happened only
-          # this should also help with avoiding loops since they include 2 tacks
-          0.01 * (vmg / @max_speed * time_decay - 2 * has_tacked)
+          Nx.vectorize(out, vec)
       end
 
     %__MODULE__{env | reward: reward}
