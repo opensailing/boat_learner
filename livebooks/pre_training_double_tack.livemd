@@ -20,10 +20,10 @@ Mix.install(
 First, we generate our initial data spaces from which we will take independent random samples.
 
 ```elixir
-Nx.default_backend({EXLA.Backend, client: :host})
-Nx.global_default_backend({EXLA.Backend, client: :host})
-Nx.Defn.default_options(compiler: EXLA, client: :host)
-Nx.Defn.global_default_options(compiler: EXLA, client: :host)
+Nx.default_backend({EXLA.Backend, client: :cuda})
+Nx.global_default_backend({EXLA.Backend, client: :cuda})
+Nx.Defn.default_options(compiler: EXLA, client: :cuda)
+Nx.Defn.global_default_options(compiler: EXLA, client: :cuda)
 
 key = Nx.Random.key(1)
 
@@ -54,17 +54,20 @@ defmodule GenerateSamples do
   @min_y min_y
   # @max_y max_y
 
-  def run(
-        num_samples,
-        key,
-        xs,
-        ys,
-        remaining_seconds,
-        headings,
-        target_y,
-        max_remaining_seconds,
-        actions
-      ) do
+  defn run(
+         key,
+         xs,
+         ys,
+         remaining_seconds,
+         headings,
+         target_y,
+         actions,
+         polar_chart,
+         opts \\ []
+       ) do
+    num_samples = opts[:num_samples]
+    max_remaining_seconds = opts[:max_remaining_seconds]
+
     {xs, key} = Nx.Random.choice(key, xs, samples: num_samples)
     {ys, key} = Nx.Random.choice(key, ys, samples: num_samples)
 
@@ -73,7 +76,6 @@ defmodule GenerateSamples do
     {headings, key} = Nx.Random.choice(key, headings, samples: num_samples)
     {actions, key} = Nx.Random.choice(key, actions, samples: num_samples + 1)
 
-    polar_chart = DT.init_polar_chart()
     speeds = DT.speed_from_heading(polar_chart, headings)
 
     rl = %ReinforcementLearning{
@@ -169,17 +171,21 @@ end
 ```
 
 ```elixir
+alias BoatLearner.Environments.DoubleTack, as: DT
+polar_chart = DT.init_polar_chart()
+
 {samples, key} =
   GenerateSamples.run(
-    1_000_000,
     key,
     xs,
     ys,
     remaining_seconds,
     headings,
     target_y,
-    max_remaining_seconds,
-    actions
+    actions,
+    polar_chart,
+    num_samples: 3_000_000,
+    max_remaining_seconds: max_remaining_seconds
   )
 ```
 
@@ -198,17 +204,19 @@ critic_net =
   |> Axon.nx(fn state_memory ->
     Nx.take(state_memory, state_features_memory_length - 1, axis: 1)
   end)
-  |> Axon.dense(64, activation: :linear)
+  |> Axon.dense(256, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:gelu)
-  |> Axon.dense(64, activation: :linear)
+  |> Axon.dropout()
+  |> Axon.dense(128, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:gelu)
+  |> Axon.dropout()
   |> then(&Axon.concatenate([&1, action_input]))
   |> Axon.dense(128, activation: :linear)
   |> Axon.batch_norm()
-  |> Axon.dropout()
   |> Axon.activation(:relu)
+  |> Axon.dropout()
   |> Axon.dense(64, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
@@ -311,8 +319,8 @@ model_params =
 
 {optimizer_init_fn, optimizer_update_fn} =
   Axon.Updates.compose(
-    Axon.Updates.clip(delta: 5),
-    Axon.Optimizers.adamw(3.0e-4, decay: 0.01, eps: 1.0e-8)
+    Axon.Updates.clip(delta: 2),
+    Axon.Optimizers.adamw(1.0e-6, decay: 0.01, eps: 1.0e-10)
   )
 
 optimizer_state = optimizer_init_fn.(model_params)
@@ -324,7 +332,7 @@ loop_result =
     event: :epoch_completed
   )
   |> Axon.Loop.run(
-    Nx.to_batched(samples, 2500),
+    Nx.to_batched(samples, 5000),
     %{
       gamma: 0.95,
       model_params: model_params,
@@ -334,6 +342,8 @@ loop_result =
     epochs: 1000,
     client: :cuda
   )
+
+# ep 0; loss 0.00441025...
 ```
 
 ```elixir

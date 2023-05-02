@@ -364,7 +364,7 @@ defmodule BoatLearner.Environments.DoubleTack do
         {} ->
           cond do
             has_reached_target ->
-              time_decay
+              500
 
             is_terminal ->
               distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
@@ -376,11 +376,11 @@ defmodule BoatLearner.Environments.DoubleTack do
               # and then clip-off negative rewards
               distance_reward =
                 if vmg < 0 do
-                  Nx.clip(m * distance + b, -1, 1)
+                  Nx.clip(m * distance + b, -0.1, 1)
                 else
                   # we want to not penalize too much if
                   # we were at least heading in the right direction
-                  Nx.clip(m * distance + b, -0.1, 1)
+                  Nx.clip(m * distance + b, -0.01, 1)
                 end
 
               Nx.select(distance_reward > 0, distance_reward * time_decay, distance_reward)
@@ -388,7 +388,7 @@ defmodule BoatLearner.Environments.DoubleTack do
             true ->
               # penalize tacks in the iteration where they happened only
               # this should also help with avoiding loops since they include 2 tacks
-              0.01 * (vmg / @max_speed - 2 * has_tacked) * time_decay
+              0.1 * (vmg / @max_speed - 2 * has_tacked) * time_decay
           end
 
         _ ->
@@ -401,7 +401,7 @@ defmodule BoatLearner.Environments.DoubleTack do
               rew =
                 cond do
                   has_reached_target[i] ->
-                    100 * time_decay[i]
+                    500
 
                   is_terminal[i] ->
                     distance = Nx.sqrt(x[i] ** 2 + (y[i] - target_y) ** 2)
@@ -413,11 +413,11 @@ defmodule BoatLearner.Environments.DoubleTack do
                     # and then clip-off negative rewards
                     distance_reward =
                       if vmg[i] < 0 do
-                        Nx.clip(m * distance + b, -1, 1)
+                        Nx.clip(m * distance + b, -0.1, 1)
                       else
                         # we want to not penalize too much if
                         # we were at least heading in the right direction
-                        Nx.clip(m * distance + b, -0.1, 1)
+                        Nx.clip(m * distance + b, -0.01, 1)
                       end
 
                     Nx.select(
@@ -429,7 +429,7 @@ defmodule BoatLearner.Environments.DoubleTack do
                   true ->
                     # penalize tacks in the iteration where they happened only
                     # this should also help with avoiding loops since they include 2 tacks
-                    0.01 * (vmg[i] / @max_speed - 2 * has_tacked[i]) * time_decay[i]
+                    0.1 * (vmg[i] / @max_speed - 2 * has_tacked[i]) * time_decay[i]
                 end
 
               {Nx.indexed_put(out, Nx.reshape(i, {1, 1}), Nx.reshape(rew, {1})), is_terminal,

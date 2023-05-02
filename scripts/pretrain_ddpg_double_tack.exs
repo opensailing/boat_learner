@@ -20,15 +20,33 @@ key = Nx.Random.key(1)
 {min_x, max_x, min_y, max_y} = BoatLearner.Environments.DoubleTack.bounding_box()
 target_y = 100
 
-actions = Nx.linspace(-1, 1, n: 20)
+actions = Nx.tensor([-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0])
 
-xs = Nx.linspace(-25, 25, n: 25)
-ys = Nx.linspace(0, target_y * 0.75, n: 25)
+xs = Nx.linspace(-25, 25, n: 10)
+ys = Nx.linspace(0, target_y * 0.75, n: 10)
 
 max_remaining_seconds = 500
 
-remaining_seconds = Nx.linspace(0, max_remaining_seconds, n: 50)
-headings = Nx.linspace(0, :math.pi() * 2, n: 24)
+remaining_seconds = Nx.linspace(0, max_remaining_seconds, n: 30)
+headings = Nx.linspace(0, :math.pi() * 2, n: 12)
+
+space = [actions, xs, ys, remaining_seconds, headings, actions]
+
+IO.puts("Generating cross-product indices")
+
+indices = space |> Enum.with_index(& &1.shape |> Nx.iota() |> Nx.vectorize(:"ax_#{&2}")) |> Nx.stack() |> Nx.devectorize() |> Nx.reshape({:auto, length(space)})
+
+IO.puts("Getting values")
+
+xs = Nx.take(xs, indices[[0..-1//1, 1]])
+ys = Nx.take(ys, indices[[0..-1//1, 2]])
+remaining_seconds = Nx.take(remaining_seconds, indices[[0..-1//1, 3]])
+headings = Nx.take(headings, indices[[0..-1//1, 4]])
+next_actions = Nx.take(actions, indices[[0..-1//1, 5]])
+
+actions = Nx.take(actions, indices[[0..-1//1, 0]])
+
+IO.puts("Values taken")
 
 alias BoatLearner.Environments.DoubleTack, as: DT
 
@@ -50,20 +68,12 @@ defmodule GenerateSamples do
     headings,
     target_y,
     actions,
+    next_actions,
     polar_chart,
     opts \\ []
     ) do
 
-      max_remaining_seconds = opts[:max_remaining_seconds]
-      num_samples = opts[:num_samples]
-
-      {xs, key} = Nx.Random.choice(key, xs, samples: num_samples)
-    {ys, key} = Nx.Random.choice(key, ys, samples: num_samples)
-
-    {remaining_seconds, key} = Nx.Random.choice(key, remaining_seconds, samples: num_samples)
-
-    {headings, key} = Nx.Random.choice(key, headings, samples: num_samples)
-    {actions, key} = Nx.Random.choice(key, actions, samples: num_samples + 1)
+    max_remaining_seconds = opts[:max_remaining_seconds]
 
     speeds = DT.speed_from_heading(polar_chart, headings)
 
@@ -92,8 +102,8 @@ defmodule GenerateSamples do
       has_tacked: 0
     }
 
-    next_actions = Nx.vectorize(actions[1..-1//1], :i)
-    actions = Nx.vectorize(actions[0..-2//1], :i)
+    actions = Nx.vectorize(actions, :i)
+    next_actions = Nx.vectorize(next_actions, :i)
 
     %{environment_state: first_env} = DT.apply_action(%{rl | environment_state: env}, actions)
 
@@ -158,8 +168,9 @@ defmodule GenerateSamples do
   end
 end
 
-
 polar_chart = DT.init_polar_chart()
+
+IO.puts("Generating samples")
 
 {samples, key} =
   GenerateSamples.run(
@@ -170,10 +181,12 @@ polar_chart = DT.init_polar_chart()
     headings,
     target_y,
     actions,
+    next_actions,
     polar_chart,
-    max_remaining_seconds: max_remaining_seconds,
-    num_samples: 3_000_000
+    max_remaining_seconds: max_remaining_seconds
   )
+
+IO.inspect(samples, label: "samples")
 
 ## Pretrain the Critic
 
@@ -286,8 +299,9 @@ predict_fn = fn params, state_features_memory, action_vector ->
   predict_fn.(params, input)
 end
 
-# contents = File.read!(Path.join(System.fetch_env!("HOME"), "Desktop/double_tack_critic_init.nx"))
-# model_init_params = Nx.deserialize(contents)
+contents = File.read!(Path.join(System.fetch_env!("HOME"), "Desktop/double_tack_critic_init.nx"))
+model_init_params = Nx.deserialize(contents)
+# model_init_params = %{}
 
 model_params =
   init_fn.(
@@ -295,16 +309,20 @@ model_params =
       "actions" => Nx.template({1, num_actions}, :f32),
       "state" => Nx.template({1, state_features_memory_length, state_features_size}, :f32)
     },
-    %{}
+    model_init_params
   )
 
 {optimizer_init_fn, optimizer_update_fn} =
   Axon.Updates.compose(
     Axon.Updates.clip(delta: 2),
-    Axon.Optimizers.adamw(1.0e-6, decay: 0.01, eps: 1.0e-8)
+    Axon.Optimizers.adamw(1.0e-6, decay: 0.005, eps: 1.0e-12)
   )
 
 optimizer_state = optimizer_init_fn.(model_params)
+
+{samples, key} = Nx.Random.shuffle(key, samples, axis: 0)
+
+IO.inspect(samples, label: "shuffled samples")
 
 loop_result =
   Axon.Loop.loop(&CriticStepState.run(&1, &2, predict_fn, optimizer_update_fn))
@@ -313,14 +331,14 @@ loop_result =
     event: :epoch_completed
   )
   |> Axon.Loop.run(
-    Nx.to_batched(samples, 10000),
+    Nx.to_batched(samples, 2500),
     %{
       gamma: 0.95,
       model_params: model_params,
       optimizer_state: optimizer_state,
       loss: 0.0
     },
-    epochs: 1000,
+    epochs: 500,
     client: :cuda
   )
 
