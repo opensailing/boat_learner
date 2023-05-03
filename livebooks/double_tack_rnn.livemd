@@ -419,7 +419,7 @@ end
 ```
 
 ```elixir
-model_name = "double_tack_transformer"
+model_name = "double_tack_transformer_v2"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -435,7 +435,7 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.da
   state_features_memory
 } =
   try do
-    contents = File.read!(filename <> "123")
+    contents = File.read!(filename)
     File.write!(filename <> "_bak", contents)
 
     %{serialized: serialized, total_episodes: total_episodes} = :erlang.binary_to_term(contents)
@@ -463,6 +463,7 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.da
           Nx.deserialize(contents)
         end)
 
+      critic_params = %{}
       {%{}, %{}, critic_params, critic_params, nil, 0, nil, nil}
   end
 
@@ -509,18 +510,18 @@ action_input = Axon.input("actions", shape: {nil, num_actions})
 
 actor_net =
   state_input
-  |> Axon.dense(32, activation: :linear)
+  |> Axon.dense(64, activation: :linear)
   |> Axon.batch_norm()
-  |> Axon.activation(:gelu)
-  |> PositionalEncoding.layer(sequence_length: state_features_memory_length, state_space_size: 32)
+  |> Axon.activation(:relu)
+  |> PositionalEncoding.layer(sequence_length: state_features_memory_length, state_space_size: 64)
   |> Bumblebee.Layers.Transformer.blocks(
-    num_blocks: 6,
+    num_blocks: 4,
     name: "actor_transformer_prefix",
     num_attention_heads: 12,
-    hidden_size: 32,
-    attention_head_size: 32,
+    hidden_size: 64,
+    attention_head_size: 100,
     ffn: [
-      intermediate_size: 128,
+      intermediate_size: 200,
       activation: :gelu
     ]
   )
@@ -529,15 +530,9 @@ actor_net =
   |> Axon.dense(256, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
   |> Axon.dense(128, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
-  |> Axon.dense(64, activation: :linear)
-  |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout()
   |> Axon.dense(32, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
@@ -553,23 +548,19 @@ critic_net =
   |> Axon.nx(fn state_memory ->
     Nx.take(state_memory, state_features_memory_length - 1, axis: 1)
   end)
-  |> Axon.dense(64, activation: :linear)
+  |> Axon.dense(300, activation: :linear)
   |> Axon.batch_norm()
-  |> Axon.activation(:gelu)
-  |> Axon.dropout(rate: 0.25)
-  |> Axon.dense(256, activation: :linear)
+  |> Axon.activation(:relu)
+  |> Axon.dense(200, activation: :linear)
   |> Axon.batch_norm()
-  |> Axon.activation(:gelu)
-  |> Axon.dropout(rate: 0.25)
+  |> Axon.activation(:relu)
   |> then(&Axon.concatenate([&1, action_input]))
-  |> Axon.dense(128, activation: :linear)
+  |> Axon.dense(300, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
-  |> Axon.dense(64, activation: :linear)
+  |> Axon.dense(200, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
   |> Axon.dense(1,
     kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3),
     bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3)
@@ -690,29 +681,22 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 20_000
+episodes = 2500
 max_iter = 40
 
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
 
-sigma = 0.2
-max_sigma = 0.5
-min_sigma = 1 / 64
+# sigma = 0.2
+max_sigma = 0.35
+sigma = min_sigma = 1 / 32
 exploration_decay_rate = 0.95
 exploration_increase_rate = 1.05
-exploration_threshold = 0.01
+exploration_threshold = 0.05
 
-# sigma = 0.2
-# max_sigma = 0.5
-# sigma = min_sigma = 1 / 64
-# exploration_decay_rate = 0.95
-# exploration_increase_rate = 1.05
-# exploration_threshold = 0.01
-
-checkpoint_serialization_fn = fn step_state ->
+checkpoint_serialization_fn = fn loop_state ->
   to_serialize =
-    Map.take(step_state.agent_state, [
+    Map.take(loop_state.step_state.agent_state, [
       :actor_params,
       :actor_target_params,
       :critic_params,
@@ -723,7 +707,7 @@ checkpoint_serialization_fn = fn step_state ->
     ])
 
   :erlang.term_to_binary(%{
-    total_episodes: total_episodes + step_state.epoch,
+    total_episodes: total_episodes + loop_state.epoch,
     serialized: Nx.serialize(to_serialize)
   })
 end
@@ -749,15 +733,15 @@ end
         state_features_memory: state_features_memory,
         state_features_memory_length: state_features_memory_length,
         experience_replay_buffer: experience_replay_buffer,
-        experience_replay_buffer_max_size: 500_000,
+        experience_replay_buffer_max_size: 750_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
         training_frequency: 32,
-        batch_size: 256,
+        batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
-        exploration_warmup_episodes: 2000,
+        exploration_warmup_episodes: 1000,
         performance_threshold: exploration_threshold,
         ou_process_opts: [
           max_sigma: max_sigma,
@@ -765,14 +749,14 @@ end
           sigma: sigma
         ],
         actor_optimizer_params: [
-          learning_rate: 3.0e-6,
-          eps: 1.0e-10,
-          adamw_decay: 0.001
+          learning_rate: 1.0e-6,
+          eps: 1.0e-7,
+          adamw_decay: 0.5
         ],
         critic_optimizer_params: [
-          learning_rate: 3.0e-6,
-          eps: 1.0e-10,
-          adamw_decay: 0.001
+          learning_rate: 3.0e-4,
+          eps: 1.0e-7,
+          adamw_decay: 0.99
         ]
       },
       plot_fn,
@@ -790,52 +774,54 @@ GenServer.call(AccumulateAndExportData, {:save, export_filename})
 
 "#{Float.round(t / 1_000_000, 3)} s" |> IO.puts()
 
-contents = checkpoint_serialization_fn.(result.step_state)
+contents = checkpoint_serialization_fn.(result)
 File.write!(filename, contents)
 ```
 
-First session:
+First session (reward function had has_reached_target -> 1000):
 
 ```
+episodes = 10_000
+sigma = 0.2
 max_sigma = 0.5
-sigma = min_sigma = 1/64
+min_sigma = 1 / 32
 exploration_decay_rate = 0.95
 exploration_increase_rate = 1.05
-exploration_threshold = 0.01
-
-exploration_warmup_episodes: 2500,
+exploration_threshold = 0.05
+exploration_warmup_episodes: 1000
 
 actor_optimizer_params: [
-  learning_rate: 3.0e-7,
-  eps: 1.0e-10,
+  learning_rate: 3.0e-6,
+  eps: 1.0e-8,
   adamw_decay: 0.01
 ],
 critic_optimizer_params: [
+  learning_rate: 1.0e-4,
+  eps: 1.0e-8,
+  adamw_decay: 0.01
+]
+```
+
+Second session (reward function had has_reached_target -> 1000 * Nx.sqrt(time_decay)):
+
+```
+episodes = 2_500
+max_sigma = 0.35
+sigma = min_sigma = 1 / 32
+exploration_decay_rate = 0.95
+exploration_increase_rate = 1.05
+exploration_threshold = 0.05
+exploration_warmup_episodes: 0
+
+actor_optimizer_params: [
   learning_rate: 1.0e-6,
-  eps: 1.0e-10,
-  adamw_decay: 0.01
-]
-```
-
-Second session:
-
-```
-max_sigma = 0.5
-sigma = min_sigma = 1/64
-exploration_decay_rate = 0.95
-exploration_increase_rate = 1.05
-exploration_threshold = 0.01
-
-exploration_warmup_episodes: 10000,
-
-actor_optimizer_params: [
-  learning_rate: 3.0e-7,
-  eps: 1.0e-10,
-  adamw_decay: 0.01
+  eps: 1.0e-8,
+  adamw_decay: 0.5
 ],
 critic_optimizer_params: [
-  learning_rate: 2.0e-6,
-  eps: 1.0e-10,
-  adamw_decay: 0.01
+  learning_rate: 3.0e-4,
+  eps: 1.0e-8,
+  adamw_decay: 0.99
 ]
+
 ```

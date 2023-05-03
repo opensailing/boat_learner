@@ -585,7 +585,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
   end
 
   defnp train_loop(state, training_frequency, warming_up) do
-    while {state, warming_up}, i <- 0..(training_frequency - 1)//1, unroll: 2 do
+    while {state, warming_up}, i <- 0..(training_frequency - 1)//1, unroll: 8 do
       {batch, batch_indices, random_key} =
         sample_experience_replay_buffer(state.random_key, state.agent_state)
 

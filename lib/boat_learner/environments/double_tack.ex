@@ -127,12 +127,12 @@ defmodule BoatLearner.Environments.DoubleTack do
 
     dspeed = Scholar.Interpolation.BezierSpline.predict(spline_model, Nx.add(min_theta, dtheta))
 
-    # Fit {0, 0}, {35deg, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
+    # Fit {0, 0}, {15deg, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
     zero = Nx.new_axis(0, 0)
 
     linear_model =
       Scholar.Interpolation.Linear.fit(
-        Nx.concatenate([zero, Nx.tensor([35 * :math.pi() / 180]), min_theta, theta]),
+        Nx.concatenate([zero, Nx.tensor([15 * :math.pi() / 180]), min_theta, theta]),
         Nx.concatenate([zero, zero, dspeed, speed])
       )
 
@@ -364,7 +364,7 @@ defmodule BoatLearner.Environments.DoubleTack do
         {} ->
           cond do
             has_reached_target ->
-              500
+              1000 * Nx.sqrt(time_decay)
 
             is_terminal ->
               distance = Nx.sqrt(x ** 2 + (y - target_y) ** 2)
@@ -376,19 +376,19 @@ defmodule BoatLearner.Environments.DoubleTack do
               # and then clip-off negative rewards
               distance_reward =
                 if vmg < 0 do
-                  Nx.clip(m * distance + b, -0.1, 1)
+                  Nx.clip(m * distance + b, -1, 1)
                 else
                   # we want to not penalize too much if
                   # we were at least heading in the right direction
-                  Nx.clip(m * distance + b, -0.01, 1)
+                  Nx.clip(m * distance + b, -0.1, 1)
                 end
 
-              Nx.select(distance_reward > 0, distance_reward * time_decay, distance_reward)
+              distance_reward # Nx.select(distance_reward > 0, distance_reward * time_decay, distance_reward)
 
             true ->
               # penalize tacks in the iteration where they happened only
               # this should also help with avoiding loops since they include 2 tacks
-              0.1 * (vmg / @max_speed - 2 * has_tacked) * time_decay
+              (vmg / @max_speed - 2 * has_tacked) * time_decay
           end
 
         _ ->
