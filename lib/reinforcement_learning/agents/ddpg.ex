@@ -52,10 +52,10 @@ defmodule ReinforcementLearning.Agents.DDPG do
              :performance_threshold,
              :gamma,
              :tau,
-             :exploration_warmup_episodes,
              :state_features_memory
            ],
            keep: [
+             :exploration_fn,
              :environment_to_state_features_fn,
              :actor_predict_fn,
              :critic_predict_fn,
@@ -100,7 +100,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
     :exploration_increase_rate,
     :performance_memory,
     :performance_threshold,
-    :exploration_warmup_episodes,
+    :exploration_fn,
     :state_features_memory,
     :input_entry_size
   ]
@@ -120,21 +120,21 @@ defmodule ReinforcementLearning.Agents.DDPG do
       :state_features_memory_to_input_fn,
       :state_features_memory,
       :state_features_size,
+      :actor_optimizer,
+      :critic_optimizer,
       ou_process_opts: [],
       performance_memory_length: 500,
       state_features_memory_length: 1,
       exploration_decay_rate: 0.9995,
       exploration_increase_rate: 1.1,
       performance_threshold: 0.01,
-      exploration_warmup_episodes: 750,
+      exploration_fn: &Nx.less(&1, 500),
       gamma: 0.99,
       experience_replay_buffer_max_size: 100_000,
       tau: 0.005,
       batch_size: 64,
       training_frequency: 32,
       target_update_frequency: 100,
-      actor_optimizer_params: [learning_rate: 1.0e-3, eps: 1.0e-7, adamw_decay: 0.95],
-      critic_optimizer_params: [learning_rate: 2.0e-3, eps: 1.0e-7, adamw_decay: 0.95],
       action_lower_limit: -1.0,
       action_upper_limit: 1.0
     ]
@@ -157,20 +157,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
       end
     end)
 
-    actor_optimizer_params = opts[:actor_optimizer_params]
-    critic_optimizer_params = opts[:critic_optimizer_params]
-
-    optimizer_keys = [:learning_rate, :eps]
-
-    for {name, opts} <- [actor: actor_optimizer_params, critic: critic_optimizer_params],
-        k <- optimizer_keys do
-      v = opts[k]
-
-      unless is_number(v) or is_function(v) do
-        raise ArgumentError,
-              "expected [:#{name}_optimizer_params][#{k}] option to be a number, got: #{inspect(v)}"
-      end
-    end
+    {actor_optimizer_init_fn, actor_optimizer_update_fn} = opts[:actor_optimizer]
+    {critic_optimizer_init_fn, critic_optimizer_update_fn} = opts[:critic_optimizer]
 
     actor_net = opts[:actor_net]
     critic_net = opts[:critic_net]
@@ -193,26 +181,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
       critic_predict_fn.(params, input)
     end
-
-    {actor_optimizer_init_fn, actor_optimizer_update_fn} =
-      Axon.Updates.clip(delta: 5)
-      |> Axon.Updates.compose(
-        Axon.Optimizers.adamw(
-          actor_optimizer_params[:learning_rate],
-          eps: actor_optimizer_params[:eps],
-          decay: actor_optimizer_params[:adamw_decay]
-        )
-      )
-
-    {critic_optimizer_init_fn, critic_optimizer_update_fn} =
-      Axon.Updates.compose(
-        Axon.Updates.clip(delta: 5),
-        Axon.Optimizers.adamw(
-          critic_optimizer_params[:learning_rate],
-          eps: critic_optimizer_params[:eps],
-          decay: critic_optimizer_params[:adamw_decay]
-        )
-      )
 
     initial_actor_params_state = opts[:actor_params]
     initial_actor_target_params_state = opts[:actor_target_params] || initial_actor_params_state
@@ -317,7 +285,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       max_sigma: max_sigma,
       min_sigma: min_sigma,
       input_entry_size: input_entry_size,
-      exploration_warmup_episodes: opts[:exploration_warmup_episodes],
+      exploration_fn: opts[:exploration_fn],
       exploration_decay_rate: opts[:exploration_decay_rate],
       exploration_increase_rate: opts[:exploration_increase_rate],
       state_features_memory:
@@ -400,7 +368,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
   defnp adapt_exploration(
           episode,
           %__MODULE__{
-            exploration_warmup_episodes: exploration_warmup_episodes,
+            # exploration_fn: exploration_fn,
             experience_replay_buffer: experience_replay_buffer,
             ou_process: ou_process,
             exploration_decay_rate: exploration_decay_rate,
@@ -419,8 +387,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
         episode == 0 ->
           {ou_process, performance_memory}
 
-        episode < n or experience_replay_buffer.size < n or
-            episode < exploration_warmup_episodes ->
+        episode < n or experience_replay_buffer.size < n ->
           {ou_process, CircularBuffer.append(performance_memory, reward)}
 
         true ->
@@ -568,41 +535,35 @@ defmodule ReinforcementLearning.Agents.DDPG do
       experience_replay_buffer: experience_replay_buffer,
       batch_size: batch_size,
       training_frequency: training_frequency,
-      exploration_warmup_episodes: exploration_warmup_episodes
+      exploration_fn: exploration_fn
     } = state.agent_state
 
-    warming_up = state.episode < exploration_warmup_episodes
+    exploring = exploration_fn.(state.episode)
     has_at_least_one_batch = experience_replay_buffer.size > batch_size
 
     should_train =
       has_at_least_one_batch and rem(experience_replay_buffer.index, training_frequency) == 0
 
     if should_train do
-      train_loop(state, training_frequency, warming_up)
+      train_loop(state, training_frequency, exploring)
     else
       state
     end
   end
 
-  defnp train_loop(state, training_frequency, warming_up) do
-    unroll =
-      case training_frequency do
-        t when Kernel.>(t, 10) -> 10
-        _ -> training_frequency
-      end
-
-    while {state, warming_up}, i <- 0..(training_frequency - 1)//1, unroll: unroll do
+  defnp train_loop(state, training_frequency, exploring) do
+    while {state, exploring}, _ <- 0..(training_frequency - 1)//1, unroll: false do
       {batch, batch_indices, random_key} =
         sample_experience_replay_buffer(state.random_key, state.agent_state)
 
-      train_actor = not warming_up and Nx.remainder(i, @actor_training_divisor) == 0
+      train_actor = not exploring
 
       state =
         %{state | random_key: random_key}
         |> train(batch, batch_indices, train_actor)
         |> soft_update_targets(train_actor)
 
-      {state, warming_up}
+      {state, exploring}
     end
     |> elem(0)
   end

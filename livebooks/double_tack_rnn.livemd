@@ -410,7 +410,8 @@ plot_fn = fn axon_state ->
     :persistent_term.put(global_kv_key, %{
       sigma: Nx.to_number(axon_state.step_state.agent_state.ou_process.sigma),
       episode: episode,
-      total_reward: total_reward
+      total_reward: total_reward,
+      exploring: Nx.to_number(axon_state.step_state.agent_state.exploration_fn.(episode))
     })
   end
 
@@ -419,7 +420,7 @@ end
 ```
 
 ```elixir
-model_name = "double_tack_transformer_v3"
+model_name = "double_tack_transformer_v5"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -508,17 +509,19 @@ state_input = Axon.input("state", shape: {nil, state_features_memory_length, sta
 
 action_input = Axon.input("actions", shape: {nil, num_actions})
 
+policy = Axon.MixedPrecision.create_policy(params: {:f, 32}, compute: {:f, 16}, output: {:f, 32})
+
 actor_net =
   state_input
   |> Axon.dense(64, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
+  |> Axon.dropout(rate: 0.1)
   |> PositionalEncoding.layer(sequence_length: state_features_memory_length, state_space_size: 64)
   |> Bumblebee.Layers.Transformer.blocks(
-    num_blocks: 6,
+    num_blocks: 4,
     name: "actor_transformer_prefix",
-    num_attention_heads: 12,
+    num_attention_heads: 24,
     hidden_size: 64,
     attention_head_size: 64,
     ffn: [
@@ -531,16 +534,17 @@ actor_net =
   |> Axon.dense(300, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
+  |> Axon.dropout(rate: 0.1)
   |> Axon.dense(200, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
+  |> Axon.dropout(rate: 0.1)
   |> Axon.dense(num_actions,
     activation: :tanh,
     kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3),
     bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3)
   )
+  |> Axon.MixedPrecision.apply_policy(policy, except: [:batch_norm])
 
 critic_net =
   state_input
@@ -548,26 +552,27 @@ critic_net =
     Nx.take(state_memory, state_features_memory_length - 1, axis: 1)
   end)
   |> Axon.dense(100, activation: :linear)
-  |> Axon.batch_norm()
+  # |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
+  |> Axon.dropout(rate: 0.1)
   |> Axon.dense(50, activation: :linear)
-  |> Axon.batch_norm()
+  # |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
+  |> Axon.dropout(rate: 0.1)
   |> then(&Axon.concatenate([&1, action_input]))
   |> Axon.dense(300, activation: :linear)
-  |> Axon.batch_norm()
+  # |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
+  |> Axon.dropout(rate: 0.1)
   |> Axon.dense(200, activation: :linear)
-  |> Axon.batch_norm()
+  # |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout()
+  |> Axon.dropout(rate: 0.1)
   |> Axon.dense(1,
-    kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3),
-    bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3)
+    kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-4),
+    bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-4)
   )
+  |> Axon.MixedPrecision.apply_policy(policy, except: [:batch_norm])
 
 # These might seem redundant, but will make more sense for multi-input models
 normalize_x = fn x ->
@@ -684,18 +689,8 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(loss_widget, dataset: "loss")
 Kino.VegaLite.clear(reward_widget, dataset: "reward")
 
-episodes = 12500
-max_iter = 40
-
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
-
-sigma = 0.15
-max_sigma = 0.35
-min_sigma = 1 / 32
-exploration_decay_rate = 0.97
-exploration_increase_rate = 1.03
-exploration_threshold = 0.05
 
 checkpoint_serialization_fn = fn loop_state ->
   to_serialize =
@@ -715,6 +710,59 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
+episodes = 10_000
+max_iter = 40
+
+max_sigma = 1 / 4
+sigma = 1 / 8
+min_sigma = 1 / 64
+
+sigma = 1 / 64
+max_sigma = sigma = min_sigma = 0
+exploration_decay_rate = 0.97
+exploration_increase_rate = 1.03
+exploration_threshold = 0.05
+
+defmodule Exploration do
+  import Nx.Defn
+
+  defn run(episode) do
+    cond do
+      episode < 2000 ->
+        1
+
+      true ->
+        Nx.remainder(episode, 500) < 200
+    end
+  end
+
+  def attention_is_all_you_need_lr_schedule(opts \\ []) do
+    &attention_is_all_you_need_lr_schedule_n(&1, opts)
+  end
+
+  defnp attention_is_all_you_need_lr_schedule_n(step, opts \\ []) do
+    amplitude = opts[:amplitude]
+    warmup_steps = opts[:warmup_steps]
+
+    lr = amplitude * Nx.min(Nx.rsqrt(step), step * Nx.rsqrt(warmup_steps ** 3))
+    Nx.min(lr, opts[:min_value])
+  end
+
+  def resetting_linear_schedule(start, stop, steps) do
+    &apply_linear_decay(&1, start: start, stop: stop, steps: steps)
+  end
+
+  defnp apply_linear_decay(step, opts \\ []) do
+    start = opts[:start]
+    stop = opts[:stop]
+    steps = opts[:steps]
+
+    start + (stop - start) / steps * Nx.remainder(step, steps)
+  end
+end
+
+exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
+
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
@@ -727,40 +775,52 @@ end
         tau: 0.001,
         performance_memory_length: 256,
         performance_memory: performance_memory,
-        actor_net: actor_net,
+        actor_net: Axon.freeze(actor_net),
         actor_params: actor_params,
         actor_target_params: actor_target_params,
-        critic_net: critic_net,
+        critic_net: Axon.freeze(critic_net),
         critic_params: critic_params,
-        critic_target_params: critic_target_params,
+        critic_target_params: critic_params,
         state_features_memory: state_features_memory,
         state_features_memory_length: state_features_memory_length,
         experience_replay_buffer: experience_replay_buffer,
-        experience_replay_buffer_max_size: 1_000_000,
+        experience_replay_buffer_max_size: 300_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
-        training_frequency: 32,
+        training_frequency: 16,
         batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
-        exploration_warmup_episodes: 500,
+        exploration_fn: exploration_fn,
         performance_threshold: exploration_threshold,
         ou_process_opts: [
           max_sigma: max_sigma,
           min_sigma: min_sigma,
           sigma: sigma
         ],
-        actor_optimizer_params: [
-          learning_rate: 1.0e-5,
-          eps: 1.0e-8,
-          adamw_decay: 0.0001
-        ],
-        critic_optimizer_params: [
-          learning_rate: 1.0e-4,
-          eps: 1.0e-8,
-          adamw_decay: 0.0001
-        ]
+        actor_optimizer:
+          Axon.Updates.compose(
+            Axon.Updates.clip_by_global_norm(max_norm: 2),
+            Axon.Optimizers.adamw(
+              Exploration.attention_is_all_you_need_lr_schedule(
+                warmup_steps: 200,
+                amplitude: 1.0e-4,
+                min_value: 1.0e-6
+              ),
+              eps: 1.0e-8,
+              decay: 0.01
+            )
+          ),
+        critic_optimizer:
+          Axon.Updates.compose(
+            Axon.Updates.clip_by_global_norm(max_norm: 2),
+            Axon.Optimizers.adamw(
+              Exploration.resetting_linear_schedule(1.0e-3, 1.0e-5, 500),
+              eps: 1.0e-8,
+              decay: 0.01
+            )
+          )
       },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,
@@ -781,108 +841,91 @@ contents = checkpoint_serialization_fn.(result)
 File.write!(filename, contents)
 ```
 
-First session (reward function had has_reached_target -> 1000):
+First session:
 
-```
-episodes = 10_000
-sigma = 0.2
-max_sigma = 0.5
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+episodes = 30_000
+max_iter = 40
+
+max_sigma = 1 / 4
+sigma = 1 / 8
 min_sigma = 1 / 32
-exploration_decay_rate = 0.95
-exploration_increase_rate = 1.05
+exploration_decay_rate = 0.97
+exploration_increase_rate = 1.03
 exploration_threshold = 0.05
-exploration_warmup_episodes: 1000
-batch_size: 200
-training_frequency: 32
 
-actor_optimizer_params: [
-  learning_rate: 3.0e-6,
-  eps: 1.0e-8,
-  adamw_decay: 0.01
-],
-critic_optimizer_params: [
-  learning_rate: 1.0e-4,
-  eps: 1.0e-8,
-  adamw_decay: 0.01
-]
+defmodule Exploration do
+  import Nx.Defn
+
+  defn run(episode) do
+    cond do
+      episode < 1000 ->
+        1
+
+      true ->
+        Nx.remainder(episode, 500) < 200
+    end
+  end
+
+  def attention_is_all_you_need_lr_schedule(opts \\ []) do
+    &attention_is_all_you_need_lr_schedule_n(&1, opts)
+  end
+
+  defnp attention_is_all_you_need_lr_schedule_n(step, opts \\ []) do
+    amplitude = opts[:amplitude]
+    warmup_steps = opts[:warmup_steps]
+
+    lr = amplitude * Nx.min(Nx.rsqrt(step), step * Nx.rsqrt(warmup_steps ** 3))
+    Nx.min(lr, opts[:min_value])
+  end
+
+  def resetting_linear_schedule(start, stop, steps) do
+    &apply_linear_decay(&1, start: start, stop: stop, steps: steps)
+  end
+
+  defnp apply_linear_decay(step, opts \\ []) do
+    start = opts[:start]
+    stop = opts[:stop]
+    steps = opts[:steps]
+
+    start + (stop - start) / steps * Nx.remainder(step, steps)
+  end
+end
 ```
 
-Second session (reward function had has_reached_target -> 1000 * Nx.sqrt(time_decay)):
+Second session:
 
-```
-episodes = 2_500
-max_sigma = 0.35
-sigma = min_sigma = 1 / 32
-exploration_decay_rate = 0.95
-exploration_increase_rate = 1.05
-exploration_threshold = 0.05
-exploration_warmup_episodes: 0
+<!-- livebook:{"force_markdown":true} -->
 
-actor_optimizer_params: [
-  learning_rate: 1.0e-6,
-  eps: 1.0e-8,
-  adamw_decay: 0.5
-],
-critic_optimizer_params: [
-  learning_rate: 3.0e-4,
-  eps: 1.0e-8,
-  adamw_decay: 0.99
-]
-```
-
-Third session (same params as Second, except):
-
-```
+```elixir
 episodes = 5_000
+max_iter = 40
 
-actor_optimizer_params: [
-  learning_rate: 1.0e-6,
-  eps: 1.0e-7,
-  adamw_decay: 0.5
-],
-critic_optimizer_params: [
-  learning_rate: 3.0e-5,
-  eps: 1.0e-7,
-  adamw_decay: 0.5
-]
+sigma = 1 / 64
+
+exploration_fn = EXLA.jit(&Nx.remainder(&1, 500) < 200)
 ```
 
-4th session (same params as 3rd, except):
+Third session:
 
-```
-episodes = 12_500
-max_sigma = 1 / 16
-exploration_warmup_episodes: 2500
+<!-- livebook:{"force_markdown":true} -->
 
-actor_optimizer_params: [
-  learning_rate: 1.0e-6,
-  eps: 1.0e-7,
-  adamw_decay: 0.01
-],
-critic_optimizer_params: [
-  learning_rate: 1.0e-5,
-  eps: 1.0e-7,
-  adamw_decay: 1
-]
-```
+```elixir
+episodes = 10_000
 
-5th Session (resetting to v2_12k5):
-
-```
-Episodes: 17_500
-max_sigma = 0.2
-sigma = min_sigma = 1 / 32
-exploration_warmup_episodes: 7500 # to train critic
-batch_size: 200
-training_frequency: 32
-actor_optimizer_params: [
-  learning_rate: 3.0e-6,
-  eps: 1.0e-7,
-  adamw_decay: 0.01
-],
-critic_optimizer_params: [
-  learning_rate: 1.0e-5,
-  eps: 1.0e-7,
-  adamw_decay: 0.01
-]
+actor_optimizer:
+          Axon.Updates.compose(
+            Axon.Updates.clip_by_global_norm(max_norm: 2),
+            Axon.Optimizers.adamw(
+              Exploration.attention_is_all_you_need_lr_schedule(
+                warmup_steps: 100,
+                amplitude: 1.0e-4,
+                min_value: 1.0e-5
+              ),
+              eps: 1.0e-8,
+              decay: 0.01
+            )
+          )
 ```

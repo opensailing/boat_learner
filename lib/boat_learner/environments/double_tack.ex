@@ -176,16 +176,6 @@ defmodule BoatLearner.Environments.DoubleTack do
     {state, random_key}
   end
 
-  # defnp calculate_elapsed_seconds_from_origin(state) do
-  #   # calculate the linear distance from the origin so we can estimate
-  #   # a penalty in elapsed time so that the initial reward is estimated more properly.
-  #   linear_distance = Nx.sqrt(state.x ** 2 + state.y ** 2)
-  #   # if speed is 0, we will instead use a default of @max_speed * 0.5
-  #   avg_time = linear_distance / Nx.select(state.speed, state.speed, 0.5 * @max_speed)
-
-  #   %{state | remaining_seconds: state.remaining_seconds - avg_time}
-  # end
-
   @impl true
   defn apply_action(rl_state, action) do
     %__MODULE__{} = env = rl_state.environment_state
@@ -316,22 +306,19 @@ defmodule BoatLearner.Environments.DoubleTack do
       x: x,
       y: y,
       remaining_seconds: remaining_seconds,
-      target_y: target_y
+      target_y: target_y,
+      tack_count: tack_count
     } = env
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > target_y or
-        remaining_seconds < 2
+        remaining_seconds < 1 or tack_count > 2
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
 
   defnp has_reached_target(env) do
-    # has reached if distance < 10
-    distance_sq = (env.target_y - env.y) ** 2 + env.x ** 2
-
-    # distance_sq < 15 ** 2
-    distance_sq < 225
+    Nx.sqrt((env.target_y - env.y) ** 2 + env.x ** 2) < 10
   end
 
   defnp calculate_reward(env) do
@@ -340,35 +327,48 @@ defmodule BoatLearner.Environments.DoubleTack do
       vmg: vmg,
       remaining_seconds: remaining_seconds,
       max_remaining_seconds: max_remaining_seconds,
-      target_y: target_y,
-      y: y,
-      x: x,
+      # target_y: target_y,
+      # y: y,
+      # x: x,
       has_tacked: has_tacked
     } = env
 
-    has_reached_target = has_reached_target(env)
+    time_decay = Nx.exp(-(max_remaining_seconds - remaining_seconds) / 50)
 
-    x = Nx.devectorize(x)
-    y = Nx.devectorize(y)
-    vmg = Nx.devectorize(vmg)
-    is_terminal = Nx.devectorize(is_terminal)
-    remaining_seconds = Nx.devectorize(remaining_seconds)
-    has_tacked = Nx.devectorize(has_tacked)
-    vec = has_reached_target.vectorized_axes
-    has_reached_target = Nx.devectorize(has_reached_target)
+    reward =
+      if not is_terminal and vmg >= 0 and vmg / @max_speed < 0.05 do
+        # stationarity penalty: if vmg is smaller than a given threshold, it means that we're
+        # on the verge of reaching stationarity, so we want to not reward the agent in this case.
+        # The reward is -1 because we're setting vmg_reward to -1 and distance_reward to 0
+        -0.1
+      else
+        vmg_reward = time_decay * (vmg / @max_speed - (1 - is_terminal) * 2 * has_tacked)
 
-    time_decay = remaining_seconds / max_remaining_seconds
+        # reaching the target will provide the full score regardless of time decay,
+        # each iteration will receive a time-decayed score instead
+        distance_reward =
+          Nx.select(
+            has_reached_target(env),
+            10 * time_decay,
+            0.1 * distance_decay(env) * time_decay
+          )
 
-    final_reward = 1 * Nx.max(time_decay, 0.8)
-
-    reward = 0.01 * (vmg / @max_speed - 2 * has_tacked) * time_decay
-
-    distance_scaling = 1 - Nx.sqrt(x ** 2 + (target_y - y) ** 2) / target_y
-    distance_scaling = Nx.clip(distance_scaling, -1, 1)
-
-    reward = reward + distance_scaling * final_reward
+        vmg_reward + distance_reward
+      end
 
     %__MODULE__{env | reward: reward}
+  end
+
+  defnp distance_decay(env) do
+    r1 = env.target_y * 0.8
+
+    r_sq = (env.target_y - env.y) ** 2 + env.x ** 2
+    r_sq = r_sq / r1 ** 2
+
+    x = r_sq / r1 ** 2
+    f = Nx.cos(x * pi() / 2)
+
+    Nx.select(x >= 1, 0, f)
   end
 
   defnp wrap_phase(angle) do
