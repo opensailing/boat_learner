@@ -420,7 +420,7 @@ end
 ```
 
 ```elixir
-model_name = "double_tack_transformer_v5"
+model_name = "double_tack_transformer_v6"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -710,15 +710,16 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-episodes = 10_000
+episodes = 50_000
 max_iter = 40
 
 max_sigma = 1 / 4
 sigma = 1 / 8
 min_sigma = 1 / 64
 
-sigma = 1 / 64
-max_sigma = sigma = min_sigma = 0
+# sess 2:  sigma = 1/64
+# validation: max_sigma = sigma = min_sigma = 0
+
 exploration_decay_rate = 0.97
 exploration_increase_rate = 1.03
 exploration_threshold = 0.05
@@ -728,7 +729,7 @@ defmodule Exploration do
 
   defn run(episode) do
     cond do
-      episode < 2000 ->
+      episode < 4000 ->
         1
 
       true ->
@@ -761,7 +762,7 @@ defmodule Exploration do
   end
 end
 
-exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
+# exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
 
 {t, result} =
   :timer.tc(fn ->
@@ -792,7 +793,7 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
         batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
-        exploration_fn: exploration_fn,
+        exploration_fn: &Exploration.run/1,
         performance_threshold: exploration_threshold,
         ou_process_opts: [
           max_sigma: max_sigma,
@@ -804,7 +805,7 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
             Axon.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
               Exploration.attention_is_all_you_need_lr_schedule(
-                warmup_steps: 200,
+                warmup_steps: 400,
                 amplitude: 1.0e-4,
                 min_value: 1.0e-6
               ),

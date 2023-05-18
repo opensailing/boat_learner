@@ -128,12 +128,13 @@ defmodule BoatLearner.Environments.DoubleTack do
     dspeed = Scholar.Interpolation.BezierSpline.predict(spline_model, Nx.add(min_theta, dtheta))
 
     # Fit {0, 0}, {15deg, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
-    zero = Nx.new_axis(0, 0)
+    dead_zone_thetas = Nx.tensor([0, 5 * :math.pi() / 180, 15 * :math.pi() / 180])
+    dead_zone_speeds = Nx.tensor([0, 0, 1])
 
     linear_model =
       Scholar.Interpolation.Linear.fit(
-        Nx.concatenate([zero, Nx.tensor([15 * :math.pi() / 180]), min_theta, theta]),
-        Nx.concatenate([zero, zero, dspeed, speed])
+        Nx.concatenate([dead_zone_thetas, min_theta, theta]),
+        Nx.concatenate([dead_zone_speeds, dspeed, speed])
       )
 
     cutoff_angle = Nx.reduce_min(spline_model.k, axes: [0])[0]
@@ -335,12 +336,17 @@ defmodule BoatLearner.Environments.DoubleTack do
 
     time_decay = Nx.exp(-(max_remaining_seconds - remaining_seconds) / 50)
 
+    vmg_dead_zone_max_angle = 15 * pi() / 180
+    vmg_dead_zone_max = speed_from_heading(env.polar_chart, vmg_dead_zone_max_angle)
+
     reward =
-      if not is_terminal and vmg >= 0 and vmg / @max_speed < 0.05 do
-        # stationarity penalty: if vmg is smaller than a given threshold, it means that we're
+      if not is_terminal and vmg >= 0 and vmg < vmg_dead_zone_max do
+        # dead-zone penalty: if the boat is in the vmg dead-zone it means that we're
         # on the verge of reaching stationarity, so we want to not reward the agent in this case.
-        # The reward is -1 because we're setting vmg_reward to -1 and distance_reward to 0
-        -0.1
+
+        # at the beggining of the dead-zone, we get reward := -0.1,
+        # and at the end of the dead-zone (at 0deg), we get reward := -0.2
+        -0.1 * (2 - vmg / vmg_dead_zone_max)
       else
         vmg_reward = time_decay * (vmg / @max_speed - (1 - is_terminal) * 2 * has_tacked)
 
