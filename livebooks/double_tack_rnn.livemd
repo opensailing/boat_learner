@@ -420,7 +420,7 @@ end
 ```
 
 ```elixir
-model_name = "double_tack_transformer_v6"
+model_name = "double_tack_transformer_v7"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -710,15 +710,22 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-episodes = 50_000
+# session 1: 50_000
+# session 2: 20_000
+# session 3: 20_000
+episodes = 70_000
 max_iter = 40
 
 max_sigma = 1 / 4
 sigma = 1 / 8
-min_sigma = 1 / 64
+min_sigma = 1 / 128
 
-# sess 2:  sigma = 1/64
-# validation: max_sigma = sigma = min_sigma = 0
+# session 2 and 3:  
+# max_sigma = 1 / 8
+# sigma = 1 / 64
+
+# validation: 
+# max_sigma = sigma = min_sigma = 0
 
 exploration_decay_rate = 0.97
 exploration_increase_rate = 1.03
@@ -762,7 +769,7 @@ defmodule Exploration do
   end
 end
 
-# exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
+exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
 
 {t, result} =
   :timer.tc(fn ->
@@ -773,13 +780,16 @@ end
       },
       {
         ReinforcementLearning.Agents.DDPG,
+        # session 1:
+        # session 2:
+        # exploration_fn: exploration_fn,
         tau: 0.001,
         performance_memory_length: 256,
         performance_memory: performance_memory,
-        actor_net: Axon.freeze(actor_net),
+        actor_net: actor_net,
         actor_params: actor_params,
         actor_target_params: actor_target_params,
-        critic_net: Axon.freeze(critic_net),
+        critic_net: critic_net,
         critic_params: critic_params,
         critic_target_params: critic_params,
         state_features_memory: state_features_memory,
@@ -805,9 +815,13 @@ end
             Axon.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
               Exploration.attention_is_all_you_need_lr_schedule(
-                warmup_steps: 400,
+                warmup_steps: 300,
+                # sessions 1 and 2: 
                 amplitude: 1.0e-4,
                 min_value: 1.0e-6
+                # session 3:
+                # amplitude: 1.0e-5,
+                # min_value: 1.0e-7
               ),
               eps: 1.0e-8,
               decay: 0.01
@@ -817,7 +831,7 @@ end
           Axon.Updates.compose(
             Axon.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
-              Exploration.resetting_linear_schedule(1.0e-3, 1.0e-5, 500),
+              Exploration.resetting_linear_schedule(3.0e-3, 1.0e-5, 450),
               eps: 1.0e-8,
               decay: 0.01
             )

@@ -343,10 +343,7 @@ defmodule BoatLearner.Environments.DoubleTack do
       if not is_terminal and vmg >= 0 and vmg < vmg_dead_zone_max do
         # dead-zone penalty: if the boat is in the vmg dead-zone it means that we're
         # on the verge of reaching stationarity, so we want to not reward the agent in this case.
-
-        # at the beggining of the dead-zone, we get reward := -0.1,
-        # and at the end of the dead-zone (at 0deg), we get reward := -0.2
-        -0.1 * (2 - vmg / vmg_dead_zone_max)
+        -0.1
       else
         vmg_reward = time_decay * (vmg / @max_speed - (1 - is_terminal) * 2 * has_tacked)
 
