@@ -710,10 +710,10 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-# session 1: 50_000
+# session 1: 70_000
 # session 2: 20_000
-# session 3: 20_000
-episodes = 70_000
+# session 3: 30_000
+episodes = 30_000
 max_iter = 40
 
 max_sigma = 1 / 4
@@ -723,6 +723,10 @@ min_sigma = 1 / 128
 # session 2 and 3:  
 # max_sigma = 1 / 8
 # sigma = 1 / 64
+
+# session 4:
+max_sigma = 1 / 16
+sigma = 1 / 128
 
 # validation: 
 # max_sigma = sigma = min_sigma = 0
@@ -781,8 +785,8 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
       {
         ReinforcementLearning.Agents.DDPG,
         # session 1:
-        # session 2:
-        # exploration_fn: exploration_fn,
+        # exploration_fn: &Exploration.run/1,
+        # session 2 and 3:
         tau: 0.001,
         performance_memory_length: 256,
         performance_memory: performance_memory,
@@ -803,7 +807,7 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
         batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
-        exploration_fn: &Exploration.run/1,
+        exploration_fn: exploration_fn,
         performance_threshold: exploration_threshold,
         ou_process_opts: [
           max_sigma: max_sigma,
@@ -815,13 +819,19 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
             Axon.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
               Exploration.attention_is_all_you_need_lr_schedule(
-                warmup_steps: 300,
-                # sessions 1 and 2: 
-                amplitude: 1.0e-4,
-                min_value: 1.0e-6
-                # session 3:
+                warmup_steps: 500,
+                # sessions 1: 
+                # amplitude: 1.0e-4,
+                # min_value: 1.0e-6
+                # session 2:
                 # amplitude: 1.0e-5,
                 # min_value: 1.0e-7
+                # session 3:
+                # amplitude: 1.0e-3,
+                # min_value: 1.0e-6
+                # session 4:
+                amplitude: 1.0e-5,
+                min_value: 1.0e-7
               ),
               eps: 1.0e-8,
               decay: 0.01
@@ -854,93 +864,4 @@ GenServer.call(AccumulateAndExportData, {:save, export_filename})
 
 contents = checkpoint_serialization_fn.(result)
 File.write!(filename, contents)
-```
-
-First session:
-
-<!-- livebook:{"force_markdown":true} -->
-
-```elixir
-episodes = 30_000
-max_iter = 40
-
-max_sigma = 1 / 4
-sigma = 1 / 8
-min_sigma = 1 / 32
-exploration_decay_rate = 0.97
-exploration_increase_rate = 1.03
-exploration_threshold = 0.05
-
-defmodule Exploration do
-  import Nx.Defn
-
-  defn run(episode) do
-    cond do
-      episode < 1000 ->
-        1
-
-      true ->
-        Nx.remainder(episode, 500) < 200
-    end
-  end
-
-  def attention_is_all_you_need_lr_schedule(opts \\ []) do
-    &attention_is_all_you_need_lr_schedule_n(&1, opts)
-  end
-
-  defnp attention_is_all_you_need_lr_schedule_n(step, opts \\ []) do
-    amplitude = opts[:amplitude]
-    warmup_steps = opts[:warmup_steps]
-
-    lr = amplitude * Nx.min(Nx.rsqrt(step), step * Nx.rsqrt(warmup_steps ** 3))
-    Nx.min(lr, opts[:min_value])
-  end
-
-  def resetting_linear_schedule(start, stop, steps) do
-    &apply_linear_decay(&1, start: start, stop: stop, steps: steps)
-  end
-
-  defnp apply_linear_decay(step, opts \\ []) do
-    start = opts[:start]
-    stop = opts[:stop]
-    steps = opts[:steps]
-
-    start + (stop - start) / steps * Nx.remainder(step, steps)
-  end
-end
-```
-
-Second session:
-
-<!-- livebook:{"force_markdown":true} -->
-
-```elixir
-episodes = 5_000
-max_iter = 40
-
-sigma = 1 / 64
-
-exploration_fn = EXLA.jit(&Nx.remainder(&1, 500) < 200)
-```
-
-Third session:
-
-<!-- livebook:{"force_markdown":true} -->
-
-```elixir
-episodes = 10_000
-
-actor_optimizer:
-          Axon.Updates.compose(
-            Axon.Updates.clip_by_global_norm(max_norm: 2),
-            Axon.Optimizers.adamw(
-              Exploration.attention_is_all_you_need_lr_schedule(
-                warmup_steps: 100,
-                amplitude: 1.0e-4,
-                min_value: 1.0e-5
-              ),
-              eps: 1.0e-8,
-              decay: 0.01
-            )
-          )
 ```
