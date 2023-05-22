@@ -185,7 +185,7 @@ defmodule BoatLearner.Environments.DoubleTack do
 
     new_env =
       env
-      |> turn_and_move(action * 0.6 * pi())
+      |> turn_and_move(action * pi())
       |> is_terminal_state()
       |> calculate_reward()
 
@@ -319,7 +319,7 @@ defmodule BoatLearner.Environments.DoubleTack do
   end
 
   defnp has_reached_target(env) do
-    Nx.sqrt((env.target_y - env.y) ** 2 + env.x ** 2) < 10
+    Nx.sqrt((env.target_y - env.y) ** 2 + env.x ** 2) < 1
   end
 
   defnp calculate_reward(env) do

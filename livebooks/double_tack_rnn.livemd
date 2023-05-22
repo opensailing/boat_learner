@@ -33,9 +33,9 @@ scale_max_x = max_x / 250
 scale_min_x = min_x / -250
 
 angle_templates_base = [
-  %{x: -250.0 * scale_min_x, y: 297.2 * scale_min_x},
+  %{x: -250.0 * scale_min_x, y: 250 * :math.tan(42.7 * :math.pi() / 180) * scale_min_x},
   %{x: 0, y: 0},
-  %{x: 250.0 * scale_max_x, y: 297.2 * scale_max_x}
+  %{x: 250.0 * scale_max_x, y: 250 * :math.tan(42.7 * :math.pi() / 180) * scale_max_x}
 ]
 
 angle_templates =
@@ -63,7 +63,7 @@ grid_widget =
   |> Vl.layers([
     Vl.new()
     |> Vl.data_from_values(angle_templates, name: "angles")
-    |> Vl.mark(:line, opacity: 0.25)
+    |> Vl.mark(:line, opacity: 0.25, tooltip: [content: "data"])
     |> Vl.encode_field(:x, "x",
       legend: false,
       type: :quantitative,
@@ -420,7 +420,7 @@ end
 ```
 
 ```elixir
-model_name = "double_tack_transformer_v7"
+model_name = "double_tack_transformer_v8"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -713,9 +713,15 @@ end
 # session 1: 70_000
 # session 2: 20_000
 # session 3: 30_000
-episodes = 30_000
+# session 4: 30_000
+# session 5: 15_000
+episodes = 70_000
+
+# session 1, 2, 3: 40
+# session 4, 5: 15
 max_iter = 40
 
+# session 1: 
 max_sigma = 1 / 4
 sigma = 1 / 8
 min_sigma = 1 / 128
@@ -723,10 +729,17 @@ min_sigma = 1 / 128
 # session 2 and 3:  
 # max_sigma = 1 / 8
 # sigma = 1 / 64
+# min_sigma = 1 / 128
 
 # session 4:
-max_sigma = 1 / 16
-sigma = 1 / 128
+# max_sigma = 1 / 4
+# sigma = 1 / 8
+# min_sigma = 1 / 128
+
+# session 5: 
+# max_sigma = 1 / 8
+# sigma = 1 / 128
+# min_sigma = 1 / 128
 
 # validation: 
 # max_sigma = sigma = min_sigma = 0
@@ -780,13 +793,20 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
     ReinforcementLearning.train(
       {
         BoatLearner.Environments.DoubleTack,
+        # sessions 1, 2, 3:
         max_remaining_seconds: 500, target_y: target_y
+        # session 4:
+        # max_remaining_seconds: 100, target_y: target_y
       },
       {
         ReinforcementLearning.Agents.DDPG,
         # session 1:
+        # session 2, 3:
+        # exploration_fn: exploration_fn,
+        # session 4:
         # exploration_fn: &Exploration.run/1,
-        # session 2 and 3:
+        # session 5:
+        # exploration_fn: exploration_fn,
         tau: 0.001,
         performance_memory_length: 256,
         performance_memory: performance_memory,
@@ -807,7 +827,7 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
         batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
-        exploration_fn: exploration_fn,
+        exploration_fn: &Exploration.run/1,
         performance_threshold: exploration_threshold,
         ou_process_opts: [
           max_sigma: max_sigma,
@@ -820,9 +840,9 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
             Axon.Optimizers.adamw(
               Exploration.attention_is_all_you_need_lr_schedule(
                 warmup_steps: 500,
-                # sessions 1: 
-                # amplitude: 1.0e-4,
-                # min_value: 1.0e-6
+                # session 1: 
+                amplitude: 3.0e-4,
+                min_value: 1.0e-6
                 # session 2:
                 # amplitude: 1.0e-5,
                 # min_value: 1.0e-7
@@ -830,11 +850,19 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
                 # amplitude: 1.0e-3,
                 # min_value: 1.0e-6
                 # session 4:
-                amplitude: 1.0e-5,
-                min_value: 1.0e-7
+                # amplitude: 1.0e-4,
+                # min_value: 1.0e-7
+                # session 5:
+                # amplitude: 1.0e-5,
+                # min_value: 1.0e-7
               ),
               eps: 1.0e-8,
+              # sessions 1, 2, 3:
               decay: 0.01
+              # session 4:
+              # decay: 0.1
+              # session 5:
+              # decay: 0.01
             )
           ),
         critic_optimizer:
