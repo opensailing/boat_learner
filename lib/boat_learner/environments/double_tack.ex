@@ -46,8 +46,8 @@ defmodule BoatLearner.Environments.DoubleTack do
 
   @min_x -125
   @max_x 125
-  @min_y -25
-  @max_y 125
+  @min_y 0
+  @max_y 250
 
   @one_deg_in_rad 1 * :math.pi() / 180
 
@@ -69,6 +69,8 @@ defmodule BoatLearner.Environments.DoubleTack do
     3.22,
     3.08
   ]
+
+  @dead_zone_angle @one_deg_in_rad * 30
 
   @speed_kts [4.62, 5.02 | @speed_kts]
   @theta_deg [42.7, 137.6 | Enum.to_list(40..180//10)]
@@ -128,8 +130,8 @@ defmodule BoatLearner.Environments.DoubleTack do
     dspeed = Scholar.Interpolation.BezierSpline.predict(spline_model, Nx.add(min_theta, dtheta))
 
     # Fit {0, 0}, {15deg, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
-    dead_zone_thetas = Nx.tensor([0, 5 * :math.pi() / 180, 15 * :math.pi() / 180])
-    dead_zone_speeds = Nx.tensor([0, 0, 1])
+    dead_zone_thetas = Nx.tensor([0, @dead_zone_angle])
+    dead_zone_speeds = Nx.tensor([0, 0])
 
     linear_model =
       Scholar.Interpolation.Linear.fit(
@@ -319,7 +321,7 @@ defmodule BoatLearner.Environments.DoubleTack do
   end
 
   defnp has_reached_target(env) do
-    Nx.sqrt((env.target_y - env.y) ** 2 + env.x ** 2) < 1
+    distance(env.target_y, env.x, env.y) < 5
   end
 
   defnp calculate_reward(env) do
@@ -328,51 +330,26 @@ defmodule BoatLearner.Environments.DoubleTack do
       vmg: vmg,
       remaining_seconds: remaining_seconds,
       max_remaining_seconds: max_remaining_seconds,
-      # target_y: target_y,
-      # y: y,
-      # x: x,
-      has_tacked: has_tacked
+      has_tacked: has_tacked,
+      heading: heading
     } = env
 
-    time_decay = Nx.exp(-(max_remaining_seconds - remaining_seconds) / 50)
-
-    vmg_dead_zone_max_angle = 15 * pi() / 180
-    vmg_dead_zone_max = speed_from_heading(env.polar_chart, vmg_dead_zone_max_angle)
-
     reward =
-      if not is_terminal and vmg >= 0 and vmg < vmg_dead_zone_max do
-        # dead-zone penalty: if the boat is in the vmg dead-zone it means that we're
-        # on the verge of reaching stationarity, so we want to not reward the agent in this case.
-        -0.1
+      if not is_terminal and
+           (heading < @dead_zone_angle or heading >= 2 * pi() - @dead_zone_angle) do
+        -0.1 * has_tacked
       else
-        vmg_reward = time_decay * (vmg / @max_speed - (1 - is_terminal) * 2 * has_tacked)
-
-        # reaching the target will provide the full score regardless of time decay,
-        # each iteration will receive a time-decayed score instead
-        distance_reward =
-          Nx.select(
-            has_reached_target(env),
-            10 * time_decay,
-            0.1 * distance_decay(env) * time_decay
-          )
-
-        vmg_reward + distance_reward
+        decay(max_remaining_seconds, remaining_seconds) * vmg * 0.1
       end
 
     %__MODULE__{env | reward: reward}
   end
 
-  defnp distance_decay(env) do
-    r1 = env.target_y * 0.8
-
-    r_sq = (env.target_y - env.y) ** 2 + env.x ** 2
-    r_sq = r_sq / r1 ** 2
-
-    x = r_sq / r1 ** 2
-    f = Nx.cos(x * pi() / 2)
-
-    Nx.select(x >= 1, 0, f)
+  defnp decay(max, current) do
+    current / max
   end
+
+  defnp distance(target_y, x, y), do: Nx.sqrt((target_y - y) ** 2 + x ** 2)
 
   defnp wrap_phase(angle) do
     angle

@@ -22,7 +22,7 @@ alias VegaLite, as: Vl
 
 {min_x, max_x, min_y, max_y} = BoatLearner.Environments.DoubleTack.bounding_box()
 
-target_y = 100
+target_y = 225
 
 max_y = min(target_y, max_y)
 
@@ -32,61 +32,66 @@ height = 500
 scale_max_x = max_x / 250
 scale_min_x = min_x / -250
 
-angle_templates_base = [
-  %{x: -250.0 * scale_min_x, y: 250 * :math.tan(42.7 * :math.pi() / 180) * scale_min_x},
-  %{x: 0, y: 0},
-  %{x: 250.0 * scale_max_x, y: 250 * :math.tan(42.7 * :math.pi() / 180) * scale_max_x}
-]
+alfa = :math.tan(42.7 / 180 * :math.pi())
+step = 25
+x = [0 | Enum.to_list((2 * min_x)..(2 * max_x)//step)]
+x = Enum.uniq(x)
+y = List.duplicate(0, length(x) * 2)
 
-angle_templates =
-  Enum.flat_map(0..9, fn offset ->
-    Enum.map(angle_templates_base, fn %{x: x, y: y} ->
-      delta_y = (max_y - min_y) / 10 * offset
+x2 =
+  Enum.flat_map(x, fn x1 ->
+    cond do
+      x1 > 0 ->
+        [x1 + alfa * max_y, x1 + alfa * max_y]
 
-      {x, y} =
-        if y + delta_y > max_y do
-          x = (max_y - delta_y) * x / (y - min_y)
-          y = max_y
-          {x, y}
-        else
-          {x, y + delta_y}
-        end
+      x1 == 0 ->
+        [x1 + alfa * max_y, x1 - alfa * max_y]
 
-      %{x: x, y: y, group: offset}
-    end)
+      true ->
+        [x1 - alfa * max_y, x1 - alfa * max_y]
+    end
   end)
 
-max_y = max(max_y, angle_templates |> Enum.map(& &1.y) |> Enum.max())
+x =
+  Enum.flat_map(x, fn x ->
+    [x, x]
+  end)
+
+y2 = List.duplicate(max_y, length(x))
+
+{x, x2, y, y2} =
+  Enum.flat_map(Enum.zip([x, x2, y, y2]), fn {x, x2, y, y2} ->
+    [
+      {x, x2, y, y2},
+      {x, x2, y2, y}
+    ]
+  end)
+  |> Enum.reduce({[], [], [], []}, fn {x, x2, y, y2}, {xacc, x2acc, yacc, y2acc} ->
+    {[x | xacc], [x2 | x2acc], [y | yacc], [y2 | y2acc]}
+  end)
 
 grid_widget =
   Vl.new(width: width, height: height)
   |> Vl.layers([
     Vl.new()
-    |> Vl.data_from_values(angle_templates, name: "angles")
-    |> Vl.mark(:line, opacity: 0.25, tooltip: [content: "data"])
-    |> Vl.encode_field(:x, "x",
-      legend: false,
-      type: :quantitative,
-      scale: [domain: [min_x, max_x], clamp: false]
-    )
-    |> Vl.encode_field(:y, "y",
-      legend: false,
-      type: :quantitative,
-      scale: [domain: [min_y, max_y], clamp: false]
-    )
-    |> Vl.encode_field(:color, "group", type: :nominal, scale: [scheme: "blues"], legend: false),
+    |> Vl.data_from_values(%{x: x, y: y, x2: x2, y2: y2}, name: "diagonal_grid")
+    |> Vl.mark(:rule, clip: true, color: "#ddd", size: 2, opacity: 0.5)
+    |> Vl.encode_field(:x, "x", type: :quantitative)
+    |> Vl.encode_field(:y, "y", type: :quantitative)
+    |> Vl.encode_field(:x2, "x2", type: :quantitative)
+    |> Vl.encode_field(:y2, "y2", type: :quantitative),
     Vl.new()
     |> Vl.data(name: "trajectory")
-    |> Vl.mark(:line, point: true, opacity: 1, tooltip: [content: "data"])
+    |> Vl.mark(:line, point: true, clip: true, opacity: 1, tooltip: [content: "data"])
     |> Vl.encode_field(:x, "x",
       legend: false,
       type: :quantitative,
-      scale: [domain: [min_x, max_x], clamp: true]
+      scale: [domain: [min_x, max_x]]
     )
     |> Vl.encode_field(:y, "y",
       legend: false,
       type: :quantitative,
-      scale: [domain: [min_y, max_y], clamp: true]
+      scale: [domain: [min_y, max_y]]
     )
     |> Vl.encode_field(:color, "episode",
       legend: false,
@@ -420,7 +425,7 @@ end
 ```
 
 ```elixir
-model_name = "double_tack_transformer_v8"
+model_name = "double_tack_transformer_v9"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -475,7 +480,7 @@ fields = [
   :vmg,
   :heading,
   :angle_to_target,
-  :optimal_angle,
+  # :optimal_angle,
   :has_tacked
 ]
 
@@ -503,7 +508,7 @@ end
 
 num_actions = BoatLearner.Environments.DoubleTack.num_actions()
 state_features_size = length(fields)
-state_features_memory_length = 5
+state_features_memory_length = 3
 
 state_input = Axon.input("state", shape: {nil, state_features_memory_length, state_features_size})
 
@@ -615,7 +620,7 @@ environment_to_state_features_fn = fn env_state ->
     normalize_speed.(env_state.vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.angle_to_target),
-    normalize_angle.(42.7 / 180 * :math.pi()),
+    # normalize_angle.(42.7 / 180 * :math.pi()),
     env_state.has_tacked
   ]
   |> Nx.stack()
@@ -710,36 +715,28 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-# session 1: 70_000
-# session 2: 20_000
-# session 3: 30_000
-# session 4: 30_000
-# session 5: 15_000
-episodes = 70_000
+# session 1, 2: 5_000
+# session 3: 20_000
+# session 4: 24_000
+episodes = 24_000
 
-# session 1, 2, 3: 40
-# session 4, 5: 15
-max_iter = 40
+# session 1, 2, 3, 4: 50
+max_iter = 50
 
-# session 1: 
-max_sigma = 1 / 4
-sigma = 1 / 8
-min_sigma = 1 / 128
-
-# session 2 and 3:  
-# max_sigma = 1 / 8
-# sigma = 1 / 64
-# min_sigma = 1 / 128
-
-# session 4:
+# session 1, 2: 
 # max_sigma = 1 / 4
 # sigma = 1 / 8
+# min_sigma = 1 / 64
+
+# session 3: 
+# max_sigma = 1 / 4
+# sigma = 1 / 4
 # min_sigma = 1 / 128
 
-# session 5: 
-# max_sigma = 1 / 8
-# sigma = 1 / 128
-# min_sigma = 1 / 128
+# session 4: 
+max_sigma = 1 / 4
+sigma = 1 / 4
+min_sigma = 1 / 128
 
 # validation: 
 # max_sigma = sigma = min_sigma = 0
@@ -751,9 +748,9 @@ exploration_threshold = 0.05
 defmodule Exploration do
   import Nx.Defn
 
-  defn run(episode) do
+  defn run(episode, warmup \\ 1000) do
     cond do
-      episode < 4000 ->
+      episode < warmup ->
         1
 
       true ->
@@ -793,20 +790,16 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
     ReinforcementLearning.train(
       {
         BoatLearner.Environments.DoubleTack,
-        # sessions 1, 2, 3:
-        max_remaining_seconds: 500, target_y: target_y
-        # session 4:
-        # max_remaining_seconds: 100, target_y: target_y
+        # session 1:
+        max_remaining_seconds: 250, target_y: target_y
       },
       {
         ReinforcementLearning.Agents.DDPG,
         # session 1:
-        # session 2, 3:
-        # exploration_fn: exploration_fn,
-        # session 4:
         # exploration_fn: &Exploration.run/1,
-        # session 5:
+        # session 2:
         # exploration_fn: exploration_fn,
+        # session 3, 4:
         tau: 0.001,
         performance_memory_length: 256,
         performance_memory: performance_memory,
@@ -827,7 +820,7 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
         batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
-        exploration_fn: &Exploration.run/1,
+        exploration_fn: &Exploration.run(&1, 4000),
         performance_threshold: exploration_threshold,
         ou_process_opts: [
           max_sigma: max_sigma,
@@ -840,36 +833,26 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
             Axon.Optimizers.adamw(
               Exploration.attention_is_all_you_need_lr_schedule(
                 warmup_steps: 500,
-                # session 1: 
-                amplitude: 3.0e-4,
-                min_value: 1.0e-6
-                # session 2:
-                # amplitude: 1.0e-5,
-                # min_value: 1.0e-7
-                # session 3:
-                # amplitude: 1.0e-3,
-                # min_value: 1.0e-6
-                # session 4:
-                # amplitude: 1.0e-4,
-                # min_value: 1.0e-7
-                # session 5:
-                # amplitude: 1.0e-5,
-                # min_value: 1.0e-7
+                # session 1, 2, 3: 
+                # amplitude: 3.0e-4,
+                # min_value: 3.0e-7
+                # session 4: 
+                amplitude: 3.0e-3,
+                min_value: 3.0e-6
               ),
               eps: 1.0e-8,
-              # sessions 1, 2, 3:
+              # sessions 1, 2, 3, 4:
               decay: 0.01
-              # session 4:
-              # decay: 0.1
-              # session 5:
-              # decay: 0.01
             )
           ),
         critic_optimizer:
           Axon.Updates.compose(
             Axon.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
-              Exploration.resetting_linear_schedule(3.0e-3, 1.0e-5, 450),
+              # session 1, 2, 3
+              # Exploration.resetting_linear_schedule(3.0e-3, 3.0e-5, 500),
+              # session 4
+              Exploration.resetting_linear_schedule(3.0e-3, 3.0e-6, 500),
               eps: 1.0e-8,
               decay: 0.01
             )
