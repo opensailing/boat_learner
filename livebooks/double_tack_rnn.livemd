@@ -24,8 +24,6 @@ alias VegaLite, as: Vl
 
 target_y = 225
 
-max_y = min(target_y, max_y)
-
 width = 500
 height = 500
 
@@ -42,13 +40,13 @@ x2 =
   Enum.flat_map(x, fn x1 ->
     cond do
       x1 > 0 ->
-        [x1 + alfa * max_y, x1 + alfa * max_y]
+        [x1 + alfa * target_y, x1 + alfa * target_y]
 
       x1 == 0 ->
-        [x1 + alfa * max_y, x1 - alfa * max_y]
+        [x1 + alfa * target_y, x1 - alfa * target_y]
 
       true ->
-        [x1 - alfa * max_y, x1 - alfa * max_y]
+        [x1 - alfa * target_y, x1 - alfa * target_y]
     end
   end)
 
@@ -57,7 +55,7 @@ x =
     [x, x]
   end)
 
-y2 = List.duplicate(max_y, length(x))
+y2 = List.duplicate(target_y, length(x))
 
 {x, x2, y, y2} =
   Enum.flat_map(Enum.zip([x, x2, y, y2]), fn {x, x2, y, y2} ->
@@ -70,16 +68,36 @@ y2 = List.duplicate(max_y, length(x))
     {[x | xacc], [x2 | x2acc], [y | yacc], [y2 | y2acc]}
   end)
 
+arc = fn r_scale ->
+  Vl.new()
+  |> Vl.data_from_values(%{x: [0], y: [target_y]},
+    name: "arc_grid"
+  )
+  |> Vl.mark(:arc,
+    clip: true,
+    radius: (target_y * r_scale + 1) * height / max_y,
+    radius2: (target_y * r_scale - 1) * height / max_y,
+    theta: 2 * :math.pi(),
+    color: "#ddd",
+    opacity: 0.5
+  )
+  |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x]])
+  |> Vl.encode_field(:y, "y", type: :quantitative, scale: [domain: [min_y, max_y]])
+end
+
 grid_widget =
   Vl.new(width: width, height: height)
   |> Vl.layers([
     Vl.new()
     |> Vl.data_from_values(%{x: x, y: y, x2: x2, y2: y2}, name: "diagonal_grid")
     |> Vl.mark(:rule, clip: true, color: "#ddd", size: 2, opacity: 0.5)
-    |> Vl.encode_field(:x, "x", type: :quantitative)
-    |> Vl.encode_field(:y, "y", type: :quantitative)
+    |> Vl.encode_field(:x, "x", type: :quantitative, scale: [domain: [min_x, max_x]])
+    |> Vl.encode_field(:y, "y", type: :quantitative, scale: [domain: [min_y, max_y]])
     |> Vl.encode_field(:x2, "x2", type: :quantitative)
     |> Vl.encode_field(:y2, "y2", type: :quantitative),
+    arc.(1),
+    arc.(0.5),
+    arc.(0.25),
     Vl.new()
     |> Vl.data(name: "trajectory")
     |> Vl.mark(:line, point: true, clip: true, opacity: 1, tooltip: [content: "data"])
@@ -715,27 +733,21 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-# session 1, 2: 5_000
-# session 3: 20_000
-# session 4: 24_000
-episodes = 24_000
+# session 1: 20_000
+# session 1: 7_000
+episodes = 7_000
 
-# session 1, 2, 3, 4: 50
+# session 1, 2, 3: 50
 max_iter = 50
 
-# session 1, 2: 
-# max_sigma = 1 / 4
-# sigma = 1 / 8
-# min_sigma = 1 / 64
-
-# session 3: 
-# max_sigma = 1 / 4
-# sigma = 1 / 4
-# min_sigma = 1 / 128
-
-# session 4: 
+# session 1: 
 max_sigma = 1 / 4
-sigma = 1 / 4
+sigma = 1 / 8
+min_sigma = 1 / 64
+
+# session 1: 
+max_sigma = 1 / 16
+sigma = 1 / 64
 min_sigma = 1 / 128
 
 # validation: 
@@ -790,16 +802,14 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
     ReinforcementLearning.train(
       {
         BoatLearner.Environments.DoubleTack,
-        # session 1:
+        # session 1, 2, 3:
         max_remaining_seconds: 250, target_y: target_y
       },
       {
         ReinforcementLearning.Agents.DDPG,
         # session 1:
-        # exploration_fn: &Exploration.run/1,
+        # exploration_fn: &Exploration.run(&1, 2000),
         # session 2:
-        # exploration_fn: exploration_fn,
-        # session 3, 4:
         tau: 0.001,
         performance_memory_length: 256,
         performance_memory: performance_memory,
@@ -820,7 +830,7 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
         batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
-        exploration_fn: &Exploration.run(&1, 4000),
+        exploration_fn: exploration_fn,
         performance_threshold: exploration_threshold,
         ou_process_opts: [
           max_sigma: max_sigma,
@@ -831,17 +841,15 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
           Axon.Updates.compose(
             Axon.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
-              Exploration.attention_is_all_you_need_lr_schedule(
-                warmup_steps: 500,
-                # session 1, 2, 3: 
-                # amplitude: 3.0e-4,
-                # min_value: 3.0e-7
-                # session 4: 
-                amplitude: 3.0e-3,
-                min_value: 3.0e-6
-              ),
+              # session 1:
+              # Exploration.attention_is_all_you_need_lr_schedule(
+              #   warmup_steps: 500,
+              #   amplitude: 3.0e-4,
+              #   min_value: 3.0e-6
+              # ),
+              # session 2:
+              Exploration.resetting_linear_schedule(3.0e-6, 3.0e-7, 500),
               eps: 1.0e-8,
-              # sessions 1, 2, 3, 4:
               decay: 0.01
             )
           ),
@@ -849,10 +857,8 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
           Axon.Updates.compose(
             Axon.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
-              # session 1, 2, 3
-              # Exploration.resetting_linear_schedule(3.0e-3, 3.0e-5, 500),
-              # session 4
-              Exploration.resetting_linear_schedule(3.0e-3, 3.0e-6, 500),
+              # session 1, 2
+              Exploration.resetting_linear_schedule(3.0e-3, 3.0e-5, 500),
               eps: 1.0e-8,
               decay: 0.01
             )

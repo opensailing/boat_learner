@@ -44,8 +44,8 @@ defmodule BoatLearner.Environments.DoubleTack do
     :has_tacked
   ]
 
-  @min_x -125
-  @max_x 125
+  @min_x -150
+  @max_x 150
   @min_y 0
   @max_y 250
 
@@ -335,11 +335,14 @@ defmodule BoatLearner.Environments.DoubleTack do
     } = env
 
     reward =
-      if not is_terminal and
-           (heading < @dead_zone_angle or heading >= 2 * pi() - @dead_zone_angle) do
-        -0.1 * has_tacked
-      else
-        decay(max_remaining_seconds, remaining_seconds) * vmg * 0.1
+      cond do
+        not is_terminal and (heading < @dead_zone_angle or heading >= 2 * pi() - @dead_zone_angle) ->
+          -0.1
+
+        true ->
+          distance_decay = 1 - decay(env.target_y, distance(env.target_y, env.x, env.y))
+          time_decay = decay(max_remaining_seconds, remaining_seconds)
+          time_decay * 0.1 * (Nx.select(has_tacked, -1, vmg) + 0.1 * distance_decay)
       end
 
     %__MODULE__{env | reward: reward}
@@ -349,7 +352,7 @@ defmodule BoatLearner.Environments.DoubleTack do
     current / max
   end
 
-  defnp distance(target_y, x, y), do: Nx.sqrt((target_y - y) ** 2 + x ** 2)
+  defnp(distance(target_y, x, y), do: Nx.sqrt((target_y - y) ** 2 + x ** 2))
 
   defnp wrap_phase(angle) do
     angle
