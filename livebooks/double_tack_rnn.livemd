@@ -745,13 +745,18 @@ max_sigma = 1 / 4
 sigma = 1 / 8
 min_sigma = 1 / 64
 
-# session 1: 
+# session 2: 
 max_sigma = 1 / 16
 sigma = 1 / 64
 min_sigma = 1 / 128
 
+# session 3: 
+max_sigma = 1 / 32
+sigma = 1 / 64
+min_sigma = 1 / 128
+
 # validation: 
-# max_sigma = sigma = min_sigma = 0
+max_sigma = sigma = min_sigma = 0
 
 exploration_decay_rate = 0.97
 exploration_increase_rate = 1.03
@@ -848,7 +853,9 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
               #   min_value: 3.0e-6
               # ),
               # session 2:
-              Exploration.resetting_linear_schedule(3.0e-6, 3.0e-7, 500),
+              # Exploration.resetting_linear_schedule(3.0e-6, 3.0e-7, 500),
+              # session 2:
+              Exploration.resetting_linear_schedule(1.0e-5, 1.0e-7, 500),
               eps: 1.0e-8,
               decay: 0.01
             )
