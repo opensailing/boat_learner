@@ -784,22 +784,22 @@ episodes = 7_000
 # session 1, 2, 3: 50
 max_iter = 50
 
-# session 1: 
+# session 1:
 max_sigma = 1 / 4
 sigma = 1 / 8
 min_sigma = 1 / 64
 
-# session 2: 
+# session 2:
 max_sigma = 1 / 16
 sigma = 1 / 64
 min_sigma = 1 / 128
 
-# session 3: 
+# session 3:
 max_sigma = 1 / 32
 sigma = 1 / 64
 min_sigma = 1 / 128
 
-# validation: 
+# validation:
 max_sigma = sigma = min_sigma = 0
 
 exploration_decay_rate = 0.97
@@ -871,7 +871,7 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
         state_features_memory: state_features_memory,
         state_features_memory_length: state_features_memory_length,
         experience_replay_buffer: experience_replay_buffer,
-        experience_replay_buffer_max_size: 300_000,
+        experience_replay_buffer_max_size: 1_000_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
