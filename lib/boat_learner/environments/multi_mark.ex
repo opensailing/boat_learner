@@ -251,6 +251,7 @@ defmodule BoatLearner.Environments.MultiMark do
     y = env.y + Nx.sum(dy)
 
     heading = Nx.take(heading_steps, Nx.axis_size(heading_steps, 0) - 1)
+    heading = wrap_phase(heading)
     speed = Nx.take(speed_steps, Nx.axis_size(speed_steps, 0) - 1)
 
     # Recover the speed over `@speed_recovery_in_seconds` seconds
@@ -339,7 +340,7 @@ defmodule BoatLearner.Environments.MultiMark do
   end
 
   defnp has_reached_target(env) do
-    distance(env.target_x, env.target_y, env.x, env.y) < 5
+    distance(env) < 5
   end
 
   defnp calculate_reward(env) do
@@ -348,31 +349,39 @@ defmodule BoatLearner.Environments.MultiMark do
       vmg: vmg,
       remaining_seconds: remaining_seconds,
       max_remaining_seconds: max_remaining_seconds,
-      has_tacked: has_tacked,
-      heading: heading
+      has_tacked: has_tacked
+      # heading: heading
     } = env
 
     reward =
       cond do
-        not is_terminal and (heading < @dead_zone_angle or heading >= 2 * pi() - @dead_zone_angle) ->
+        not is_terminal and Nx.abs(vmg) < 0.01 ->
           -0.1
 
         true ->
-          distance_decay =
-            1 - decay(env.target_y, distance(env.target_x, env.target_y, env.x, env.y))
+          initial_distance = Nx.sqrt(env.target_y ** 2 + env.target_x ** 2)
 
-          time_decay = decay(max_remaining_seconds, remaining_seconds)
-          time_decay * 0.1 * (Nx.select(has_tacked, -1, vmg) + 0.1 * distance_decay)
+          distance_decay = 1 - decay(distance(env), initial_distance)
+
+          distance_decay = Nx.clip(distance_decay, -2, 1)
+
+          time_decay = decay(remaining_seconds, max_remaining_seconds)
+
+          vmg_component = Nx.select(has_tacked, -1, Nx.clip(vmg, -@max_speed, @max_speed))
+
+          time_decay * 0.1 * (vmg_component + 0.1 * distance_decay)
       end
 
     %__MODULE__{env | reward: reward}
   end
 
-  defnp decay(max, current) do
+  defnp decay(current, max) do
     current / max
   end
 
-  defnp(distance(target_x, target_y, x, y), do: Nx.sqrt((target_y - y) ** 2 + (target_x - x) ** 2))
+  defnp distance(env) do
+    Nx.sqrt((env.target_y - env.y) ** 2 + (env.target_x - env.x) ** 2)
+  end
 
   defnp wrap_phase(angle) do
     angle
