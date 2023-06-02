@@ -96,7 +96,7 @@ defmodule BoatLearner.Environments.MultiMark do
   # @turning_rate Enum.sum(turning_rates) / length(turning_rates) * @one_deg_in_rad -> 12.5 * @one_deg_in_rad
 
   @turning_rate 12.5 * @one_deg_in_rad
-  @iters_per_action 10
+  @iters_per_action 5
   @speed_penalty 0.4
   @speed_recovery_in_seconds 4
 
@@ -334,7 +334,7 @@ defmodule BoatLearner.Environments.MultiMark do
 
     is_terminal =
       has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > @max_y or
-        remaining_seconds < 1 or tack_count > 4
+        remaining_seconds < 1 or tack_count > 2
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
