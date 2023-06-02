@@ -15,16 +15,16 @@ defmodule ReinforcementLearning.Agents.DDPG do
   @behaviour ReinforcementLearning.Agent
 
   @derive {Inspect,
-           except: [
-             :actor_params,
-             :actor_target_params,
-             :critic_params,
-             :critic_target_params,
-             :experience_replay_buffer,
-             :actor_optimizer_state,
-             :critic_optimizer_state,
-             :state_features_memory
-           ]}
+   except: [
+     #  :actor_params,
+     #  :actor_target_params,
+     #  :critic_params,
+     #  :critic_target_params,
+     #  :experience_replay_buffer,
+     #  :actor_optimizer_state,
+     #  :critic_optimizer_state,
+     #  :state_features_memory
+   ]}
 
   @derive {Nx.Container,
            containers: [
@@ -336,12 +336,9 @@ defmodule ReinforcementLearning.Agents.DDPG do
           [Access.key(:ou_process), Access.key(:sigma)],
           [Access.key(:ou_process), Access.key(:mu)],
           [Access.key(:ou_process), Access.key(:x)],
-          [Access.key(:target_update_frequency)],
           [Access.key(:loss)],
           [Access.key(:loss_denominator)],
           [Access.key(:total_reward)],
-          [Access.key(:max_sigma)],
-          [Access.key(:min_sigma)],
           [Access.key(:performance_memory), Access.key(:data)],
           [Access.key(:performance_memory), Access.key(:index)],
           [Access.key(:performance_memory), Access.key(:size)],
@@ -578,11 +575,13 @@ defmodule ReinforcementLearning.Agents.DDPG do
       exploration_fn: exploration_fn
     } = state.agent_state
 
-    exploring = exploration_fn.(state.episode)
+    exploring = state.episode |> Nx.devectorize() |> Nx.take(0) |> exploration_fn.()
     has_at_least_one_batch = experience_replay_buffer.size > batch_size
 
     should_train =
       has_at_least_one_batch and rem(experience_replay_buffer.index, training_frequency) == 0
+
+    should_train = should_train |> Nx.devectorize() |> Nx.any()
 
     if should_train do
       train_loop(state, training_frequency, exploring)
@@ -598,12 +597,12 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
       train_actor = not exploring
 
-      state =
+      updated_state =
         %{state | random_key: random_key}
         |> train(batch, batch_indices, train_actor)
         |> soft_update_targets(train_actor)
 
-      {state, exploring}
+      {updated_state, exploring}
     end
     |> elem(0)
   end
@@ -717,10 +716,10 @@ defmodule ReinforcementLearning.Agents.DDPG do
         &elem(&1, 1)
       )
 
-    {critic_updates, critic_optimizer_state} =
-      critic_optimizer_update_fn.(critic_gradient, critic_optimizer_state, critic_params)
+    # {critic_updates, critic_optimizer_state} =
+    #   critic_optimizer_update_fn.(critic_gradient, critic_optimizer_state, critic_params)
 
-    critic_params = Axon.Updates.apply_updates(critic_params, critic_updates)
+    # critic_params = Axon.Updates.apply_updates(critic_params, critic_updates)
 
     ### Train Actor
 
