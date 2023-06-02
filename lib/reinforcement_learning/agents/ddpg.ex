@@ -12,8 +12,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
   alias ReinforcementLearning.Utils.Noise.OUProcess
   alias ReinforcementLearning.Utils.CircularBuffer
 
-  @actor_training_divisor 2
-
   @behaviour ReinforcementLearning.Agent
 
   @derive {Inspect,
@@ -122,7 +120,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       :state_features_size,
       :actor_optimizer,
       :critic_optimizer,
-      ou_process_opts: [],
+      ou_process_opts: [max_sigma: 0.2, min_sigma: 0.001, sigma: 0.01],
       performance_memory_length: 500,
       state_features_memory_length: 1,
       exploration_decay_rate: 0.9995,
@@ -144,6 +142,9 @@ defmodule ReinforcementLearning.Agents.DDPG do
     # TO-DO: use NimbleOptions
     expected_opts
     |> Enum.filter(fn x -> is_atom(x) or (is_tuple(x) and is_nil(elem(x, 1))) end)
+    |> Enum.reject(fn k ->
+      k in [:state_features_memory, :performance_memory, :experience_replay_buffer]
+    end)
     |> Enum.reduce(opts, fn
       k, opts ->
         case List.keytake(opts, k, 0) do
@@ -589,6 +590,11 @@ defmodule ReinforcementLearning.Agents.DDPG do
       }
     } = state
 
+    %{vectorized_axes: vectorized_axes, shape: {_num_entries, entry_size}} = batch
+
+    # devectorize and flatten all vectors into the leading batch axis
+    # in effect, we have batch_len = batch_len * div(Nx.flat_size(batch), Nx.size(batch))
+    batch = Nx.revectorize(batch, [], target_shape: {:auto, entry_size})
     batch_len = Nx.axis_size(batch, 0)
     {num_states, state_features_size} = state_features_memory.data.shape
 
@@ -664,7 +670,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
             update_priorities(
               experience_replay_buffer,
               batch_idx,
-              td_errors
+              Nx.revectorize(td_errors, vectorized_axes, target_shape: {:auto, 1})
             ),
             Nx.mean(td_errors ** 2)
           }

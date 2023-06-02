@@ -81,7 +81,6 @@ defmodule ReinforcementLearning do
     %Nx.Tensor{shape: {trajectory_points}} = state_to_trajectory_fn.(initial_state)
 
     trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f32), {max_iter + 1, trajectory_points})
-
     initial_state = %__MODULE__{initial_state | trajectory: trajectory}
 
     loop(
@@ -116,7 +115,11 @@ defmodule ReinforcementLearning do
       {:continue, loop_state}
     end)
     |> Axon.Loop.handle_event(:iteration_completed, fn loop_state ->
-      is_terminal = Nx.to_number(loop_state.step_state.environment_state.is_terminal)
+      is_terminal =
+        loop_state.step_state.environment_state.is_terminal
+        |> Nx.devectorize()
+        |> Nx.all()
+        |> Nx.to_number()
 
       if is_terminal == 1 do
         {:halt_epoch, loop_state}
