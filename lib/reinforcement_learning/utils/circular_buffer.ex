@@ -16,15 +16,46 @@ defmodule ReinforcementLearning.Utils.CircularBuffer do
     }
   end
 
-  defn append(buffer, item) do
+  deftransform append(buffer, item) do
     starts = append_start_indices(buffer)
     n = Nx.axis_size(buffer.data, 0)
-    index = Nx.remainder(buffer.index + 1, n)
-    size = Nx.min(n, buffer.size + 1)
+    index = Nx.remainder(Nx.add(buffer.index, 1), n)
+    size = Nx.min(n, Nx.add(buffer.size, 1))
+
+    data =
+      case buffer.data.vectorized_axes do
+        [] ->
+          Nx.put_slice(buffer.data, starts, Nx.new_axis(item, 0))
+
+        _ ->
+          [data, item | starts] = Nx.broadcast_vectors([buffer.data, item | starts])
+          axes = data.vectorized_axes
+
+          data =
+            Nx.revectorize(data, [], target_shape: Tuple.insert_at(buffer.data.shape, 0, :auto))
+
+          starts = Enum.map(starts, &Nx.revectorize(&1, [], target_shape: {:auto}))
+          item = Nx.revectorize(item, [], target_shape: Tuple.insert_at(item.shape, 0, :auto))
+
+          for i <- 0..(Nx.axis_size(data, 0) - 1), reduce: data do
+            data ->
+              starts = Enum.map(starts, & &1[i])
+
+              Nx.put_slice(
+                data,
+                [i | starts],
+                Nx.reshape(
+                  item[i],
+                  Tuple.duplicate(1, Nx.rank(data) - 1) |> Tuple.append(Nx.axis_size(item, -1))
+                )
+              )
+          end
+          |> Nx.vectorize(axes)
+      end
 
     %{
       buffer
-      | data: Nx.put_slice(buffer.data, starts, Nx.new_axis(item, 0)),
+      | data: data,
         size: size,
         index: index
     }

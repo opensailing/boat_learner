@@ -323,7 +323,44 @@ defmodule ReinforcementLearning.Agents.DDPG do
       action_upper_limit: opts[:action_upper_limit]
     }
 
-    {state, random_key}
+    case random_key.vectorized_axes do
+      [] ->
+        {state, random_key}
+
+      _ ->
+        vectorizable_paths = [
+          [Access.key(:experience_replay_buffer), Access.key(:data)],
+          [Access.key(:experience_replay_buffer), Access.key(:index)],
+          [Access.key(:experience_replay_buffer), Access.key(:size)],
+          [Access.key(:ou_process), Access.key(:theta)],
+          [Access.key(:ou_process), Access.key(:sigma)],
+          [Access.key(:ou_process), Access.key(:mu)],
+          [Access.key(:ou_process), Access.key(:x)],
+          [Access.key(:target_update_frequency)],
+          [Access.key(:loss)],
+          [Access.key(:loss_denominator)],
+          [Access.key(:total_reward)],
+          [Access.key(:max_sigma)],
+          [Access.key(:min_sigma)],
+          [Access.key(:performance_memory), Access.key(:data)],
+          [Access.key(:performance_memory), Access.key(:index)],
+          [Access.key(:performance_memory), Access.key(:size)],
+          [Access.key(:performance_threshold)],
+          [Access.key(:state_features_memory), Access.key(:data)],
+          [Access.key(:state_features_memory), Access.key(:index)],
+          [Access.key(:state_features_memory), Access.key(:size)]
+        ]
+
+        vectorized_state =
+          Enum.reduce(vectorizable_paths, state, fn path, state ->
+            update_in(state, path, fn value ->
+              [value, _] = Nx.broadcast_vectors([value, random_key], align_ranks: false)
+              value
+            end)
+          end)
+
+        {vectorized_state, random_key}
+    end
   end
 
   defp input_template(model) do
@@ -419,6 +456,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
           {%OUProcess{ou_process | sigma: sigma}, performance_memory}
       end
+
+    ou_process = %{ou_process | x: Nx.squeeze(ou_process.x)}
 
     %__MODULE__{
       state

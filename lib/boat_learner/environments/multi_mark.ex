@@ -129,12 +129,33 @@ defmodule BoatLearner.Environments.MultiMark do
       opts[:max_remaining_seconds] ||
         raise ArgumentError, "missing option :max_remaining_seconds"
 
-    reset(random_key, %__MODULE__{
-      marks: marks,
-      mark_probabilities: mark_probabilities,
-      polar_chart: init_polar_chart(),
-      max_remaining_seconds: Nx.tensor(max_remaining_seconds, type: :f32)
-    })
+    {state, key} =
+      reset(random_key, %__MODULE__{
+        marks: marks,
+        mark_probabilities: mark_probabilities,
+        polar_chart: init_polar_chart(),
+        max_remaining_seconds: Nx.tensor(max_remaining_seconds, type: :f32)
+      })
+
+    case key.vectorized_axes do
+      [] ->
+        {state, key}
+
+      _ ->
+        state =
+          state
+          |> Map.from_struct()
+          |> Map.keys()
+          |> Kernel.--([:polar_chart])
+          |> Enum.reduce(state, fn field, state ->
+            Map.update(state, field, Map.fetch!(state, field), fn value ->
+              [value, _] = Nx.broadcast_vectors([value, key], align_ranks: false)
+              value
+            end)
+          end)
+
+        {state, key}
+    end
   end
 
   def init_polar_chart do

@@ -28,7 +28,7 @@ defmodule ReinforcementLearningTest do
     ddpg = {
       ReinforcementLearning.Agents.DDPG,
       tau: 0.001,
-      performance_memory_length: 256,
+      performance_memory_length: 6,
       actor_net: actor_net,
       critic_net: critic_net,
       actor_params: %{},
@@ -36,7 +36,7 @@ defmodule ReinforcementLearningTest do
       critic_params: %{},
       critic_target_params: %{},
       state_features_memory_length: 1,
-      experience_replay_buffer_max_size: 10,
+      experience_replay_buffer_max_size: 11,
       environment_to_state_features_fn: environment_to_state_features_fn,
       state_features_memory_to_input_fn: state_features_memory_to_input_fn,
       state_features_size: 2,
