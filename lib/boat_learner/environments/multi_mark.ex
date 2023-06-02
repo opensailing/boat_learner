@@ -129,33 +129,12 @@ defmodule BoatLearner.Environments.MultiMark do
       opts[:max_remaining_seconds] ||
         raise ArgumentError, "missing option :max_remaining_seconds"
 
-    {state, key} =
-      reset(random_key, %__MODULE__{
-        marks: marks,
-        mark_probabilities: mark_probabilities,
-        polar_chart: init_polar_chart(),
-        max_remaining_seconds: Nx.tensor(max_remaining_seconds, type: :f32)
-      })
-
-    case key.vectorized_axes do
-      [] ->
-        {state, key}
-
-      _ ->
-        state =
-          state
-          |> Map.from_struct()
-          |> Map.keys()
-          |> Kernel.--([:polar_chart, :action_lower_limit, :action_upper_limit])
-          |> Enum.reduce(state, fn field, state ->
-            Map.update(state, field, Map.fetch!(state, field), fn value ->
-              [value, _] = Nx.broadcast_vectors([value, key], align_ranks: false)
-              value
-            end)
-          end)
-
-        {state, key}
-    end
+    reset(random_key, %__MODULE__{
+      marks: marks,
+      mark_probabilities: mark_probabilities,
+      polar_chart: init_polar_chart(),
+      max_remaining_seconds: Nx.tensor(max_remaining_seconds, type: :f32)
+    })
   end
 
   def init_polar_chart do
@@ -217,7 +196,25 @@ defmodule BoatLearner.Environments.MultiMark do
         has_tacked: Nx.tensor(0, type: :u8)
     }
 
-    {state, random_key}
+    case random_key.vectorized_axes do
+      [] ->
+        {state, random_key}
+
+      _ ->
+        state =
+          state
+          |> Map.from_struct()
+          |> Map.keys()
+          |> Kernel.--([:polar_chart, :action_lower_limit, :action_upper_limit])
+          |> Enum.reduce(state, fn field, state ->
+            Map.update(state, field, Map.fetch!(state, field), fn value ->
+              [value, _] = Nx.broadcast_vectors([value, random_key], align_ranks: false)
+              value
+            end)
+          end)
+
+        {state, random_key}
+    end
   end
 
   @impl true

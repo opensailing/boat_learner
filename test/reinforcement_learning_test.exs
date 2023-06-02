@@ -2,7 +2,7 @@ defmodule ReinforcementLearningTest do
   use ExUnit.Case, async: true
 
   test "DDPG + generic environment vectorizes based on the random_key" do
-    state_input = Axon.input("state", shape: {nil, 1, 2})
+    state_input = Axon.input("state", shape: {nil, 3, 2})
     action_input = Axon.input("actions", shape: {nil, 1})
 
     actor_net = state_input |> Axon.flatten() |> Axon.dense(1)
@@ -21,7 +21,7 @@ defmodule ReinforcementLearningTest do
 
     state_features_memory_to_input_fn = fn state_features ->
       %{
-        "state" => Nx.reshape(state_features, {:auto, 1, 2})
+        "state" => Nx.reshape(state_features, {:auto, 3, 2})
       }
     end
 
@@ -35,7 +35,7 @@ defmodule ReinforcementLearningTest do
       actor_target_params: %{},
       critic_params: %{},
       critic_target_params: %{},
-      state_features_memory_length: 1,
+      state_features_memory_length: 3,
       experience_replay_buffer_max_size: 11,
       environment_to_state_features_fn: environment_to_state_features_fn,
       state_features_memory_to_input_fn: state_features_memory_to_input_fn,
@@ -61,11 +61,18 @@ defmodule ReinforcementLearningTest do
         shape: {5, 2}
       )
 
-    random_key = Nx.revectorize(random_key_devec, [random_key: 5], target_shape: {2})
+    vectorized_axes = [random_key: 5]
+
+    random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2})
 
     assert %{vectorized_axes: [random_key: 5], shape: {2}, type: {:u, 32}} = random_key
 
-    assert 1 ==
+    assert %Axon.Loop.State{
+             step_state: %ReinforcementLearning{
+               agent_state: agent_state,
+               environment_state: environment_state
+             }
+           } =
              ReinforcementLearning.train(
                env,
                ddpg,
@@ -75,5 +82,57 @@ defmodule ReinforcementLearningTest do
                max_iter: 10,
                random_key: random_key
              )
+
+    assert_vectorization = fn containers, expected ->
+      containers
+      |> Nx.Defn.Composite.flatten_list()
+      |> Enum.each(fn
+        %Nx.Tensor{} = t ->
+          assert t.vectorized_axes == expected
+          t
+
+        t ->
+          t
+      end)
+    end
+
+    assert_vectorization.(
+      [
+        agent_state.actor_params,
+        agent_state.actor_target_params,
+        agent_state.critic_params,
+        agent_state.critic_target_params,
+        agent_state.actor_optimizer_state,
+        agent_state.critic_optimizer_state
+      ],
+      []
+    )
+
+    assert_vectorization.(
+      [
+        agent_state.experience_replay_buffer,
+        agent_state.performance_memory,
+        agent_state.state_features_memory,
+        agent_state.ou_process,
+        agent_state.total_reward,
+        agent_state.performance_threshold
+      ],
+      vectorized_axes
+    )
+
+    assert_vectorization.(
+      [agent_state.gamma, agent_state.tau, agent_state.target_update_frequency],
+      []
+    )
+
+    environment_state
+    |> Map.drop([:__struct__, :polar_chart, :action_lower_limit, :action_upper_limit])
+    |> Map.values()
+    |> assert_vectorization.(vectorized_axes)
+
+    environment_state
+    |> Map.take([:polar_chart, :action_lower_limit, :action_upper_limit])
+    |> Map.values()
+    |> assert_vectorization.([])
   end
 end

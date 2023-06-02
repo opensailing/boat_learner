@@ -376,7 +376,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
         environment_state: env,
         agent_state: state
       }) do
-    total_reward = loss = loss_denominator = Nx.tensor(0, type: :f32)
+    [zero, _] = Nx.broadcast_vectors([Nx.tensor(0, type: :f32), random_key], align_ranks: false)
+    total_reward = loss = loss_denominator = zero
 
     state = adapt_exploration(episode, state)
 
@@ -384,11 +385,13 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     {n, _} = state.state_features_memory.data.shape
 
+    zero = Nx.as_type(zero, :s64)
+
     state_features_memory = %{
       state.state_features_memory
       | data: Nx.tile(init_state_features, [n, 1]),
-        index: 0,
-        size: n
+        index: zero,
+        size: Nx.add(n, zero)
     }
 
     {%{
@@ -716,10 +719,10 @@ defmodule ReinforcementLearning.Agents.DDPG do
         &elem(&1, 1)
       )
 
-    # {critic_updates, critic_optimizer_state} =
-    #   critic_optimizer_update_fn.(critic_gradient, critic_optimizer_state, critic_params)
+    {critic_updates, critic_optimizer_state} =
+      critic_optimizer_update_fn.(critic_gradient, critic_optimizer_state, critic_params)
 
-    # critic_params = Axon.Updates.apply_updates(critic_params, critic_updates)
+    critic_params = Axon.Updates.apply_updates(critic_params, critic_updates)
 
     ### Train Actor
 
