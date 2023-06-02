@@ -196,7 +196,25 @@ defmodule BoatLearner.Environments.MultiMark do
         has_tacked: Nx.tensor(0, type: :u8)
     }
 
-    {state, random_key}
+    case random_key.vectorized_axes do
+      [] ->
+        {state, random_key}
+
+      _ ->
+        state =
+          state
+          |> Map.from_struct()
+          |> Map.keys()
+          |> Kernel.--([:polar_chart, :action_lower_limit, :action_upper_limit])
+          |> Enum.reduce(state, fn field, state ->
+            Map.update(state, field, Map.fetch!(state, field), fn value ->
+              [value, _] = Nx.broadcast_vectors([value, random_key], align_ranks: false)
+              value
+            end)
+          end)
+
+        {state, random_key}
+    end
   end
 
   @impl true

@@ -12,21 +12,19 @@ defmodule ReinforcementLearning.Agents.DDPG do
   alias ReinforcementLearning.Utils.Noise.OUProcess
   alias ReinforcementLearning.Utils.CircularBuffer
 
-  @actor_training_divisor 2
-
   @behaviour ReinforcementLearning.Agent
 
   @derive {Inspect,
-           except: [
-             :actor_params,
-             :actor_target_params,
-             :critic_params,
-             :critic_target_params,
-             :experience_replay_buffer,
-             :actor_optimizer_state,
-             :critic_optimizer_state,
-             :state_features_memory
-           ]}
+   except: [
+     #  :actor_params,
+     #  :actor_target_params,
+     #  :critic_params,
+     #  :critic_target_params,
+     #  :experience_replay_buffer,
+     #  :actor_optimizer_state,
+     #  :critic_optimizer_state,
+     #  :state_features_memory
+   ]}
 
   @derive {Nx.Container,
            containers: [
@@ -122,7 +120,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       :state_features_size,
       :actor_optimizer,
       :critic_optimizer,
-      ou_process_opts: [],
+      ou_process_opts: [max_sigma: 0.2, min_sigma: 0.001, sigma: 0.01],
       performance_memory_length: 500,
       state_features_memory_length: 1,
       exploration_decay_rate: 0.9995,
@@ -144,6 +142,9 @@ defmodule ReinforcementLearning.Agents.DDPG do
     # TO-DO: use NimbleOptions
     expected_opts
     |> Enum.filter(fn x -> is_atom(x) or (is_tuple(x) and is_nil(elem(x, 1))) end)
+    |> Enum.reject(fn k ->
+      k in [:state_features_memory, :performance_memory, :experience_replay_buffer]
+    end)
     |> Enum.reduce(opts, fn
       k, opts ->
         case List.keytake(opts, k, 0) do
@@ -322,7 +323,41 @@ defmodule ReinforcementLearning.Agents.DDPG do
       action_upper_limit: opts[:action_upper_limit]
     }
 
-    {state, random_key}
+    case random_key.vectorized_axes do
+      [] ->
+        {state, random_key}
+
+      _ ->
+        vectorizable_paths = [
+          [Access.key(:experience_replay_buffer), Access.key(:data)],
+          [Access.key(:experience_replay_buffer), Access.key(:index)],
+          [Access.key(:experience_replay_buffer), Access.key(:size)],
+          [Access.key(:ou_process), Access.key(:theta)],
+          [Access.key(:ou_process), Access.key(:sigma)],
+          [Access.key(:ou_process), Access.key(:mu)],
+          [Access.key(:ou_process), Access.key(:x)],
+          [Access.key(:loss)],
+          [Access.key(:loss_denominator)],
+          [Access.key(:total_reward)],
+          [Access.key(:performance_memory), Access.key(:data)],
+          [Access.key(:performance_memory), Access.key(:index)],
+          [Access.key(:performance_memory), Access.key(:size)],
+          [Access.key(:performance_threshold)],
+          [Access.key(:state_features_memory), Access.key(:data)],
+          [Access.key(:state_features_memory), Access.key(:index)],
+          [Access.key(:state_features_memory), Access.key(:size)]
+        ]
+
+        vectorized_state =
+          Enum.reduce(vectorizable_paths, state, fn path, state ->
+            update_in(state, path, fn value ->
+              [value, _] = Nx.broadcast_vectors([value, random_key], align_ranks: false)
+              value
+            end)
+          end)
+
+        {vectorized_state, random_key}
+    end
   end
 
   defp input_template(model) do
@@ -341,7 +376,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
         environment_state: env,
         agent_state: state
       }) do
-    total_reward = loss = loss_denominator = Nx.tensor(0, type: :f32)
+    [zero, _] = Nx.broadcast_vectors([Nx.tensor(0, type: :f32), random_key], align_ranks: false)
+    total_reward = loss = loss_denominator = zero
 
     state = adapt_exploration(episode, state)
 
@@ -349,11 +385,13 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
     {n, _} = state.state_features_memory.data.shape
 
+    zero = Nx.as_type(zero, :s64)
+
     state_features_memory = %{
       state.state_features_memory
       | data: Nx.tile(init_state_features, [n, 1]),
-        index: 0,
-        size: n
+        index: zero,
+        size: Nx.add(n, zero)
     }
 
     {%{
@@ -418,6 +456,8 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
           {%OUProcess{ou_process | sigma: sigma}, performance_memory}
       end
+
+    ou_process = %{ou_process | x: Nx.squeeze(ou_process.x)}
 
     %__MODULE__{
       state
@@ -538,11 +578,13 @@ defmodule ReinforcementLearning.Agents.DDPG do
       exploration_fn: exploration_fn
     } = state.agent_state
 
-    exploring = exploration_fn.(state.episode)
+    exploring = state.episode |> Nx.devectorize() |> Nx.take(0) |> exploration_fn.()
     has_at_least_one_batch = experience_replay_buffer.size > batch_size
 
     should_train =
       has_at_least_one_batch and rem(experience_replay_buffer.index, training_frequency) == 0
+
+    should_train = should_train |> Nx.devectorize() |> Nx.any()
 
     if should_train do
       train_loop(state, training_frequency, exploring)
@@ -558,12 +600,12 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
       train_actor = not exploring
 
-      state =
+      updated_state =
         %{state | random_key: random_key}
         |> train(batch, batch_indices, train_actor)
         |> soft_update_targets(train_actor)
 
-      {state, exploring}
+      {updated_state, exploring}
     end
     |> elem(0)
   end
@@ -589,6 +631,11 @@ defmodule ReinforcementLearning.Agents.DDPG do
       }
     } = state
 
+    %{vectorized_axes: vectorized_axes, shape: {_num_entries, entry_size}} = batch
+
+    # devectorize and flatten all vectors into the leading batch axis
+    # in effect, we have batch_len = batch_len * div(Nx.flat_size(batch), Nx.size(batch))
+    batch = Nx.revectorize(batch, [], target_shape: {:auto, entry_size})
     batch_len = Nx.axis_size(batch, 0)
     {num_states, state_features_size} = state_features_memory.data.shape
 
@@ -664,7 +711,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
             update_priorities(
               experience_replay_buffer,
               batch_idx,
-              td_errors
+              Nx.revectorize(td_errors, vectorized_axes, target_shape: {:auto, 1})
             ),
             Nx.mean(td_errors ** 2)
           }

@@ -56,7 +56,11 @@ defmodule ReinforcementLearning do
     model_name = opts[:model_name]
 
     {init_agent_state, random_key} = agent.init(random_key, agent_init_opts)
+
     episode = Nx.tensor(opts[:accumulated_episodes], type: :s64)
+    iteration = Nx.tensor(0, type: :s64)
+
+    [episode, iteration, _] = Nx.broadcast_vectors([episode, iteration, random_key], align_ranks: false)
 
     {environment_state, random_key} = environment.init(random_key, environment_init_opts)
 
@@ -74,13 +78,14 @@ defmodule ReinforcementLearning do
       environment: environment,
       environment_state: environment_state,
       random_key: random_key,
-      iteration: Nx.tensor(0, type: :s64),
+      iteration: iteration,
       episode: episode
     }
 
     %Nx.Tensor{shape: {trajectory_points}} = state_to_trajectory_fn.(initial_state)
 
     trajectory = Nx.broadcast(Nx.tensor(:nan, type: :f32), {max_iter + 1, trajectory_points})
+    [trajectory, _] = Nx.broadcast_vectors([trajectory, random_key], align_ranks: false)
 
     initial_state = %__MODULE__{initial_state | trajectory: trajectory}
 
@@ -116,7 +121,11 @@ defmodule ReinforcementLearning do
       {:continue, loop_state}
     end)
     |> Axon.Loop.handle_event(:iteration_completed, fn loop_state ->
-      is_terminal = Nx.to_number(loop_state.step_state.environment_state.is_terminal)
+      is_terminal =
+        loop_state.step_state.environment_state.is_terminal
+        |> Nx.devectorize()
+        |> Nx.all()
+        |> Nx.to_number()
 
       if is_terminal == 1 do
         {:halt_epoch, loop_state}
