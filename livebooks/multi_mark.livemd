@@ -38,8 +38,7 @@ targets =
 targets_tensor = Nx.tensor(targets)
 targets_probs = :uniform
 
-width = 500
-height = 500
+width = height = 750
 
 scale_max_x = max_x / 250
 scale_min_x = min_x / -250
@@ -80,8 +79,8 @@ arc = fn r_scale ->
   )
   |> Vl.mark(:arc,
     clip: true,
-    radius: (r * r_scale + 1) * height / max_y,
-    radius2: (r * r_scale - 1) * height / max_y,
+    radius: (r * r_scale + 1) * height / (max_y - min_y),
+    radius2: (r * r_scale - 1) * height / (max_y - min_y),
     theta: 2 * :math.pi(),
     color: "#ddd",
     opacity: 0.75
@@ -97,7 +96,13 @@ target_point_size = pi ** 2 * target_point_radius_px
 target_layer =
   Vl.new()
   |> Vl.data(name: "target")
-  |> Vl.mark(:point, size: target_point_size, filled: true, opacity: 0.75)
+  |> Vl.mark(:point,
+    size: target_point_size,
+    opacity: %{expr: "if(datum.is_target == 1, 1, 0.75)"},
+    size: %{expr: "if(datum.is_target == 1, #{target_point_size}, #{target_point_size / 2})"},
+    filled: true,
+    tooltip: [content: "data"]
+  )
   |> Vl.encode_field(:x, "x", type: :quantitative)
   |> Vl.encode_field(:y, "y", type: :quantitative)
   |> Vl.encode(:color,
@@ -412,16 +417,28 @@ plot_fn = fn axon_state ->
     )
   end
 
-  if rem(episode, 5) == 0 and iteration > 0 do
+  if rem(episode, 3) == 0 and iteration > 0 do
     Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
     Kino.VegaLite.clear(grid_widget, dataset: "target")
 
-    traj = trajectory[[0..(iteration - 1)//1, 0..4]]
+    traj = trajectory[[0..(iteration - 1)//1, 0..9]]
 
     points =
       traj
       |> Nx.to_list()
-      |> Enum.with_index(fn [x, y, remaining_time, reward, heading], index ->
+      |> Enum.with_index(fn [
+                              x,
+                              y,
+                              remaining_time,
+                              reward,
+                              heading,
+                              _speed,
+                              vmg,
+                              distance_to_mark,
+                              target_x,
+                              target_y
+                            ],
+                            index ->
         %{
           x: x,
           y: y,
@@ -429,7 +446,11 @@ plot_fn = fn axon_state ->
           index: index,
           episode: episode,
           remaining_time: remaining_time,
-          reward: reward
+          reward: reward,
+          distance: distance_to_mark,
+          vmg: vmg,
+          target_x: target_x,
+          target_y: target_y
         }
       end)
 
@@ -441,7 +462,7 @@ plot_fn = fn axon_state ->
     target_data =
       Enum.zip_with(target_data.x, target_data.y, fn x, y ->
         is_target =
-          if x == target_x and y == target_y do
+          if abs(x - target_x) < 0.05 and abs(y - target_y) < 0.05 do
             1
           else
             0
@@ -495,7 +516,7 @@ end
 ```
 
 ```elixir
-model_name = "double_tack_transformer_v9"
+model_name = "multi_mark_v1"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -542,7 +563,8 @@ fields = [
   :vmg,
   :heading,
   :angle_to_target,
-  # :optimal_angle,
+  :target_x,
+  :target_y,
   :has_tacked
 ]
 
@@ -568,9 +590,9 @@ defmodule PositionalEncoding do
   end
 end
 
-num_actions = BoatLearner.Environments.DoubleTack.num_actions()
+num_actions = BoatLearner.Environments.MultiMark.num_actions()
 state_features_size = length(fields)
-state_features_memory_length = 3
+state_features_memory_length = 4
 
 state_input = Axon.input("state", shape: {nil, state_features_memory_length, state_features_size})
 
@@ -588,7 +610,7 @@ actor_net =
   |> Bumblebee.Layers.Transformer.blocks(
     num_blocks: 4,
     name: "actor_transformer_prefix",
-    num_attention_heads: 24,
+    num_attention_heads: 18,
     hidden_size: 64,
     attention_head_size: 64,
     ffn: [
@@ -669,8 +691,11 @@ end
 environment_to_state_features_fn = fn env_state ->
   norm_x = normalize_x.(env_state.x)
   norm_y = normalize_y.(env_state.y)
+  target_x = normalize_x.(env_state.target_x)
+  target_y = normalize_y.(env_state.target_y)
 
-  distance_squared = Nx.pow(norm_x, 2) |> Nx.add(Nx.pow(norm_y, 2))
+  distance_squared =
+    Nx.pow(Nx.subtract(norm_x, target_x), 2) |> Nx.add(Nx.pow(Nx.subtract(norm_y, target_y), 2))
 
   # d**2 = x**2 + y**2, max(d**2) = 1**2 + 1**2 = 2
   distance_squared_norm = Nx.divide(distance_squared, 2)
@@ -678,11 +703,12 @@ environment_to_state_features_fn = fn env_state ->
   [
     norm_x,
     norm_y,
-    distance_squared_norm,
+    Nx.sqrt(distance_squared_norm),
     normalize_speed.(env_state.vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.angle_to_target),
-    # normalize_angle.(42.7 / 180 * :math.pi()),
+    target_x,
+    target_y,
     env_state.has_tacked
   ]
   |> Nx.stack()
@@ -736,17 +762,17 @@ IO.inspect(
 ```
 
 ```elixir
-# monitor_frame = Kino.Frame.new()
+monitor_frame = Kino.Frame.new()
 
-# Kino.listen(1000, fn _ ->
-#   {text, _} = System.cmd("nvidia-smi", [])
+Kino.listen(1000, fn _ ->
+  {text, _} = System.cmd("nvidia-smi", [])
 
-#   text
-#   |> Kino.Text.new()
-#   |> then(&Kino.Frame.render(monitor_frame, &1))
-# end)
+  text
+  |> Kino.Text.new()
+  |> then(&Kino.Frame.render(monitor_frame, &1))
+end)
 
-# monitor_frame
+monitor_frame
 ```
 
 ## Train
@@ -777,30 +803,37 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-# session 1: 20_000
-# session 1: 7_000
-episodes = 7_000
+# session 1: 25_000
+# session 2: 10_000
+# session 3: 5_000
+# session 4: 10_000
+episodes = 10_000
 
-# session 1, 2, 3: 50
-max_iter = 50
+# session 1, 2, 3, 4: 75
+max_iter = 75
 
 # session 1:
 max_sigma = 1 / 4
 sigma = 1 / 8
-min_sigma = 1 / 64
+min_sigma = 1 / 128
 
 # session 2:
-max_sigma = 1 / 16
-sigma = 1 / 64
+max_sigma = 1 / 8
+sigma = 1 / 16
 min_sigma = 1 / 128
 
 # session 3:
-max_sigma = 1 / 32
-sigma = 1 / 64
+max_sigma = 1 / 8
+sigma = 1 / 16
+min_sigma = 1 / 128
+
+# session 4:
+max_sigma = 1 / 4
+sigma = 1 / 4
 min_sigma = 1 / 128
 
 # validation:
-max_sigma = sigma = min_sigma = 0
+# max_sigma = sigma = min_sigma = 0
 
 exploration_decay_rate = 0.97
 exploration_increase_rate = 1.03
@@ -846,19 +879,31 @@ end
 
 exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
 
+# session 1:
+# targets_probs = :uniform
+# session 2, 3, 4:
+targets_probs =
+  Nx.all(Nx.equal(targets_tensor, Nx.tensor([[0, r]])), axes: [1])
+  |> Nx.multiply(9)
+  |> Nx.add(1)
+
+targets_probs = Nx.divide(targets_probs, Nx.sum(targets_probs))
+IO.inspect(targets_probs, label: "targets_probs")
+
 {t, result} =
   :timer.tc(fn ->
     ReinforcementLearning.train(
       {
         BoatLearner.Environments.MultiMark,
         # session 1, 2, 3:
-        max_remaining_seconds: 250, marks: targets_tensor, mark_probabilities: targets_probs
+        max_remaining_seconds: 400, marks: targets_tensor, mark_probabilities: targets_probs
       },
       {
         ReinforcementLearning.Agents.DDPG,
         # session 1:
         # exploration_fn: &Exploration.run(&1, 2000),
         # session 2:
+        exploration_fn: exploration_fn,
         tau: 0.001,
         performance_memory_length: 256,
         performance_memory: performance_memory,
@@ -871,7 +916,7 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
         state_features_memory: state_features_memory,
         state_features_memory_length: state_features_memory_length,
         experience_replay_buffer: experience_replay_buffer,
-        experience_replay_buffer_max_size: 1_000_000,
+        experience_replay_buffer_max_size: 600_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
@@ -879,7 +924,6 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
         batch_size: 200,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
-        exploration_fn: exploration_fn,
         performance_threshold: exploration_threshold,
         ou_process_opts: [
           max_sigma: max_sigma,
@@ -893,13 +937,11 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
               # session 1:
               # Exploration.attention_is_all_you_need_lr_schedule(
               #   warmup_steps: 500,
-              #   amplitude: 3.0e-4,
-              #   min_value: 3.0e-6
+              #   amplitude: 1.0e-4,
+              #   min_value: 1.0e-6
               # ),
-              # session 2:
-              # Exploration.resetting_linear_schedule(3.0e-6, 3.0e-7, 500),
-              # session 2:
-              Exploration.resetting_linear_schedule(1.0e-5, 1.0e-7, 500),
+              # session 2, 3, 4:
+              Exploration.resetting_linear_schedule(3.0e-6, 3.0e-7, 500),
               eps: 1.0e-8,
               decay: 0.01
             )
@@ -922,6 +964,7 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
       accumulated_episodes: total_episodes,
       model_name: model_name,
       checkpoint_path: checkpoint_path,
+      random_key: Nx.Random.key(1),
       checkpoint_serialization_fn: checkpoint_serialization_fn
     )
   end)
