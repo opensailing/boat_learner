@@ -631,7 +631,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       }
     } = state
 
-    %{vectorized_axes: vectorized_axes, shape: {_num_entries, entry_size}} = batch
+    %{vectorized_axes: vectorized_axes, shape: {num_entries, entry_size}} = batch
 
     # devectorize and flatten all vectors into the leading batch axis
     # in effect, we have batch_len = batch_len * div(Nx.flat_size(batch), Nx.size(batch))
@@ -711,7 +711,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
             update_priorities(
               experience_replay_buffer,
               batch_idx,
-              Nx.revectorize(td_errors, vectorized_axes, target_shape: {:auto, 1})
+              Nx.revectorize(td_errors, vectorized_axes, target_shape: {num_entries, 1})
             ),
             Nx.mean(td_errors ** 2)
           }
@@ -837,8 +837,11 @@ defmodule ReinforcementLearning.Agents.DDPG do
          td_errors
        ) do
     case td_errors.shape do
-      {^n, 1} -> :ok
-      shape -> raise "invalid shape for td_errors, got: #{inspect(shape)}"
+      {^n, 1} ->
+        :ok
+
+      shape ->
+        raise "invalid shape for td_errors, got: #{inspect(shape)}, expected: #{inspect({n, 1})}"
     end
 
     indices = Nx.stack([entry_indices, Nx.broadcast(item_size - 1, {n})], axis: -1)

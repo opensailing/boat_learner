@@ -221,19 +221,15 @@ defmodule BoatLearner.Environments.MultiMark do
   defn apply_action(rl_state, action) do
     %__MODULE__{} = env = rl_state.environment_state
 
-    # if env.is_terminal do
-    #   %{rl_state | random_key: Nx.as_type(rl_state.random_key, :u32)}
-    # else
     action = Nx.reshape(action, {})
 
-    new_env =
+    next_env =
       env
       |> turn_and_move(action * pi())
       |> is_terminal_state()
       |> calculate_reward()
 
-    %ReinforcementLearning{rl_state | environment_state: new_env}
-    # end
+    %ReinforcementLearning{rl_state | environment_state: next_env}
   end
 
   defn turn_and_move(env, dtheta) do
@@ -313,15 +309,19 @@ defmodule BoatLearner.Environments.MultiMark do
     %__MODULE__{
       env
       | remaining_seconds:
-          Nx.max(env.remaining_seconds - (turning_time + @speed_recovery_in_seconds), 0),
-        heading: heading,
-        speed: speed,
-        tack_count: tack_count,
-        has_tacked: has_tacked,
-        vmg: vmg,
-        x: x,
-        y: y,
-        angle_to_target: angle_to_target
+          Nx.select(
+            env.is_terminal,
+            env.remaining_seconds,
+            Nx.max(env.remaining_seconds - (turning_time + @speed_recovery_in_seconds), 0)
+          ),
+        heading: Nx.select(env.is_terminal, env.heading, heading),
+        speed: Nx.select(env.is_terminal, env.speed, speed),
+        tack_count: Nx.select(env.is_terminal, env.tack_count, tack_count),
+        has_tacked: Nx.select(env.is_terminal, env.has_tacked, has_tacked),
+        vmg: Nx.select(env.is_terminal, env.vmg, vmg),
+        x: Nx.select(env.is_terminal, env.x, x),
+        y: Nx.select(env.is_terminal, env.y, y),
+        angle_to_target: Nx.select(env.is_terminal, env.angle_to_target, angle_to_target)
     }
   end
 
@@ -355,7 +355,8 @@ defmodule BoatLearner.Environments.MultiMark do
     } = env
 
     is_terminal =
-      has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or y > @max_y or
+      env.is_terminal or has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or
+        y > @max_y or
         remaining_seconds < 1 or tack_count > 2
 
     %__MODULE__{env | is_terminal: is_terminal}
