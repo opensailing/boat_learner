@@ -130,8 +130,6 @@ defmodule BoatLearner.Environments.MultiMark do
         raise ArgumentError, "missing option :max_remaining_seconds"
 
     reset(random_key, %__MODULE__{
-      starts: starts,
-      start_probabilities: start_probabilities,
       coords: coords,
       coord_probabilities: coord_probabilities,
       polar_chart: init_polar_chart(),
@@ -174,7 +172,7 @@ defmodule BoatLearner.Environments.MultiMark do
     {heading, random_key} = Nx.Random.uniform(random_key, -:math.pi(), :math.pi())
 
     {coords, random_key} =
-      Nx.Random.choice(random_key, state.coordss, state.coords_probabilities, samples: 1, axis: 0)
+      Nx.Random.choice(random_key, state.coords, state.coord_probabilities, samples: 1, axis: 0)
 
     heading = wrap_phase(heading)
 
