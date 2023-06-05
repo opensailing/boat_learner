@@ -28,8 +28,8 @@ defmodule BoatLearner.Environments.MultiMark do
              :vmg,
              :tack_count,
              :has_tacked,
-             :marks,
-             :mark_probabilities
+             :coords,
+             :coord_probabilities
            ]}
   defstruct [
     :x,
@@ -47,8 +47,8 @@ defmodule BoatLearner.Environments.MultiMark do
     :vmg,
     :tack_count,
     :has_tacked,
-    :marks,
-    :mark_probabilities
+    :coords,
+    :coord_probabilities
   ]
 
   @min_x -400
@@ -109,17 +109,17 @@ defmodule BoatLearner.Environments.MultiMark do
 
   @impl true
   def init(random_key, opts) do
-    opts = Keyword.validate!(opts, [:marks, :mark_probabilities, :max_remaining_seconds])
+    opts = Keyword.validate!(opts, [:coords, :coord_probabilities, :max_remaining_seconds])
 
-    marks = opts[:marks] || raise ArgumentError, "missing option :marks"
+    coords = opts[:coords] || raise ArgumentError, "missing option :coords"
 
-    mark_probabilities =
-      case opts[:mark_probabilities] do
+    coord_probabilities =
+      case opts[:coord_probabilities] do
         nil ->
-          raise ArgumentError, "missing option :mark_probabilities"
+          raise ArgumentError, "missing option :coord_probabilities"
 
         :uniform ->
-          Nx.broadcast(1 / Nx.size(marks), {Nx.axis_size(marks, 0)})
+          Nx.broadcast(1 / Nx.size(coords), {Nx.axis_size(coords, 0)})
 
         %Nx.Tensor{} = tensor ->
           tensor
@@ -130,8 +130,10 @@ defmodule BoatLearner.Environments.MultiMark do
         raise ArgumentError, "missing option :max_remaining_seconds"
 
     reset(random_key, %__MODULE__{
-      marks: marks,
-      mark_probabilities: mark_probabilities,
+      starts: starts,
+      start_probabilities: start_probabilities,
+      coords: coords,
+      coord_probabilities: coord_probabilities,
       polar_chart: init_polar_chart(),
       max_remaining_seconds: Nx.tensor(max_remaining_seconds, type: :f32)
     })
@@ -169,22 +171,19 @@ defmodule BoatLearner.Environments.MultiMark do
     zero = Nx.tensor(0, type: :f32)
     vmg = speed = reward = zero
 
-    x = zero
-    y = zero
-
     {heading, random_key} = Nx.Random.uniform(random_key, -:math.pi(), :math.pi())
 
-    {mark, random_key} =
-      Nx.Random.choice(random_key, state.marks, state.mark_probabilities, samples: 1, axis: 0)
+    {coords, random_key} =
+      Nx.Random.choice(random_key, state.coordss, state.coords_probabilities, samples: 1, axis: 0)
 
     heading = wrap_phase(heading)
 
     state = %__MODULE__{
       state
-      | x: x,
-        y: y,
-        target_x: mark[[0, 0]],
-        target_y: mark[[0, 1]],
+      | x: coords[[0, 0]],
+        y: coords[[0, 1]],
+        target_x: coords[[0, 2]],
+        target_y: coords[[0, 3]],
         heading: heading,
         angle_to_target: heading,
         speed: speed,
