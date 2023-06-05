@@ -41,12 +41,14 @@ defmodule ReinforcementLearning.Utils.CircularBuffer do
             data ->
               starts = Enum.map(starts, & &1[i])
 
+              item = item[i..i]
+
               Nx.put_slice(
                 data,
                 [i | starts],
                 Nx.reshape(
-                  item[i],
-                  Tuple.duplicate(1, Nx.rank(data) - 1) |> Tuple.append(Nx.axis_size(item, -1))
+                  item,
+                  Tuple.duplicate(1, Nx.rank(data) - 1) |> Tuple.append(Nx.size(item))
                 )
               )
           end

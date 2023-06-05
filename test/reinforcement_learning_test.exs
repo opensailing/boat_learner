@@ -5,13 +5,20 @@ defmodule ReinforcementLearningTest do
     state_input = Axon.input("state", shape: {nil, 3, 2})
     action_input = Axon.input("actions", shape: {nil, 1})
 
-    actor_net = state_input |> Axon.flatten() |> Axon.dense(1)
+    actor_net =
+      state_input
+      |> Axon.dense(1)
+      |> Axon.flatten()
+      |> Axon.dense(1)
 
     critic_net =
       state_input
+      |> Axon.dense(2)
+      |> Axon.dense(3)
       |> Axon.nx(&Nx.take(&1, 0, axis: 1))
       |> Axon.flatten()
-      |> Axon.dense(1)
+      |> Axon.dense(5)
+      |> Axon.dense(7)
       |> then(&Axon.concatenate([&1, action_input]))
       |> Axon.dense(1)
 

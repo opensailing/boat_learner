@@ -30,7 +30,7 @@ defmodule BoatLearner.MixProject do
   defp deps do
     [
       {:jason, "~> 1.2"},
-      {:nx, github: "elixir-nx/nx", sparse: "nx", override: true},
+      {:nx, github: "elixir-nx/nx", sparse: "nx", branch: "pv-fix/dot-vectorization-edge-case", override: true},
       {:scholar, github: "elixir-nx/scholar"},
       {:axon, github: "elixir-nx/axon", override: true},
       {:kino, "~> 0.9"},
