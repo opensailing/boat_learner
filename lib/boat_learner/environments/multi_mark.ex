@@ -221,19 +221,19 @@ defmodule BoatLearner.Environments.MultiMark do
   defn apply_action(rl_state, action) do
     %__MODULE__{} = env = rl_state.environment_state
 
-    if env.is_terminal do
-      rl_state
-    else
-      action = Nx.reshape(action, {})
+    # if env.is_terminal do
+    #   %{rl_state | random_key: Nx.as_type(rl_state.random_key, :u32)}
+    # else
+    action = Nx.reshape(action, {})
 
-      new_env =
-        env
-        |> turn_and_move(action * pi())
-        |> is_terminal_state()
-        |> calculate_reward()
+    new_env =
+      env
+      |> turn_and_move(action * pi())
+      |> is_terminal_state()
+      |> calculate_reward()
 
-      %ReinforcementLearning{rl_state | environment_state: new_env}
-    end
+    %ReinforcementLearning{rl_state | environment_state: new_env}
+    # end
   end
 
   defn turn_and_move(env, dtheta) do
