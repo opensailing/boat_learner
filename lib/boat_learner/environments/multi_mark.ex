@@ -129,9 +129,12 @@ defmodule BoatLearner.Environments.MultiMark do
       opts[:max_remaining_seconds] ||
         raise ArgumentError, "missing option :max_remaining_seconds"
 
+    [coords, coord_probabilities, _] =
+      Nx.broadcast_vectors([coords, coord_probabilities, random_key])
+
     reset(random_key, %__MODULE__{
-      coords: coords,
-      coord_probabilities: coord_probabilities,
+      coords: Nx.as_type(coords, :f32),
+      coord_probabilities: Nx.as_type(coord_probabilities, :f32),
       polar_chart: init_polar_chart(),
       max_remaining_seconds: Nx.tensor(max_remaining_seconds, type: :f32)
     })
