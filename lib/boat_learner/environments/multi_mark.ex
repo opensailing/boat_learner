@@ -398,8 +398,6 @@ defmodule BoatLearner.Environments.MultiMark do
       # heading: heading
     } = env
 
-    initial_distance = Nx.sqrt(env.target_y ** 2 + env.target_x ** 2)
-
     reward =
       cond do
         not is_terminal and Nx.abs(vmg) < 0.01 ->
