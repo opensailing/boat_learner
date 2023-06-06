@@ -185,8 +185,8 @@ defmodule BoatLearner.Environments.MultiMark do
 
     heading = wrap_phase(heading)
 
-    x = coords[[0, 0]]
-    y = coords[[0, 1]]
+    initial_x = x = coords[[0, 0]]
+    initial_y = y = coords[[0, 1]]
     target_x = coords[[0, 2]]
     target_y = coords[[0, 3]]
 
