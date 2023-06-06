@@ -264,17 +264,18 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
         {random_data_2, random_key} =
           Nx.Random.normal(random_key, 0, 10,
-            shape: {experience_replay_buffer_max_size, input_entry_size + 1}
+            shape: {experience_replay_buffer_max_size, state_features_size + 1}
           )
 
         init_td_error = Nx.broadcast(1.0e-8, {experience_replay_buffer_max_size, 1})
 
+        data =
+          [random_data_1, init_reward, random_data_2, init_td_error]
+          |> Nx.concatenate(axis: 1)
+          |> then(&Nx.revectorize(&1, [], target_shape: Tuple.insert_at(&1.shape, 0, :auto)))
+
         buffer = %CircularBuffer{
-          data:
-            Nx.concatenate(
-              [random_data_1, init_reward, random_data_2, init_td_error],
-              axis: 1
-            ),
+          data: data[[0, .., ..]],
           index: 0,
           size: 0
         }
@@ -329,9 +330,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
 
       _ ->
         vectorizable_paths = [
-          [Access.key(:experience_replay_buffer), Access.key(:data)],
-          [Access.key(:experience_replay_buffer), Access.key(:index)],
-          [Access.key(:experience_replay_buffer), Access.key(:size)],
           [Access.key(:ou_process), Access.key(:theta)],
           [Access.key(:ou_process), Access.key(:sigma)],
           [Access.key(:ou_process), Access.key(:mu)],
@@ -557,7 +555,14 @@ defmodule ReinforcementLearning.Agents.DDPG do
         Nx.reshape(temporal_difference, {1})
       ])
 
-    experience_replay_buffer = CircularBuffer.append(experience_replay_buffer, updates)
+    updates =
+      Nx.revectorize(updates, [],
+        target_shape: {:auto, Nx.axis_size(experience_replay_buffer.data, -1)}
+      )
+
+    experience_replay_buffer = CircularBuffer.append_multiple(experience_replay_buffer, updates)
+
+    ensure_not_vectorized!(experience_replay_buffer.data)
 
     %{
       state
@@ -567,6 +572,16 @@ defmodule ReinforcementLearning.Agents.DDPG do
             total_reward: state.agent_state.total_reward + reward
         }
     }
+  end
+
+  deftransformp ensure_not_vectorized!(t) do
+    case t do
+      %{vectorized_axes: []} ->
+        :ok
+
+      %{vectorized_axes: vectorized_axes} ->
+        raise "found unexpected vectorized axes"
+    end
   end
 
   @impl true
@@ -631,11 +646,6 @@ defmodule ReinforcementLearning.Agents.DDPG do
       }
     } = state
 
-    %{vectorized_axes: vectorized_axes, shape: {num_entries, entry_size}} = batch
-
-    # devectorize and flatten all vectors into the leading batch axis
-    # in effect, we have batch_len = batch_len * div(Nx.flat_size(batch), Nx.size(batch))
-    batch = Nx.revectorize(batch, [], target_shape: {:auto, entry_size})
     batch_len = Nx.axis_size(batch, 0)
     {num_states, state_features_size} = state_features_memory.data.shape
 
@@ -711,7 +721,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
             update_priorities(
               experience_replay_buffer,
               batch_idx,
-              Nx.revectorize(td_errors, vectorized_axes, target_shape: {num_entries, 1})
+              td_errors
             ),
             Nx.mean(td_errors ** 2)
           }
@@ -819,8 +829,24 @@ defmodule ReinforcementLearning.Agents.DDPG do
     priorities = temporal_difference ** @alpha
     probs = priorities / Nx.sum(priorities)
 
-    {batch_idx, random_key} =
-      Nx.Random.choice(random_key, Nx.iota(temporal_difference.shape), probs,
+    split_key = Nx.Random.split(random_key)
+
+    random_key = split_key[0]
+    vec_k = split_key[1]
+
+    k = Nx.devectorize(vec_k, keep_names: false)
+
+    k =
+      case Nx.shape(k) do
+        {2} ->
+          k
+
+        {_, 2} ->
+          Nx.take(k, 0)
+      end
+
+    {batch_idx, _} =
+      Nx.Random.choice(k, Nx.iota(temporal_difference.shape), probs,
         samples: batch_size,
         replace: false,
         axis: 0

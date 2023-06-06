@@ -110,14 +110,17 @@ defmodule ReinforcementLearningTest do
         agent_state.critic_params,
         agent_state.critic_target_params,
         agent_state.actor_optimizer_state,
-        agent_state.critic_optimizer_state
+        agent_state.critic_optimizer_state,
+        agent_state.experience_replay_buffer,
+        agent_state.gamma,
+        agent_state.tau,
+        agent_state.target_update_frequency
       ],
       []
     )
 
     assert_vectorization.(
       [
-        agent_state.experience_replay_buffer,
         agent_state.performance_memory,
         agent_state.state_features_memory,
         agent_state.ou_process,
@@ -125,11 +128,6 @@ defmodule ReinforcementLearningTest do
         agent_state.performance_threshold
       ],
       vectorized_axes
-    )
-
-    assert_vectorization.(
-      [agent_state.gamma, agent_state.tau, agent_state.target_update_frequency],
-      []
     )
 
     environment_state
@@ -218,8 +216,8 @@ defmodule ReinforcementLearningTest do
 
     assert %Axon.Loop.State{
              step_state: %ReinforcementLearning{
-               agent_state: agent_state,
-               environment_state: environment_state
+               agent_state: _agent_state,
+               environment_state: _environment_state
              }
            } =
              ReinforcementLearning.train(

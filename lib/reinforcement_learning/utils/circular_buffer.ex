@@ -67,6 +67,27 @@ defmodule ReinforcementLearning.Utils.CircularBuffer do
     [buffer.index | List.duplicate(0, tuple_size(buffer.data.shape) - 1)]
   end
 
+  deftransform append_multiple(buffer, items) do
+    starts = append_start_indices(buffer)
+    n = Nx.axis_size(buffer.data, 0)
+
+    case buffer.data.vectorized_axes do
+      [] ->
+        for i <- 0..(Nx.axis_size(items, 0) - 1), reduce: buffer do
+          buffer ->
+            %{
+              buffer
+              | index: Nx.remainder(Nx.add(buffer.index, 1), n),
+                data: Nx.put_slice(buffer.data, starts, Nx.new_axis(items[i], 0)),
+                size: Nx.min(n, Nx.add(buffer.size, 1))
+            }
+        end
+
+      _ ->
+        raise "not implemented for vectorized buffer"
+    end
+  end
+
   @doc """
   Returns the data starting at the current index.
 

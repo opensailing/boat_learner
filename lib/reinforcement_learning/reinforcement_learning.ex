@@ -60,7 +60,8 @@ defmodule ReinforcementLearning do
     episode = Nx.tensor(opts[:accumulated_episodes], type: :s64)
     iteration = Nx.tensor(0, type: :s64)
 
-    [episode, iteration, _] = Nx.broadcast_vectors([episode, iteration, random_key], align_ranks: false)
+    [episode, iteration, _] =
+      Nx.broadcast_vectors([episode, iteration, random_key], align_ranks: false)
 
     {environment_state, random_key} = environment.init(random_key, environment_init_opts)
 
