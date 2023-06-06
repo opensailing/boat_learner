@@ -27,16 +27,22 @@ r = 250
 pi = :math.pi()
 theta = 42.7 / 180 * pi
 
-targets =
-  for angle <- [0, theta, -theta, pi, pi + theta, pi - theta, pi / 2, -pi / 2] do
-    [
-      Float.round(r * :math.cos(angle + pi / 2), 4),
-      Float.round(r * :math.sin(angle + pi / 2), 4)
-    ]
+valid_points = [[0, r], [0, 0], [0, -r]]
+
+points =
+  for start <- valid_points, target <- valid_points, start != target do
+    start ++ target
   end
 
-targets_tensor = Nx.tensor(targets)
-targets_probs = :uniform
+# for angle <- [0, theta, -theta, pi, pi + theta, pi - theta, pi / 2, -pi / 2] do
+#   [
+#     Float.round(r * :math.cos(angle + pi / 2), 4),
+#     Float.round(r * :math.sin(angle + pi / 2), 4)
+#   ]
+# end
+
+points_tensor = Nx.tensor(points)
+points_probs = :uniform
 
 width = height = 750
 
@@ -341,6 +347,9 @@ defmodule AccumulateAndExportData do
   def handle_cast({:add_epoch, epoch, iterations, trajectory_tensor}, state) do
     trajectory_data =
       trajectory_tensor
+      |> Nx.revectorize([x: :auto], target_shape: trajectory_tensor.shape)
+      |> Nx.devectorize()
+      |> Nx.take(0)
       |> Nx.slice_along_axis(0, iterations, axis: 0)
       |> Nx.to_list()
       |> Enum.with_index(fn [
@@ -401,14 +410,20 @@ end
 # 250 max_iter * 15 episodes
 max_points = 1000
 
-target_data = %{x: Enum.map(targets, &Enum.at(&1, 0)), y: Enum.map(targets, &Enum.at(&1, 1))}
+target_data = %{x: Enum.map(points, &Enum.at(&1, 0)), y: Enum.map(points, &Enum.at(&1, 1))}
+
+to_number = fn
+  %{vectorized_axes: []} = t, _index -> Nx.to_number(t)
+  t, index -> t |> Nx.devectorize() |> Nx.take(index) |> Nx.to_number()
+end
 
 plot_fn = fn axon_state ->
   episode = axon_state.epoch
   IO.inspect("Episode #{episode} ended")
+  index = Nx.argmax(Nx.devectorize(axon_state.step_state.agent_state.total_reward))
 
   trajectory = axon_state.step_state.trajectory
-  iteration = Nx.to_number(axon_state.step_state.iteration)
+  iteration = to_number.(axon_state.step_state.iteration, index)
 
   if rem(episode, 25) == 0 do
     GenServer.cast(
@@ -421,7 +436,11 @@ plot_fn = fn axon_state ->
     Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
     Kino.VegaLite.clear(grid_widget, dataset: "target")
 
-    traj = trajectory[[0..(iteration - 1)//1, 0..9]]
+    traj =
+      trajectory
+      |> Nx.revectorize([x: :auto], target_shape: trajectory.shape)
+      |> Nx.devectorize()
+      |> then(& &1[[0, 0..(iteration - 1)//1, 0..9]])
 
     points =
       traj
@@ -456,8 +475,8 @@ plot_fn = fn axon_state ->
 
     Kino.VegaLite.push_many(grid_widget, points, dataset: "trajectory")
 
-    target_x = Nx.to_number(axon_state.step_state.environment_state.target_x)
-    target_y = Nx.to_number(axon_state.step_state.environment_state.target_y)
+    target_x = to_number.(axon_state.step_state.environment_state.target_x, index)
+    target_y = to_number.(axon_state.step_state.environment_state.target_y, index)
 
     target_data =
       Enum.zip_with(target_data.x, target_data.y, fn x, y ->
@@ -473,8 +492,8 @@ plot_fn = fn axon_state ->
 
     Kino.VegaLite.push_many(grid_widget, target_data, dataset: "target")
 
-    loss = Nx.to_number(axon_state.step_state.agent_state.loss)
-    loss_den = Nx.to_number(axon_state.step_state.agent_state.loss_denominator)
+    loss = to_number.(axon_state.step_state.agent_state.loss, index)
+    loss_den = to_number.(axon_state.step_state.agent_state.loss_denominator, index)
 
     if loss_den > 0 do
       loss = if is_number(loss), do: loss / loss_den, else: 1000
@@ -489,7 +508,7 @@ plot_fn = fn axon_state ->
       )
     end
 
-    total_reward = Nx.to_number(axon_state.step_state.agent_state.total_reward)
+    total_reward = to_number.(axon_state.step_state.agent_state.total_reward, index)
 
     Kino.VegaLite.push(
       reward_widget,
@@ -504,10 +523,10 @@ plot_fn = fn axon_state ->
     global_kv_key = :rl_training_metadata_key
 
     :persistent_term.put(global_kv_key, %{
-      sigma: Nx.to_number(axon_state.step_state.agent_state.ou_process.sigma),
+      sigma: to_number.(axon_state.step_state.agent_state.ou_process.sigma, index),
       episode: episode,
       total_reward: total_reward,
-      exploring: Nx.to_number(axon_state.step_state.agent_state.exploration_fn.(episode))
+      exploring: to_number.(axon_state.step_state.agent_state.exploration_fn.(episode), index)
     })
   end
 
@@ -553,7 +572,7 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.da
   rescue
     _ in [File.Error, MatchError] ->
       critic_params = %{}
-      {%{}, %{}, critic_params, critic_params, nil, 0, nil, nil}
+      {%{}, %{}, critic_params, critic_params, false, 0, false, false}
   end
 
 fields = [
@@ -803,14 +822,13 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-# session 1: 25_000
+# session 1: 1_000
 # session 2: 10_000
-# session 3: 5_000
-# session 4: 10_000
 episodes = 10_000
 
-# session 1, 2, 3, 4: 75
-max_iter = 75
+# session 1: 100
+# session 2: 125
+max_iter = 125
 
 # session 1:
 max_sigma = 1 / 4
@@ -819,17 +837,7 @@ min_sigma = 1 / 128
 
 # session 2:
 max_sigma = 1 / 8
-sigma = 1 / 16
-min_sigma = 1 / 128
-
-# session 3:
-max_sigma = 1 / 8
-sigma = 1 / 16
-min_sigma = 1 / 128
-
-# session 4:
-max_sigma = 1 / 4
-sigma = 1 / 4
+sigma = 1 / 64
 min_sigma = 1 / 128
 
 # validation:
@@ -877,18 +885,30 @@ defmodule Exploration do
   end
 end
 
-exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
+exploration_fn = &Nx.less(Nx.remainder(&1, 50), 20)
 
-# session 1:
-# targets_probs = :uniform
+# session 1, 2:
+targets_probs = :uniform
 # session 2, 3, 4:
-targets_probs =
-  Nx.all(Nx.equal(targets_tensor, Nx.tensor([[0, r]])), axes: [1])
-  |> Nx.multiply(9)
-  |> Nx.add(1)
+# targets_probs =
+#   Nx.all(Nx.equal(targets_tensor, Nx.tensor([[0, r]])), axes: [1])
+#   |> Nx.multiply(4)
+#   |> Nx.add(1)
 
-targets_probs = Nx.divide(targets_probs, Nx.sum(targets_probs))
+# targets_probs = Nx.divide(targets_probs, Nx.sum(targets_probs))
 IO.inspect(targets_probs, label: "targets_probs")
+
+random_key_init = Nx.Random.key(42)
+num_vectors = 150
+
+random_key_devec =
+  Nx.Random.randint_split(random_key_init, 0, Nx.Constants.max_finite(:u32),
+    type: :u32,
+    shape: {num_vectors, 2}
+  )
+
+vectorized_axes = [random_key: num_vectors]
+random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2})
 
 {t, result} =
   :timer.tc(fn ->
@@ -896,12 +916,14 @@ IO.inspect(targets_probs, label: "targets_probs")
       {
         BoatLearner.Environments.MultiMark,
         # session 1, 2, 3:
-        max_remaining_seconds: 400, marks: targets_tensor, mark_probabilities: targets_probs
+        max_remaining_seconds: 400, coords: points_tensor, coord_probabilities: points_probs
       },
       {
         ReinforcementLearning.Agents.DDPG,
-        # session 1:
         # exploration_fn: &Exploration.run(&1, 2000),
+        # session 1, 2:
+        # session 1:
+        # batch_size: 200,
         # session 2:
         exploration_fn: exploration_fn,
         tau: 0.001,
@@ -916,12 +938,12 @@ IO.inspect(targets_probs, label: "targets_probs")
         state_features_memory: state_features_memory,
         state_features_memory_length: state_features_memory_length,
         experience_replay_buffer: experience_replay_buffer,
-        experience_replay_buffer_max_size: 600_000,
+        experience_replay_buffer_max_size: 300_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
         training_frequency: 16,
-        batch_size: 200,
+        batch_size: 400,
         exploration_decay_rate: exploration_decay_rate,
         exploration_increase_rate: exploration_increase_rate,
         performance_threshold: exploration_threshold,
@@ -934,14 +956,13 @@ IO.inspect(targets_probs, label: "targets_probs")
           Axon.Updates.compose(
             Axon.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
-              # session 1:
-              # Exploration.attention_is_all_you_need_lr_schedule(
-              #   warmup_steps: 500,
-              #   amplitude: 1.0e-4,
-              #   min_value: 1.0e-6
-              # ),
-              # session 2, 3, 4:
-              Exploration.resetting_linear_schedule(3.0e-6, 3.0e-7, 500),
+              # session 1, 2:
+              Exploration.attention_is_all_you_need_lr_schedule(
+                warmup_steps: 500,
+                amplitude: 1.0e-4,
+                min_value: 1.0e-6
+              ),
+              # Exploration.resetting_linear_schedule(3.0e-6, 3.0e-7, 500),
               eps: 1.0e-8,
               decay: 0.01
             )
@@ -964,7 +985,7 @@ IO.inspect(targets_probs, label: "targets_probs")
       accumulated_episodes: total_episodes,
       model_name: model_name,
       checkpoint_path: checkpoint_path,
-      random_key: Nx.Random.key(1),
+      random_key: random_key,
       checkpoint_serialization_fn: checkpoint_serialization_fn
     )
   end)
