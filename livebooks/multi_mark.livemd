@@ -602,29 +602,29 @@ policy = Axon.MixedPrecision.create_policy(params: {:f, 32}, compute: {:f, 16}, 
 
 actor_net =
   state_input
-  |> Axon.dense(64, activation: :linear)
+  |> Axon.dense(128, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> PositionalEncoding.layer(sequence_length: state_features_memory_length, state_space_size: 64)
+  |> PositionalEncoding.layer(sequence_length: state_features_memory_length, state_space_size: 128)
   |> Bumblebee.Layers.Transformer.blocks(
-    num_blocks: 4,
+    num_blocks: 6,
     name: "actor_transformer_prefix",
-    num_attention_heads: 18,
-    hidden_size: 64,
-    attention_head_size: 64,
+    num_attention_heads: 20,
+    hidden_size: 128,
+    attention_head_size: 128,
     ffn: [
-      intermediate_size: 64,
+      intermediate_size: 128,
       activation: :gelu
     ]
   )
   |> Map.get(:hidden_state)
   |> Axon.flatten()
-  |> Axon.dense(300, activation: :linear)
+  |> Axon.dense(400, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(200, activation: :linear)
+  |> Axon.dense(300, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
@@ -640,20 +640,20 @@ critic_net =
   |> Axon.nx(fn state_memory ->
     Nx.take(state_memory, state_features_memory_length - 1, axis: 1)
   end)
+  |> Axon.dense(200, activation: :linear)
+  # |> Axon.batch_norm()
+  |> Axon.activation(:relu)
+  |> Axon.dropout(rate: 0.1)
   |> Axon.dense(100, activation: :linear)
   # |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(50, activation: :linear)
-  # |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
   |> then(&Axon.concatenate([&1, action_input]))
-  |> Axon.dense(300, activation: :linear)
+  |> Axon.dense(400, activation: :linear)
   # |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(200, activation: :linear)
+  |> Axon.dense(300, activation: :linear)
   # |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)

@@ -29,7 +29,10 @@ defmodule BoatLearner.Environments.MultiMark do
              :tack_count,
              :has_tacked,
              :coords,
-             :coord_probabilities
+             :coord_probabilities,
+             :initial_x,
+             :initial_y,
+             :initial_distance
            ]}
   defstruct [
     :x,
@@ -48,7 +51,10 @@ defmodule BoatLearner.Environments.MultiMark do
     :tack_count,
     :has_tacked,
     :coords,
-    :coord_probabilities
+    :coord_probabilities,
+    :initial_x,
+    :initial_y,
+    :initial_distance
   ]
 
   @min_x -400
@@ -179,12 +185,25 @@ defmodule BoatLearner.Environments.MultiMark do
 
     heading = wrap_phase(heading)
 
+    x = coords[[0, 0]]
+    y = coords[[0, 1]]
+    target_x = coords[[0, 2]]
+    target_y = coords[[0, 3]]
+
+    initial_distance =
+      x
+      |> Nx.subtract(target_x)
+      |> Nx.pow(2)
+      |> Nx.add(Nx.pow(Nx.subtract(y, target_y), 2))
+      |> Nx.sqrt()
+
     state = %__MODULE__{
       state
-      | x: coords[[0, 0]],
-        y: coords[[0, 1]],
-        target_x: coords[[0, 2]],
-        target_y: coords[[0, 3]],
+      | x: x,
+        y: y,
+        target_x: target_x,
+        target_y: target_y,
+        initial_distance: initial_distance,
         heading: heading,
         angle_to_target: heading,
         speed: speed,
@@ -372,7 +391,8 @@ defmodule BoatLearner.Environments.MultiMark do
       vmg: vmg,
       remaining_seconds: remaining_seconds,
       max_remaining_seconds: max_remaining_seconds,
-      has_tacked: has_tacked
+      has_tacked: has_tacked,
+      initial_distance: initial_distance
       # heading: heading
     } = env
 
@@ -382,8 +402,6 @@ defmodule BoatLearner.Environments.MultiMark do
           -0.1
 
         true ->
-          initial_distance = Nx.sqrt(env.target_y ** 2 + env.target_x ** 2)
-
           distance_decay = 1 - decay(distance(env), initial_distance)
 
           distance_decay = Nx.clip(distance_decay, -2, 1)
@@ -394,6 +412,10 @@ defmodule BoatLearner.Environments.MultiMark do
 
           time_decay * 0.1 * (vmg_component + 0.1 * distance_decay)
       end
+
+    # normalize the reward by the initial distance so that we need to cover twice
+    # the iterations to get the same reward for a longer initial distance
+    reward = reward / initial_distance
 
     %__MODULE__{env | reward: reward}
   end
