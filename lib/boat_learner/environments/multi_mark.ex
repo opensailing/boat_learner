@@ -203,6 +203,8 @@ defmodule BoatLearner.Environments.MultiMark do
         y: y,
         target_x: target_x,
         target_y: target_y,
+        initial_x: initial_x,
+        initial_y: initial_y,
         initial_distance: initial_distance,
         heading: heading,
         angle_to_target: heading,
@@ -401,7 +403,7 @@ defmodule BoatLearner.Environments.MultiMark do
     reward =
       cond do
         not is_terminal and Nx.abs(vmg) < 0.01 ->
-          -1 / initial_distance 
+          -0.1
 
         true ->
           distance_decay = 1 - decay(distance(env), initial_distance)
@@ -412,7 +414,7 @@ defmodule BoatLearner.Environments.MultiMark do
 
           vmg_component = Nx.select(has_tacked, -1, Nx.clip(vmg, -@max_speed, @max_speed))
 
-          time_decay * (vmg_component + 0.1 * distance_decay) / initial_distance
+          time_decay * (vmg_component + 0.1 * distance_decay)
       end
 
     # normalize the reward by the initial distance so that we need to cover twice
