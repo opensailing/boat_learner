@@ -579,7 +579,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
       %{vectorized_axes: []} ->
         :ok
 
-      %{vectorized_axes: vectorized_axes} ->
+      %{vectorized_axes: _vectorized_axes} ->
         raise "found unexpected vectorized axes"
     end
   end
