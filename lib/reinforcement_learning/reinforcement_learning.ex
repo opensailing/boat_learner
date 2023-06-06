@@ -135,7 +135,6 @@ defmodule ReinforcementLearning do
       end
     end)
     |> Axon.Loop.handle_event(:epoch_halted, fn loop_state ->
-      IO.inspect(loop_state, label: "loop_state")
       loop_state = tap(loop_state, epoch_completed_callback)
       {:halt_epoch, loop_state}
     end)
