@@ -376,14 +376,14 @@ defmodule BoatLearner.Environments.MultiMark do
       # heading: heading
     } = env
 
+    initial_distance = Nx.sqrt(env.target_y ** 2 + env.target_x ** 2)
+
     reward =
       cond do
         not is_terminal and Nx.abs(vmg) < 0.01 ->
-          -0.1
+          -1 / initial_distance 
 
         true ->
-          initial_distance = Nx.sqrt(env.target_y ** 2 + env.target_x ** 2)
-
           distance_decay = 1 - decay(distance(env), initial_distance)
 
           distance_decay = Nx.clip(distance_decay, -2, 1)
@@ -392,7 +392,7 @@ defmodule BoatLearner.Environments.MultiMark do
 
           vmg_component = Nx.select(has_tacked, -1, Nx.clip(vmg, -@max_speed, @max_speed))
 
-          time_decay * 0.1 * (vmg_component + 0.1 * distance_decay)
+          time_decay * (vmg_component + 0.1 * distance_decay) / initial_distance
       end
 
     %__MODULE__{env | reward: reward}
