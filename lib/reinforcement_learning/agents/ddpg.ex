@@ -608,21 +608,33 @@ defmodule ReinforcementLearning.Agents.DDPG do
     end
   end
 
-  defnp train_loop(state, training_frequency, exploring) do
-    while {state, exploring}, _ <- 0..(training_frequency - 1)//1, unroll: false do
-      {batch, batch_indices, random_key} =
-        sample_experience_replay_buffer(state.random_key, state.agent_state)
-
-      train_actor = not exploring
-
-      updated_state =
-        %{state | random_key: random_key}
-        |> train(batch, batch_indices, train_actor)
-        |> soft_update_targets(train_actor)
-
-      {updated_state, exploring}
+  deftransformp train_loop(state, training_frequency, exploring) do
+    if training_frequency == 1 do
+      train_loop_step(state, exploring)
+    else
+      train_loop_while(state, exploring)
     end
     |> elem(0)
+  end
+
+  defnp train_loop_while(state, exploring) do
+    while {state, exploring}, _ <- 0..(training_frequency - 1)//1, unroll: false do
+      train_loop_step(state, exploring)
+    end
+  end
+
+  defnp train_loop_step(state, exploring) do
+    {batch, batch_indices, random_key} =
+      sample_experience_replay_buffer(state.random_key, state.agent_state)
+
+    train_actor = not exploring
+
+    updated_state =
+      %{state | random_key: random_key}
+      |> train(batch, batch_indices, train_actor)
+      |> soft_update_targets(train_actor)
+
+    {updated_state, exploring}
   end
 
   defnp train(state, batch, batch_idx, train_actor) do
