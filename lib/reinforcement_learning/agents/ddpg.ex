@@ -612,12 +612,12 @@ defmodule ReinforcementLearning.Agents.DDPG do
     if training_frequency == 1 do
       train_loop_step(state, exploring)
     else
-      train_loop_while(state, exploring)
+      train_loop_while(state, training_frequency, exploring)
     end
     |> elem(0)
   end
 
-  defnp train_loop_while(state, exploring) do
+  defnp train_loop_while(state, training_frequency, exploring) do
     while {state, exploring}, _ <- 0..(training_frequency - 1)//1, unroll: false do
       train_loop_step(state, exploring)
     end

@@ -32,7 +32,8 @@ defmodule BoatLearner.Environments.MultiMark do
              :coord_probabilities,
              :initial_x,
              :initial_y,
-             :initial_distance
+             :initial_distance,
+             :max_tacks
            ]}
   defstruct [
     :x,
@@ -54,7 +55,8 @@ defmodule BoatLearner.Environments.MultiMark do
     :coord_probabilities,
     :initial_x,
     :initial_y,
-    :initial_distance
+    :initial_distance,
+    :max_tacks
   ]
 
   @min_x -400
@@ -115,8 +117,9 @@ defmodule BoatLearner.Environments.MultiMark do
 
   @impl true
   def init(random_key, opts) do
-    opts = Keyword.validate!(opts, [:coords, :coord_probabilities, :max_remaining_seconds])
+    opts = Keyword.validate!(opts, [:coords, :coord_probabilities, :max_remaining_seconds, :max_tacks])
 
+    max_tacks = opts[:max_tacks] || raise ArgumentError, "missing option :max_tacks"
     coords = opts[:coords] || raise ArgumentError, "missing option :coords"
 
     coord_probabilities =
@@ -139,6 +142,7 @@ defmodule BoatLearner.Environments.MultiMark do
       Nx.broadcast_vectors([coords, coord_probabilities, random_key])
 
     reset(random_key, %__MODULE__{
+      max_tacks: Nx.as_type(max_tacks, :s64),
       coords: Nx.as_type(coords, :f32),
       coord_probabilities: Nx.as_type(coord_probabilities, :f32),
       polar_chart: init_polar_chart(),
@@ -372,13 +376,14 @@ defmodule BoatLearner.Environments.MultiMark do
       x: x,
       y: y,
       remaining_seconds: remaining_seconds,
-      tack_count: tack_count
+      tack_count: tack_count,
+      max_tacks: max_tacks
     } = env
 
     is_terminal =
       env.is_terminal or has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or
         y > @max_y or
-        remaining_seconds < 1 or tack_count > 4
+        remaining_seconds < 1 or tack_count > max_tacks
 
     %__MODULE__{env | is_terminal: is_terminal}
   end
