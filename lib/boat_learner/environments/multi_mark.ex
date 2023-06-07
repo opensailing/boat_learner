@@ -389,7 +389,7 @@ defmodule BoatLearner.Environments.MultiMark do
   end
 
   defnp has_reached_target(env) do
-    distance(env) < 5
+    distance(env) < 10
   end
 
   defnp calculate_reward(env) do
