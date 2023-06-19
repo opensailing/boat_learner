@@ -713,7 +713,10 @@ defmodule ReinforcementLearning.Agents.DDPG do
         fn critic_params ->
           target_actions = actor_predict_fn.(actor_target_params, next_state_batch)
 
-          q_target = critic_predict_fn.(critic_target_params, next_state_batch, target_actions)
+          q_target =
+            critic_target_params
+            |> critic_predict_fn.(next_state_batch, target_actions)
+            |> stop_grad()
 
           %{shape: {n, 1}} = q = critic_predict_fn.(critic_params, state_batch, action_batch)
 

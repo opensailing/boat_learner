@@ -20,6 +20,8 @@ defmodule ReinforcementLearning.Agents.SAC do
   """
   import Nx.Defn
 
+  import Nx.Constants, only: [pi: 1]
+
   alias ReinforcementLearning.Utils.Noise.OUProcess
   alias ReinforcementLearning.Utils.CircularBuffer
 
@@ -47,7 +49,8 @@ defmodule ReinforcementLearning.Agents.SAC do
              :performance_threshold,
              :gamma,
              :tau,
-             :state_features_memory
+             :state_features_memory,
+             :entropy_coefficient
            ],
            keep: [
              :exploration_fn,
@@ -96,7 +99,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     :performance_threshold,
     :exploration_fn,
     :state_features_memory,
-    :input_entry_size
+    :input_entry_size,
+    :entropy_coefficient
   ]
 
   @impl true
@@ -129,7 +133,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       batch_size: 64,
       training_frequency: 32,
       action_lower_limit: -1.0,
-      action_upper_limit: 1.0
+      action_upper_limit: 1.0,
+      entropy_coefficient: 0.2
     ]
 
     opts = Keyword.validate!(opts, expected_opts)
@@ -165,8 +170,25 @@ defmodule ReinforcementLearning.Agents.SAC do
     {actor_init_fn, actor_predict_fn} = Axon.build(actor_net, seed: 0)
     {critic_init_fn, critic_predict_fn} = Axon.build(critic_net, seed: 1)
 
-    actor_predict_fn = fn params, state_features_memory ->
-      actor_predict_fn.(params, state_features_memory_to_input_fn.(state_features_memory))
+    actor_predict_fn = fn random_key, params, state_features_memory ->
+      action_distribution_vector =
+        actor_predict_fn.(params, state_features_memory_to_input_fn.(state_features_memory))
+
+      mu = action_distribution_vector[[.., .., 0]]
+      logstddev = action_distribution_vector[[.., .., 1]]
+
+      log_stddev = Nx.clip(logstddev, -20, 2)
+
+      stddev = Nx.exp(log_stddev)
+
+      eps_shape = Nx.shape(stddev)
+
+      # Nx.Random.normal is treated as a constant, so we obtain `eps` from a mean-0 stddev-1
+      # normal distribution and scale it by our stddev below to obtain our sample in a way that
+      # the grads a propagated through properly.
+      {eps, random_key} = Nx.Random.normal(random_key, shape: eps_shape)
+
+      {mu + stddev * eps, mu, stddev, random_key}
     end
 
     critic_predict_fn = fn params, state_features_memory, action_vector ->
@@ -314,7 +336,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       actor_optimizer_state: actor_optimizer_state,
       critic_optimizer_state: critic_optimizer_state,
       action_lower_limit: opts[:action_lower_limit],
-      action_upper_limit: opts[:action_upper_limit]
+      action_upper_limit: opts[:action_upper_limit],
+      entropy_coefficient: opts[:entropy_coefficient]
     }
 
     case random_key.vectorized_axes do
@@ -478,23 +501,15 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     state_features_memory = CircularBuffer.append(state_features_memory, state_features)
 
-    action_distribution_vector =
-      actor_predict_fn.(actor_params, CircularBuffer.ordered_data(state_features_memory))
+    {action_vector, _mu, _stddev, random_key} =
+      actor_predict_fn.(
+        random_key,
+        actor_params,
+        CircularBuffer.ordered_data(state_features_memory)
+      )
 
     {%OUProcess{x: additive_noise} = ou_process, random_key} =
       OUProcess.sample(random_key, ou_process)
-
-    action_vector_shape =
-      {Nx.axis_size(action_distribution_vector, 0), Nx.axis_size(action_distribution_vector, 1)}
-
-    # Vectorize so that we have "scalar" µ and σ values to pass onto Nx.Random.normal
-    original_vectorized_axes = action_distribution_vector.vectorized_axes
-    action_distribution_vector = Nx.vectorize(action_distribution_vector, [:batch, :actions])
-
-    {action_vector, random_key} =
-      random_key
-      |> Nx.Random.normal(action_distribution_vector[0], action_distribution_vector[1])
-      |> Nx.revectorize(original_vectorized_axes, target_shape: action_vector_shape)
 
     action_vector = action_vector + additive_noise
 
@@ -624,7 +639,7 @@ defmodule ReinforcementLearning.Agents.SAC do
 
   defnp train(state, batch, train_actor) do
     %{
-      agent_state: %{
+      agent_state: %__MODULE__{
         actor_params: actor_params,
         actor_target_params: actor_target_params,
         actor_predict_fn: actor_predict_fn,
@@ -639,8 +654,10 @@ defmodule ReinforcementLearning.Agents.SAC do
         input_entry_size: input_entry_size,
         experience_replay_buffer: experience_replay_buffer,
         num_actions: num_actions,
-        gamma: gamma
-      }
+        gamma: gamma,
+        entropy_coefficient: entropy_coefficient
+      },
+      random_key: random_key
     } = state
 
     batch_len = Nx.axis_size(batch, 0)
@@ -693,13 +710,14 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     ### Train Critic
 
-    {critic_loss, critic_gradient} =
+    {{critic_loss, random_key}, critic_gradient} =
       value_and_grad(
         critic_params,
         fn critic_params ->
           # y_i = r_i + γ * min_{j=1,2} Q'(s_{i+1}, π(s_{i+1}|θ)|φ'_j)
 
-          target_actions = actor_predict_fn.(actor_target_params, next_state_batch)
+          {target_actions, mus, stddevs, random_key} =
+            actor_predict_fn.(random_key, actor_target_params, next_state_batch)
 
           # get the target Q value as the minimum over all target networks
           %{shape: {k, 1}} =
@@ -708,16 +726,19 @@ defmodule ReinforcementLearning.Agents.SAC do
             |> critic_predict_fn.(next_state_batch, target_actions)
             |> Nx.devectorize()
             |> Nx.reduce_min(axes: [0])
+            |> stop_grad()
 
-          # add entropy term
-          # TO-DO: add entropy params
-          next_log_prob = 0
-          entropy_coefficient = 0
+          next_log_prob =
+            action_log_probability(target_actions, mus, stddevs)
+            |> Nx.devectorize()
+            |> Nx.sum(axes: [0])
+
           q_target = q_target - entropy_coefficient * next_log_prob
 
           %{shape: {m, 1}} = backup = reward_batch + gamma * non_final_mask * q_target
 
-          # q values for each critic network
+          # q values for each critic network. We're vectorized here, so the non-vectorized
+          # backup will be propagated accordingly to each of the networks.
           %{shape: {n, 1}} = q = critic_predict_fn.(critic_params, state_batch, action_batch)
 
           case {k, m, n} do
@@ -728,16 +749,11 @@ defmodule ReinforcementLearning.Agents.SAC do
               1
           end
 
-          mse = 0.5 * Nx.mean((backup - q) ** 2)
+          critic_losses = Nx.mean((backup - q) ** 2)
 
-          %{shape: {}} =
-            critic_loss =
-            mse
-            |> Nx.devectorize()
-            |> Nx.sum(axes: [0])
-
-          critic_loss
-        end
+          {critic_losses, random_key}
+        end,
+        &elem(&1, 0)
       )
 
     {critic_updates, critic_optimizer_state} =
@@ -747,31 +763,32 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     ### Train Actor
 
-    # We train the actor 3x less than the critic to avoid
-    # training onto a moving target
-
-    {actor_params, actor_optimizer_state} =
+    {actor_params, actor_optimizer_state, random_key} =
       if train_actor do
-        actor_gradient =
-          grad(actor_params, fn actor_params ->
+        {{_actor_loss, random_key}, actor_gradient} =
+          value_and_grad(actor_params, fn actor_params ->
             # TO-DO: check how to get u+sigma in here.
             # Maybe we just don't need Nx.Random for the actions?
 
-            actions = actor_predict_fn.(actor_params, state_batch)
+            {actions, mus, stddevs, random_key} =
+              actor_predict_fn.(random_key, actor_params, state_batch)
+
             q = critic_predict_fn.(critic_params, state_batch, actions)
+
+            log_probability = action_log_probability(mus, stddevs, actions)
 
             q = q |> Nx.devectorize() |> Nx.reduce_min()
 
-            Nx.mean(entropy_coefficient * log_prob - q)
+            {Nx.mean(entropy_coefficient * log_probability - q), random_key}
           end)
 
         {actor_updates, actor_optimizer_state} =
           actor_optimizer_update_fn.(actor_gradient, actor_optimizer_state, actor_params)
 
         actor_params = Axon.Updates.apply_updates(actor_params, actor_updates)
-        {actor_params, actor_optimizer_state}
+        {actor_params, actor_optimizer_state, random_key}
       else
-        {actor_params, actor_optimizer_state}
+        {actor_params, actor_optimizer_state, random_key}
       end
 
     %{
@@ -785,7 +802,8 @@ defmodule ReinforcementLearning.Agents.SAC do
             loss: state.agent_state.loss + critic_loss,
             loss_denominator: state.agent_state.loss_denominator + 1,
             experience_replay_buffer: experience_replay_buffer
-        }
+        },
+        random_key: random_key
     }
   end
 
@@ -858,5 +876,9 @@ defmodule ReinforcementLearning.Agents.SAC do
     {batch, _} = Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
 
     {batch, random_key}
+  end
+
+  defnp action_log_probability(mu, stddev, action) do
+    -0.5 * ((action - mu) / stddev) ** 2 - Nx.log(stddev * Nx.sqrt(2 * pi(Nx.type(stddev))))
   end
 end
