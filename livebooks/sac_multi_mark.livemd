@@ -439,7 +439,7 @@ plot_fn = fn axon_state ->
       trajectory
       |> Nx.revectorize([x: :auto], target_shape: trajectory.shape)
       |> Nx.devectorize()
-      |> then(& &1[[0, 0..(iteration - 1)//1, 0..9]])
+      |> then(& &1[[index, 0..(iteration - 1)//1, 0..9]])
 
     points =
       traj
@@ -543,9 +543,8 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.da
   actor_params,
   actor_target_params,
   critic1_params,
-  critic1_target_params,
   critic2_params,
-  critic2_target_params,
+  critic_target_params,
   experience_replay_buffer,
   total_episodes,
   performance_memory,
@@ -561,24 +560,20 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.da
       actor_params: actor_params,
       actor_target_params: actor_target_params,
       critic1_params: critic1_params,
-      critic1_target_params: critic1_target_params,
       critic2_params: critic2_params,
-      critic2_target_params: critic2_target_params,
+      critic_target_params: critic_target_params,
       experience_replay_buffer: exp_replay_buffer,
       performance_memory: performance_memory,
       state_features_memory: state_features_memory
     } =
       Nx.with_default_backend({EXLA.Backend, client: :host}, fn -> Nx.deserialize(serialized) end)
 
-    {actor_params, actor_target_params, critic1_params, critic1_target_params, critic2_params,
-     critic2_target_params, exp_replay_buffer, total_episodes, performance_memory,
-     state_features_memory}
+    {actor_params, actor_target_params, critic1_params, critic2_params, critic_target_params,
+     exp_replay_buffer, total_episodes, performance_memory, state_features_memory}
   rescue
     _ in [File.Error, MatchError] ->
       critic_params = %{}
-
-      {%{}, %{}, critic_params, critic_params, critic_params, critic_params, false, 0, false,
-       false}
+      {%{}, %{}, critic_params, critic_params, critic_params, false, 0, false, false}
   end
 
 fields = [
@@ -661,23 +656,24 @@ actor_net_base =
 actor_net_mean_out =
   actor_net_base
   |> Axon.dense(num_actions,
-    activation: :tanh,
+    activation: :linear,
     kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3),
     bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3)
   )
   |> Axon.reshape({:batch, num_actions, 1})
 
-actor_net_std_out =
+actor_net_stddev_out =
   actor_net_base
   |> Axon.dense(num_actions,
-    activation: :relu,
+    activation: :linear,
     kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3),
     bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3)
   )
   |> Axon.reshape({:batch, num_actions, 1})
+  |> Axon.nx(&Nx.clip(&1, -20, 2))
 
 actor_net =
-  [actor_net_mean_out, actor_net_std_out]
+  [actor_net_mean_out, actor_net_stddev_out]
   |> Axon.concatenate(name: "actor_net_output")
   |> Axon.MixedPrecision.apply_policy(policy, except: [:batch_norm])
 
@@ -778,10 +774,10 @@ end
 # state_features_memory = nil
 
 IO.inspect(
-  {actor_params, actor_target_params, critic1_params, critic1_target_params, critic2_params,
-   critic2_target_params, total_episodes},
+  {actor_params, actor_target_params, critic1_params, critic2_params, critic_target_params,
+   total_episodes},
   label:
-    "{actor_params, actor_target_params, critic1_params, critic1_target_params,  critic2_params, critic2_target_params, total_episodes}"
+    "{actor_params, actor_target_params, critic1_params, critic2_params, critic_target_params, total_episodes}"
 )
 
 # input_template =
@@ -928,7 +924,7 @@ targets_probs = :uniform
 IO.inspect(targets_probs, label: "targets_probs")
 
 random_key_init = Nx.Random.key(42)
-num_vectors = 10
+num_vectors = 25
 
 random_key_devec =
   Nx.Random.randint_split(random_key_init, 0, Nx.Constants.max_finite(:u32),
@@ -966,9 +962,8 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         actor_target_params: actor_target_params,
         critic_net: critic_net,
         critic1_params: critic1_params,
-        critic1_target_params: critic1_target_params,
         critic2_params: critic2_params,
-        critic2_target_params: critic2_target_params,
+        critic_target_params: critic_target_params,
         state_features_memory: state_features_memory,
         state_features_memory_length: state_features_memory_length,
         experience_replay_buffer: experience_replay_buffer,

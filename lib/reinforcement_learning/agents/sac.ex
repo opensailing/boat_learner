@@ -32,9 +32,8 @@ defmodule ReinforcementLearning.Agents.SAC do
              :actor_params,
              :actor_target_params,
              :critic1_params,
-             :critic1_target_params,
              :critic2_params,
-             :critic2_target_params,
+             :critic_target_params,
              :experience_replay_buffer,
              :loss,
              :loss_denominator,
@@ -75,9 +74,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     :actor_target_params,
     :actor_net,
     :critic1_params,
-    :critic1_target_params,
     :critic2_params,
-    :critic2_target_params,
+    :critic_target_params,
     :critic_net,
     :actor_predict_fn,
     :critic_predict_fn,
@@ -117,9 +115,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       :actor_target_params,
       :actor_net,
       :critic1_params,
-      :critic1_target_params,
       :critic2_params,
-      :critic2_target_params,
+      :critic_target_params,
       :critic_net,
       :experience_replay_buffer,
       :environment_to_state_features_fn,
@@ -184,9 +181,7 @@ defmodule ReinforcementLearning.Agents.SAC do
         actor_predict_fn.(params, state_features_memory_to_input_fn.(state_features_memory))
 
       mu = action_distribution_vector[[.., .., 0]]
-      logstddev = action_distribution_vector[[.., .., 1]]
-
-      log_stddev = Nx.clip(logstddev, -20, 2)
+      log_stddev = action_distribution_vector[[.., .., 1]]
 
       stddev = Nx.exp(log_stddev)
 
@@ -197,7 +192,11 @@ defmodule ReinforcementLearning.Agents.SAC do
       # the grads a propagated through properly.
       {eps, random_key} = Nx.Random.normal(random_key, shape: eps_shape)
 
-      {Nx.multiply(Nx.add(mu, stddev), eps), mu, stddev, random_key}
+      action = Nx.tanh(Nx.add(mu, Nx.multiply(stddev, eps)))
+
+      log_probability = action_log_probability(mu, stddev, action)
+
+      {action, log_probability, random_key}
     end
 
     critic_predict_fn = fn params, state_features_memory, action_vector ->
@@ -215,11 +214,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     initial_critic1_params_state = opts[:critic1_params]
     initial_critic2_params_state = opts[:critic2_params]
 
-    initial_critic1_target_params_state =
-      opts[:critic1_target_params] || initial_critic1_params_state
-
-    initial_critic2_target_params_state =
-      opts[:critic2_target_params] || initial_critic2_params_state
+    initial_critic_target_params_state =
+      opts[:critic_target_params] || initial_critic1_params_state
 
     input_template = input_template(actor_net)
 
@@ -277,8 +273,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     critic1_params = critic_init_fn.(critic_template, initial_critic1_params_state)
     critic2_params = critic_init_fn.(critic_template, initial_critic2_params_state)
 
-    critic1_target_params = critic_init_fn.(critic_template, initial_critic1_target_params_state)
-    critic2_target_params = critic_init_fn.(critic_template, initial_critic2_target_params_state)
+    critic_target_params = critic_init_fn.(critic_template, initial_critic_target_params_state)
 
     critic1_optimizer_state = critic_optimizer_init_fn.(critic1_params)
     critic2_optimizer_state = critic_optimizer_init_fn.(critic2_params)
@@ -336,8 +331,7 @@ defmodule ReinforcementLearning.Agents.SAC do
       actor_net: actor_net,
       critic1_params: critic1_params,
       critic2_params: critic2_params,
-      critic1_target_params: critic1_target_params,
-      critic2_target_params: critic2_target_params,
+      critic_target_params: critic_target_params,
       critic_net: critic_net,
       actor_predict_fn: actor_predict_fn,
       critic_predict_fn: critic_predict_fn,
@@ -523,7 +517,7 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     state_features_memory = CircularBuffer.append(state_features_memory, state_features)
 
-    {action_vector, _mu, _stddev, random_key} =
+    {action_vector, _logprob, random_key} =
       actor_predict_fn.(
         random_key,
         actor_params,
@@ -654,7 +648,9 @@ defmodule ReinforcementLearning.Agents.SAC do
     updated_state =
       %{state | random_key: random_key}
       |> train(batch, train_actor)
-      |> soft_update_targets(train_actor)
+      |> then(fn {state, critic1_loss, critic2_loss} ->
+        soft_update_targets(state, train_actor, critic1_loss, critic2_loss)
+      end)
 
     {updated_state, exploring}
   end
@@ -667,8 +663,7 @@ defmodule ReinforcementLearning.Agents.SAC do
         actor_predict_fn: actor_predict_fn,
         critic1_params: critic1_params,
         critic2_params: critic2_params,
-        critic1_target_params: critic1_target_params,
-        critic2_target_params: critic2_target_params,
+        critic_target_params: critic_target_params,
         critic_predict_fn: critic_predict_fn,
         actor_optimizer_state: actor_optimizer_state,
         critic1_optimizer_state: critic1_optimizer_state,
@@ -735,29 +730,21 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     ### Train critic_params
 
-    {{critic_loss, random_key}, {critic1_gradient, critic2_gradient}} =
+    {{critic_loss, critic1_loss, critic2_loss, random_key}, {critic1_gradient, critic2_gradient}} =
       value_and_grad(
         {critic1_params, critic2_params},
         fn {critic1_params, critic2_params} ->
           # y_i = r_i + γ * min_{j=1,2} Q'(s_{i+1}, π(s_{i+1}|θ)|φ'_j)
 
-          {target_actions, mus, stddevs, random_key} =
+          {target_actions, log_probability, random_key} =
             actor_predict_fn.(random_key, actor_target_params, next_state_batch)
 
-          # get the target Q value as the minimum over all target networks
+          q_target = critic_predict_fn.(critic_target_params, next_state_batch, target_actions)
 
-          q1_target = critic_predict_fn.(critic1_target_params, next_state_batch, target_actions)
-
-          q2_target = critic_predict_fn.(critic2_target_params, next_state_batch, target_actions)
-
-          %{shape: {k, 1}} =
-            q_target =
-            q1_target
-            |> Nx.min(q2_target)
-            |> stop_grad()
+          %{shape: {k, 1}} = q_target = stop_grad(q_target)
 
           next_log_prob =
-            action_log_probability(target_actions, mus, stddevs)
+            log_probability
             |> Nx.devectorize()
             |> Nx.sum(axes: [0])
 
@@ -782,7 +769,7 @@ defmodule ReinforcementLearning.Agents.SAC do
           critic1_loss = Nx.mean((backup - Nx.new_axis(q1, 0)) ** 2)
           critic2_loss = Nx.mean((backup - Nx.new_axis(q2, 0)) ** 2)
 
-          {Nx.add(critic1_loss, critic2_loss) / 2, random_key}
+          {Nx.add(critic1_loss, critic2_loss) / 2, critic1_loss, critic2_loss, random_key}
         end,
         &elem(&1, 0)
       )
@@ -807,14 +794,12 @@ defmodule ReinforcementLearning.Agents.SAC do
       if train_actor do
         actor_gradient =
           grad(actor_params, fn actor_params ->
-            {actions, mus, stddevs, _random_key} =
+            {actions, log_probability, _random_key} =
               actor_predict_fn.(k1, actor_params, state_batch)
 
             q1 = critic_predict_fn.(critic1_params, state_batch, actions)
 
             q2 = critic_predict_fn.(critic2_params, state_batch, actions)
-
-            log_probability = action_log_probability(mus, stddevs, actions)
 
             q = Nx.min(q1, q2)
 
@@ -830,7 +815,7 @@ defmodule ReinforcementLearning.Agents.SAC do
         {actor_params, actor_optimizer_state}
       end
 
-    %{
+    state = %{
       state
       | agent_state: %{
           state.agent_state
@@ -846,18 +831,19 @@ defmodule ReinforcementLearning.Agents.SAC do
         },
         random_key: random_key
     }
+
+    {state, critic1_loss, critic2_loss}
   end
 
-  defnp soft_update_targets(state, train_actor) do
+  defnp soft_update_targets(state, train_actor, critic1_loss, critic2_loss) do
     %{
       agent_state:
         %{
           actor_target_params: actor_target_params,
           actor_params: actor_params,
-          critic1_target_params: critic1_target_params,
           critic1_params: critic1_params,
-          critic2_target_params: critic2_target_params,
           critic2_params: critic2_params,
+          critic_target_params: critic_target_params,
           tau: tau
         } = agent_state
     } = state
@@ -871,19 +857,19 @@ defmodule ReinforcementLearning.Agents.SAC do
         actor_target_params
       end
 
-    critic1_target_params =
-      Axon.Shared.deep_merge(critic1_params, critic1_target_params, merge_fn)
-
-    critic2_target_params =
-      Axon.Shared.deep_merge(critic2_params, critic2_target_params, merge_fn)
+    critic_target_params =
+      if critic1_loss < critic2_loss do
+        Axon.Shared.deep_merge(critic1_params, critic_target_params, merge_fn)
+      else
+        Axon.Shared.deep_merge(critic2_params, critic_target_params, merge_fn)
+      end
 
     %{
       state
       | agent_state: %{
           agent_state
           | actor_target_params: actor_target_params,
-            critic1_target_params: critic1_target_params,
-            critic2_target_params: critic2_target_params
+            critic_target_params: critic_target_params,
         }
     }
   end
@@ -919,7 +905,14 @@ defmodule ReinforcementLearning.Agents.SAC do
     {batch, random_key}
   end
 
-  defnp action_log_probability(mu, stddev, action) do
-    -0.5 * ((action - mu) / stddev) ** 2 - Nx.log(stddev * Nx.sqrt(2 * pi(Nx.type(stddev))))
+  defnp action_log_probability(mu, stddev, x) do
+    # stddev is guaranteed to not be 0 nor negative
+    # because it is derived from a log(stddev) definition
+
+    logprob = -0.5 * ((x - mu) / stddev) ** 2 - 0.5 * Nx.log(2 * pi(Nx.type(stddev)) * stddev ** 2)
+    # x is bounded between -1 and 1, so x ** 2 is bounded between 0 and 1
+    logprob = logprob - Nx.log(1 - x ** 2 + Nx.Constants.epsilon(Nx.type(x)))
+
+    Nx.sum(logprob, axes: [1], keep_axes: true)
   end
 end
