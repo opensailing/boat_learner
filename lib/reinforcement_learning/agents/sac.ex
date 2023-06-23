@@ -236,7 +236,9 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     case critic_template do
       %{"actions" => action_input} ->
-        unless Nx.devectorize(action_input)[0] != Nx.template({nil, num_actions}, :f32) do
+        action_input = %{action_input | vectorized_axes: []}
+
+        unless action_input != Nx.template({nil, num_actions}, :f32) do
           raise ArgumentError,
                 "the critic network must accept the \"actions\" input with shape {nil, #{num_actions}} and type :f32, got input template: #{critic_template}"
         end
@@ -244,7 +246,10 @@ defmodule ReinforcementLearning.Agents.SAC do
         critic_template_devec =
           critic_template
           |> Map.delete("actions")
-          |> Map.new(fn {k, v} -> {k, Nx.devectorize(v)[0]} end)
+          |> Map.new(fn {k, v} ->
+            v = %{v | vectorized_axes: []}
+            {k, v}
+          end)
 
         if critic_template_devec != input_template do
           raise ArgumentError,
