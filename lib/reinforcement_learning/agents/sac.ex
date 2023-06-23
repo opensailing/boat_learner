@@ -30,14 +30,18 @@ defmodule ReinforcementLearning.Agents.SAC do
   @derive {Nx.Container,
            containers: [
              :actor_params,
-             :critic_params,
-             :critic_target_params,
+             :actor_target_params,
+             :critic1_params,
+             :critic1_target_params,
+             :critic2_params,
+             :critic2_target_params,
              :experience_replay_buffer,
              :loss,
              :loss_denominator,
              :total_reward,
              :actor_optimizer_state,
-             :critic_optimizer_state,
+             :critic1_optimizer_state,
+             :critic2_optimizer_state,
              :action_lower_limit,
              :action_upper_limit,
              :ou_process,
@@ -70,8 +74,10 @@ defmodule ReinforcementLearning.Agents.SAC do
     :actor_params,
     :actor_target_params,
     :actor_net,
-    :critic_params,
-    :critic_target_params,
+    :critic1_params,
+    :critic1_target_params,
+    :critic2_params,
+    :critic2_target_params,
     :critic_net,
     :actor_predict_fn,
     :critic_predict_fn,
@@ -82,7 +88,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     :batch_size,
     :training_frequency,
     :actor_optimizer_state,
-    :critic_optimizer_state,
+    :critic1_optimizer_state,
+    :critic2_optimizer_state,
     :action_lower_limit,
     :action_upper_limit,
     :loss,
@@ -109,8 +116,10 @@ defmodule ReinforcementLearning.Agents.SAC do
       :actor_params,
       :actor_target_params,
       :actor_net,
-      :critic_params,
-      :critic_target_params,
+      :critic1_params,
+      :critic1_target_params,
+      :critic2_params,
+      :critic2_target_params,
       :critic_net,
       :experience_replay_buffer,
       :environment_to_state_features_fn,
@@ -188,7 +197,7 @@ defmodule ReinforcementLearning.Agents.SAC do
       # the grads a propagated through properly.
       {eps, random_key} = Nx.Random.normal(random_key, shape: eps_shape)
 
-      {mu + stddev * eps, mu, stddev, random_key}
+      {Nx.multiply(Nx.add(mu, stddev), eps), mu, stddev, random_key}
     end
 
     critic_predict_fn = fn params, state_features_memory, action_vector ->
@@ -201,10 +210,16 @@ defmodule ReinforcementLearning.Agents.SAC do
     end
 
     initial_actor_params_state = opts[:actor_params]
-    initial_critic_params_state = opts[:critic_params]
+    initial_actor_target_params_state = opts[:actor_target_params]
 
-    initial_critic_target_params_state =
-      opts[:critic_target_params] || initial_critic_params_state
+    initial_critic1_params_state = opts[:critic1_params]
+    initial_critic2_params_state = opts[:critic2_params]
+
+    initial_critic1_target_params_state =
+      opts[:critic1_target_params] || initial_critic1_params_state
+
+    initial_critic2_target_params_state =
+      opts[:critic2_target_params] || initial_critic2_params_state
 
     input_template = input_template(actor_net)
 
@@ -217,7 +232,7 @@ defmodule ReinforcementLearning.Agents.SAC do
         :ok
     end
 
-    {1, num_actions} = Axon.get_output_shape(actor_net, input_template)
+    {1, num_actions, 2} = Axon.get_output_shape(actor_net, input_template)
 
     {max_sigma, ou_process_opts} = Keyword.pop!(opts[:ou_process_opts], :max_sigma)
     {min_sigma, ou_process_opts} = Keyword.pop!(ou_process_opts, :min_sigma)
@@ -232,7 +247,7 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     ou_process = OUProcess.init({1, num_actions}, ou_process_opts)
 
-    critic_template = input_template(critic_net, critics: 2)
+    critic_template = input_template(critic_net)
 
     case critic_template do
       %{"actions" => action_input} ->
@@ -243,15 +258,9 @@ defmodule ReinforcementLearning.Agents.SAC do
                 "the critic network must accept the \"actions\" input with shape {nil, #{num_actions}} and type :f32, got input template: #{critic_template}"
         end
 
-        critic_template_devec =
-          critic_template
-          |> Map.delete("actions")
-          |> Map.new(fn {k, v} ->
-            v = %{v | vectorized_axes: []}
-            {k, v}
-          end)
+        critic_template = Map.delete(critic_template, "actions")
 
-        if critic_template_devec != input_template do
+        if critic_template != input_template do
           raise ArgumentError,
                 "the critic network must have the same input template as the actor network + the \"action\" input"
         end
@@ -263,10 +272,16 @@ defmodule ReinforcementLearning.Agents.SAC do
     actor_params = actor_init_fn.(input_template, initial_actor_params_state)
     actor_optimizer_state = actor_optimizer_init_fn.(actor_params)
 
-    critic_params = critic_init_fn.(critic_template, initial_critic_params_state)
-    critic_target_params = critic_init_fn.(critic_template, initial_critic_target_params_state)
+    actor_target_params = actor_init_fn.(input_template, initial_actor_target_params_state)
 
-    critic_optimizer_state = critic_optimizer_init_fn.(critic_params)
+    critic1_params = critic_init_fn.(critic_template, initial_critic1_params_state)
+    critic2_params = critic_init_fn.(critic_template, initial_critic2_params_state)
+
+    critic1_target_params = critic_init_fn.(critic_template, initial_critic1_target_params_state)
+    critic2_target_params = critic_init_fn.(critic_template, initial_critic2_target_params_state)
+
+    critic1_optimizer_state = critic_optimizer_init_fn.(critic1_params)
+    critic2_optimizer_state = critic_optimizer_init_fn.(critic2_params)
 
     state_features_size = opts[:state_features_size]
 
@@ -317,9 +332,12 @@ defmodule ReinforcementLearning.Agents.SAC do
           CircularBuffer.new({state_features_memory_length, state_features_size}),
       num_actions: num_actions,
       actor_params: actor_params,
+      actor_target_params: actor_target_params,
       actor_net: actor_net,
-      critic_params: critic_params,
-      critic_target_params: critic_target_params,
+      critic1_params: critic1_params,
+      critic2_params: critic2_params,
+      critic1_target_params: critic1_target_params,
+      critic2_target_params: critic2_target_params,
       critic_net: critic_net,
       actor_predict_fn: actor_predict_fn,
       critic_predict_fn: critic_predict_fn,
@@ -339,7 +357,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       actor_optimizer_update_fn: actor_optimizer_update_fn,
       critic_optimizer_update_fn: critic_optimizer_update_fn,
       actor_optimizer_state: actor_optimizer_state,
-      critic_optimizer_state: critic_optimizer_state,
+      critic1_optimizer_state: critic1_optimizer_state,
+      critic2_optimizer_state: critic2_optimizer_state,
       action_lower_limit: opts[:action_lower_limit],
       action_upper_limit: opts[:action_upper_limit],
       entropy_coefficient: opts[:entropy_coefficient]
@@ -379,15 +398,13 @@ defmodule ReinforcementLearning.Agents.SAC do
     end
   end
 
-  defp input_template(model, vectorized_axes \\ []) do
-    {vec_names, vec_sizes} = Enum.unzip(vectorized_axes)
-
+  defp input_template(model) do
     model
     |> Axon.get_inputs()
     |> Map.new(fn {name, shape} ->
       [nil | shape] = Tuple.to_list(shape)
-      shape = List.to_tuple(vec_sizes ++ [1 | shape])
-      {name, Nx.vectorize(Nx.template(shape, :f32), vec_names)}
+      shape = List.to_tuple([1 | shape])
+      {name, Nx.template(shape, :f32)}
     end)
   end
 
@@ -648,11 +665,14 @@ defmodule ReinforcementLearning.Agents.SAC do
         actor_params: actor_params,
         actor_target_params: actor_target_params,
         actor_predict_fn: actor_predict_fn,
-        critic_params: critic_params,
-        critic_target_params: critic_target_params,
+        critic1_params: critic1_params,
+        critic2_params: critic2_params,
+        critic1_target_params: critic1_target_params,
+        critic2_target_params: critic2_target_params,
         critic_predict_fn: critic_predict_fn,
         actor_optimizer_state: actor_optimizer_state,
-        critic_optimizer_state: critic_optimizer_state,
+        critic1_optimizer_state: critic1_optimizer_state,
+        critic2_optimizer_state: critic2_optimizer_state,
         actor_optimizer_update_fn: actor_optimizer_update_fn,
         critic_optimizer_update_fn: critic_optimizer_update_fn,
         state_features_memory: state_features_memory,
@@ -713,24 +733,27 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     non_final_mask = not is_terminal_batch
 
-    ### Train Critic
+    ### Train critic_params
 
-    {{critic_loss, random_key}, critic_gradient} =
+    {{critic_loss, random_key}, {critic1_gradient, critic2_gradient}} =
       value_and_grad(
-        critic_params,
-        fn critic_params ->
+        {critic1_params, critic2_params},
+        fn {critic1_params, critic2_params} ->
           # y_i = r_i + γ * min_{j=1,2} Q'(s_{i+1}, π(s_{i+1}|θ)|φ'_j)
 
           {target_actions, mus, stddevs, random_key} =
             actor_predict_fn.(random_key, actor_target_params, next_state_batch)
 
           # get the target Q value as the minimum over all target networks
+
+          q1_target = critic_predict_fn.(critic1_target_params, next_state_batch, target_actions)
+
+          q2_target = critic_predict_fn.(critic2_target_params, next_state_batch, target_actions)
+
           %{shape: {k, 1}} =
             q_target =
-            critic_target_params
-            |> critic_predict_fn.(next_state_batch, target_actions)
-            |> Nx.devectorize()
-            |> Nx.reduce_min(axes: [0])
+            q1_target
+            |> Nx.min(q2_target)
             |> stop_grad()
 
           next_log_prob =
@@ -742,9 +765,10 @@ defmodule ReinforcementLearning.Agents.SAC do
 
           %{shape: {m, 1}} = backup = reward_batch + gamma * non_final_mask * q_target
 
-          # q values for each critic network. We're vectorized here, so the non-vectorized
-          # backup will be propagated accordingly to each of the networks.
-          %{shape: {n, 1}} = q = critic_predict_fn.(critic_params, state_batch, action_batch)
+          # q values for each critic network
+          %{shape: {n, 1}} = q1 = critic_predict_fn.(critic1_params, state_batch, action_batch)
+
+          %{shape: {_n, 1}} = q2 = critic_predict_fn.(critic2_params, state_batch, action_batch)
 
           case {k, m, n} do
             {k, m, n} when m != n or m != k or n != k ->
@@ -754,46 +778,56 @@ defmodule ReinforcementLearning.Agents.SAC do
               1
           end
 
-          critic_losses = Nx.mean((backup - q) ** 2)
+          backup = Nx.devectorize(backup)
+          critic1_loss = Nx.mean((backup - Nx.new_axis(q1, 0)) ** 2)
+          critic2_loss = Nx.mean((backup - Nx.new_axis(q2, 0)) ** 2)
 
-          {critic_losses, random_key}
+          {Nx.add(critic1_loss, critic2_loss) / 2, random_key}
         end,
         &elem(&1, 0)
       )
 
-    {critic_updates, critic_optimizer_state} =
-      critic_optimizer_update_fn.(critic_gradient, critic_optimizer_state, critic_params)
+    {critic1_updates, critic1_optimizer_state} =
+      critic_optimizer_update_fn.(critic1_gradient, critic1_optimizer_state, critic1_params)
 
-    critic_params = Axon.Updates.apply_updates(critic_params, critic_updates)
+    critic1_params = Axon.Updates.apply_updates(critic1_params, critic1_updates)
+
+    {critic2_updates, critic2_optimizer_state} =
+      critic_optimizer_update_fn.(critic2_gradient, critic2_optimizer_state, critic2_params)
+
+    critic2_params = Axon.Updates.apply_updates(critic2_params, critic2_updates)
 
     ### Train Actor
 
-    {actor_params, actor_optimizer_state, random_key} =
+    ks = Nx.Random.split(random_key)
+    random_key = ks[0]
+    k1 = ks[1] |> Nx.devectorize() |> Nx.take(0)
+
+    {actor_params, actor_optimizer_state} =
       if train_actor do
-        {{_actor_loss, random_key}, actor_gradient} =
-          value_and_grad(actor_params, fn actor_params ->
-            # TO-DO: check how to get u+sigma in here.
-            # Maybe we just don't need Nx.Random for the actions?
+        actor_gradient =
+          grad(actor_params, fn actor_params ->
+            {actions, mus, stddevs, _random_key} =
+              actor_predict_fn.(k1, actor_params, state_batch)
 
-            {actions, mus, stddevs, random_key} =
-              actor_predict_fn.(random_key, actor_params, state_batch)
+            q1 = critic_predict_fn.(critic1_params, state_batch, actions)
 
-            q = critic_predict_fn.(critic_params, state_batch, actions)
+            q2 = critic_predict_fn.(critic2_params, state_batch, actions)
 
             log_probability = action_log_probability(mus, stddevs, actions)
 
-            q = q |> Nx.devectorize() |> Nx.reduce_min()
+            q = Nx.min(q1, q2)
 
-            {Nx.mean(entropy_coefficient * log_probability - q), random_key}
+            Nx.mean(entropy_coefficient * log_probability - q)
           end)
 
         {actor_updates, actor_optimizer_state} =
           actor_optimizer_update_fn.(actor_gradient, actor_optimizer_state, actor_params)
 
         actor_params = Axon.Updates.apply_updates(actor_params, actor_updates)
-        {actor_params, actor_optimizer_state, random_key}
+        {actor_params, actor_optimizer_state}
       else
-        {actor_params, actor_optimizer_state, random_key}
+        {actor_params, actor_optimizer_state}
       end
 
     %{
@@ -802,8 +836,10 @@ defmodule ReinforcementLearning.Agents.SAC do
           state.agent_state
           | actor_params: actor_params,
             actor_optimizer_state: actor_optimizer_state,
-            critic_params: critic_params,
-            critic_optimizer_state: critic_optimizer_state,
+            critic1_params: critic1_params,
+            critic1_optimizer_state: critic1_optimizer_state,
+            critic2_params: critic2_params,
+            critic2_optimizer_state: critic2_optimizer_state,
             loss: state.agent_state.loss + critic_loss,
             loss_denominator: state.agent_state.loss_denominator + 1,
             experience_replay_buffer: experience_replay_buffer
@@ -818,36 +854,36 @@ defmodule ReinforcementLearning.Agents.SAC do
         %{
           actor_target_params: actor_target_params,
           actor_params: actor_params,
-          critic_target_params: critic_target_params,
-          critic_params: critic_params,
+          critic1_target_params: critic1_target_params,
+          critic1_params: critic1_params,
+          critic2_target_params: critic2_target_params,
+          critic2_params: critic2_params,
           tau: tau
         } = agent_state
     } = state
 
+    merge_fn = &Nx.as_type(&1 * tau + &2 * (1 - tau), Nx.type(&1))
+
     actor_target_params =
       if train_actor do
-        Axon.Shared.deep_merge(
-          actor_params,
-          actor_target_params,
-          &Nx.as_type(&1 * tau + &2 * (1 - tau), Nx.type(&1))
-        )
+        Axon.Shared.deep_merge(actor_params, actor_target_params, merge_fn)
       else
         actor_target_params
       end
 
-    critic_target_params =
-      Axon.Shared.deep_merge(
-        critic_params,
-        critic_target_params,
-        &Nx.as_type(&1 * tau + &2 * (1 - tau), Nx.type(&1))
-      )
+    critic1_target_params =
+      Axon.Shared.deep_merge(critic1_params, critic1_target_params, merge_fn)
+
+    critic2_target_params =
+      Axon.Shared.deep_merge(critic2_params, critic2_target_params, merge_fn)
 
     %{
       state
       | agent_state: %{
           agent_state
           | actor_target_params: actor_target_params,
-            critic_target_params: critic_target_params
+            critic1_target_params: critic1_target_params,
+            critic2_target_params: critic2_target_params
         }
     }
   end
