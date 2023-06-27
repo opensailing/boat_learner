@@ -60,7 +60,8 @@ defmodule ReinforcementLearning.Agents.SAC do
              :critic_optimizer_update_fn,
              :batch_size,
              :training_frequency,
-             :input_entry_size
+             :input_entry_size,
+             :filled_entries
            ]}
 
   defstruct [
@@ -96,7 +97,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     :exploration_fn,
     :state_features_memory,
     :input_entry_size,
-    :entropy_coefficient
+    :entropy_coefficient,
+    :filled_entries
   ]
 
   @impl true
@@ -396,7 +398,8 @@ defmodule ReinforcementLearning.Agents.SAC do
        | total_reward: total_reward,
          loss: loss,
          loss_denominator: loss_denominator,
-         state_features_memory: state_features_memory
+         state_features_memory: state_features_memory,
+         filled_entries: Nx.to_number(state.experience_replay_buffer.size)
      }, random_key}
   end
 
@@ -501,23 +504,39 @@ defmodule ReinforcementLearning.Agents.SAC do
     %{
       experience_replay_buffer: experience_replay_buffer,
       batch_size: batch_size,
+      exploration_fn: exploration_fn,
       training_frequency: training_frequency,
-      exploration_fn: exploration_fn
+      filled_entries: filled_entries
     } = state.agent_state
 
-    exploring = state.episode |> Nx.devectorize() |> Nx.take(0) |> exploration_fn.()
-    has_at_least_one_batch = experience_replay_buffer.size > batch_size
+    # exploring = state.episode |> Nx.devectorize() |> Nx.take(0) |> exploration_fn.()
+    has_at_least_one_batch = filled_entries > batch_size
 
-    should_train =
-      has_at_least_one_batch and rem(experience_replay_buffer.index, training_frequency) == 0
+    # Run training after all simulations have ended.
+    is_terminal =
+      state.environment_state.is_terminal
+      |> Nx.devectorize()
+      |> Nx.all()
 
-    should_train = should_train |> Nx.devectorize() |> Nx.any()
+    should_train = is_terminal and has_at_least_one_batch
 
     if should_train do
-      train_loop(state, training_frequency, exploring)
+      train_loop(
+        state,
+        training_frequency * vectorized_axes(state.environment_state.is_terminal),
+        Nx.u8(0)
+      )
     else
       state
     end
+  end
+
+  deftransformp vectorized_axes(t) do
+    # flat_size is all entries, inclusing vectorized axes
+    # size is just the non-vectorized part
+    # So training frequency here is the number of vectorized axes,
+    # i.e. we'll run one iteration per episode simulated
+    div(Nx.flat_size(t), Nx.size(t))
   end
 
   deftransformp train_loop(state, training_frequency, exploring) do
@@ -771,7 +790,8 @@ defmodule ReinforcementLearning.Agents.SAC do
   defnp sample_experience_replay_buffer(
           random_key,
           %__MODULE__{
-            batch_size: batch_size
+            batch_size: batch_size,
+            filled_entries: filled_entries
           } = agent_state
         ) do
     data = agent_state.experience_replay_buffer.data
@@ -799,13 +819,11 @@ defmodule ReinforcementLearning.Agents.SAC do
       if size == Nx.axis_size(data, 0) do
         Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
       else
-        # This is a trick so that we can avoid needing to pre-slice
-        # the buffer.
-        # The iota < size portion will yield 1s wherever we have filled
-        # indices for the buffer. Then, we divide by size to yield a uniform
-        # probability vector for the Nx.Random.choice function
-        probabilities = (Nx.iota({Nx.axis_size(data, 0)}) < size) / size
-        Nx.Random.choice(k, data, probabilities, samples: batch_size, replace: false, axis: 0)
+        Nx.Random.choice(k, Nx.slice_along_axis(data, 0, filled_entries, axis: 0),
+          samples: batch_size,
+          replace: false,
+          axis: 0
+        )
       end
 
     {stop_grad(batch), random_key}

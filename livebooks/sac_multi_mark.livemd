@@ -431,7 +431,7 @@ plot_fn = fn axon_state ->
     )
   end
 
-  if rem(episode, 3) == 0 and iteration > 0 do
+  if rem(episode, 1) == 0 and iteration > 0 do
     Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
     Kino.VegaLite.clear(grid_widget, dataset: "target")
 
@@ -962,7 +962,7 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
-        training_frequency: 16,
+        training_frequency: 1,
         batch_size: 200,
         entropy_coefficient: 0.1,
         actor_optimizer:
