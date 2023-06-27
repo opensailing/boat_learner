@@ -203,18 +203,14 @@ defmodule ReinforcementLearning do
       state = environment.apply_action(state, action)
 
     prev_state
-    |> tap(fn _ -> IO.puts("after apply action") end)
     |> agent.record_observation(
       action,
       reward,
       is_terminal,
       state
     )
-    |> tap(fn _ -> IO.puts("after record observation") end)
     |> agent.optimize_model()
-    |> tap(fn _ -> IO.puts("after optimize model") end)
     |> persist_trajectory(state_to_trajectory_fn)
-    |> tap(fn _ -> IO.puts("after persist_trajectory") end)
   end
 
   defnp persist_trajectory(

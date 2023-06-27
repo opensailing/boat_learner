@@ -117,7 +117,8 @@ defmodule BoatLearner.Environments.MultiMark do
 
   @impl true
   def init(random_key, opts) do
-    opts = Keyword.validate!(opts, [:coords, :coord_probabilities, :max_remaining_seconds, :max_tacks])
+    opts =
+      Keyword.validate!(opts, [:coords, :coord_probabilities, :max_remaining_seconds, :max_tacks])
 
     max_tacks = opts[:max_tacks] || raise ArgumentError, "missing option :max_tacks"
     coords = opts[:coords] || raise ArgumentError, "missing option :coords"
@@ -422,7 +423,7 @@ defmodule BoatLearner.Environments.MultiMark do
 
     # normalize the reward by the initial distance so that we need to cover twice
     # the iterations to get the same reward for a longer initial distance
-    reward = reward / initial_distance
+    reward = reward / (initial_distance / 100)
 
     %__MODULE__{env | reward: reward}
   end

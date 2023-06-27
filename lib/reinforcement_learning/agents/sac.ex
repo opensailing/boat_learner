@@ -22,7 +22,6 @@ defmodule ReinforcementLearning.Agents.SAC do
 
   import Nx.Constants, only: [pi: 1]
 
-  alias ReinforcementLearning.Utils.Noise.OUProcess
   alias ReinforcementLearning.Utils.CircularBuffer
 
   @behaviour ReinforcementLearning.Agent
@@ -33,7 +32,8 @@ defmodule ReinforcementLearning.Agents.SAC do
              :actor_target_params,
              :critic1_params,
              :critic2_params,
-             :critic_target_params,
+             :critic1_target_params,
+             :critic2_target_params,
              :experience_replay_buffer,
              :loss,
              :loss_denominator,
@@ -43,13 +43,8 @@ defmodule ReinforcementLearning.Agents.SAC do
              :critic2_optimizer_state,
              :action_lower_limit,
              :action_upper_limit,
-             :ou_process,
-             :max_sigma,
-             :min_sigma,
              :exploration_decay_rate,
              :exploration_increase_rate,
-             :performance_memory,
-             :performance_threshold,
              :gamma,
              :tau,
              :state_features_memory,
@@ -75,7 +70,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     :actor_net,
     :critic1_params,
     :critic2_params,
-    :critic_target_params,
+    :critic1_target_params,
+    :critic2_target_params,
     :critic_net,
     :actor_predict_fn,
     :critic_predict_fn,
@@ -95,13 +91,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     :total_reward,
     :actor_optimizer_update_fn,
     :critic_optimizer_update_fn,
-    :ou_process,
-    :max_sigma,
-    :min_sigma,
     :exploration_decay_rate,
     :exploration_increase_rate,
-    :performance_memory,
-    :performance_threshold,
     :exploration_fn,
     :state_features_memory,
     :input_entry_size,
@@ -116,22 +107,19 @@ defmodule ReinforcementLearning.Agents.SAC do
       :actor_net,
       :critic1_params,
       :critic2_params,
-      :critic_target_params,
+      :critic1_target_params,
+      :critic2_target_params,
       :critic_net,
       :experience_replay_buffer,
       :environment_to_state_features_fn,
-      :performance_memory,
       :state_features_memory_to_input_fn,
       :state_features_memory,
       :state_features_size,
       :actor_optimizer,
       :critic_optimizer,
-      ou_process_opts: [max_sigma: 0.2, min_sigma: 0.001, sigma: 0.01],
-      performance_memory_length: 500,
       state_features_memory_length: 1,
       exploration_decay_rate: 0.9995,
       exploration_increase_rate: 1.1,
-      performance_threshold: 0.01,
       exploration_fn: &Nx.less(&1, 500),
       gamma: 0.99,
       experience_replay_buffer_max_size: 100_000,
@@ -149,7 +137,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     expected_opts
     |> Enum.filter(fn x -> is_atom(x) or (is_tuple(x) and is_nil(elem(x, 1))) end)
     |> Enum.reject(fn k ->
-      k in [:state_features_memory, :performance_memory, :experience_replay_buffer]
+      k in [:state_features_memory, :experience_replay_buffer]
     end)
     |> Enum.reduce(opts, fn
       k, opts ->
@@ -192,9 +180,11 @@ defmodule ReinforcementLearning.Agents.SAC do
       # the grads a propagated through properly.
       {eps, random_key} = Nx.Random.normal(random_key, shape: eps_shape)
 
-      action = Nx.tanh(Nx.add(mu, Nx.multiply(stddev, eps)))
+      pre_squash_action = Nx.add(mu, Nx.multiply(stddev, eps))
 
-      log_probability = action_log_probability(mu, stddev, action)
+      log_probability = action_log_probability(mu, stddev, log_stddev, pre_squash_action)
+
+      action = Nx.tanh(pre_squash_action)
 
       {action, log_probability, random_key}
     end
@@ -214,8 +204,11 @@ defmodule ReinforcementLearning.Agents.SAC do
     initial_critic1_params_state = opts[:critic1_params]
     initial_critic2_params_state = opts[:critic2_params]
 
-    initial_critic_target_params_state =
-      opts[:critic_target_params] || initial_critic1_params_state
+    initial_critic1_target_params_state =
+      opts[:critic1_target_params] || initial_critic1_params_state
+
+    initial_critic2_target_params_state =
+      opts[:critic2_target_params] || initial_critic2_params_state
 
     input_template = input_template(actor_net)
 
@@ -229,19 +222,6 @@ defmodule ReinforcementLearning.Agents.SAC do
     end
 
     {1, num_actions, 2} = Axon.get_output_shape(actor_net, input_template)
-
-    {max_sigma, ou_process_opts} = Keyword.pop!(opts[:ou_process_opts], :max_sigma)
-    {min_sigma, ou_process_opts} = Keyword.pop!(ou_process_opts, :min_sigma)
-
-    unless max_sigma do
-      raise ArgumentError, "option [:ou_process_opts][:max_sigma] cannot be nil"
-    end
-
-    unless min_sigma do
-      raise ArgumentError, "option [:ou_process_opts][:min_sigma] cannot be nil"
-    end
-
-    ou_process = OUProcess.init({1, num_actions}, ou_process_opts)
 
     critic_template = input_template(critic_net)
 
@@ -273,7 +253,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     critic1_params = critic_init_fn.(critic_template, initial_critic1_params_state)
     critic2_params = critic_init_fn.(critic_template, initial_critic2_params_state)
 
-    critic_target_params = critic_init_fn.(critic_template, initial_critic_target_params_state)
+    critic1_target_params = critic_init_fn.(critic_template, initial_critic1_target_params_state)
+    critic2_target_params = critic_init_fn.(critic_template, initial_critic2_target_params_state)
 
     critic1_optimizer_state = critic_optimizer_init_fn.(critic1_params)
     critic2_optimizer_state = critic_optimizer_init_fn.(critic2_params)
@@ -316,8 +297,6 @@ defmodule ReinforcementLearning.Agents.SAC do
       end
 
     state = %__MODULE__{
-      max_sigma: max_sigma,
-      min_sigma: min_sigma,
       input_entry_size: input_entry_size,
       exploration_fn: opts[:exploration_fn],
       exploration_decay_rate: opts[:exploration_decay_rate],
@@ -331,19 +310,16 @@ defmodule ReinforcementLearning.Agents.SAC do
       actor_net: actor_net,
       critic1_params: critic1_params,
       critic2_params: critic2_params,
-      critic_target_params: critic_target_params,
+      critic1_target_params: critic1_target_params,
+      critic2_target_params: critic2_target_params,
       critic_net: critic_net,
       actor_predict_fn: actor_predict_fn,
       critic_predict_fn: critic_predict_fn,
-      performance_threshold: opts[:performance_threshold],
-      performance_memory:
-        opts[:performance_memory] || CircularBuffer.new({opts[:performance_memory_length]}),
       experience_replay_buffer: exp_replay_buffer,
       environment_to_state_features_fn: environment_to_state_features_fn,
       gamma: opts[:gamma],
       tau: opts[:tau],
       batch_size: opts[:batch_size],
-      ou_process: ou_process,
       training_frequency: opts[:training_frequency],
       total_reward: total_reward,
       loss: loss,
@@ -364,17 +340,9 @@ defmodule ReinforcementLearning.Agents.SAC do
 
       _ ->
         vectorizable_paths = [
-          [Access.key(:ou_process), Access.key(:theta)],
-          [Access.key(:ou_process), Access.key(:sigma)],
-          [Access.key(:ou_process), Access.key(:mu)],
-          [Access.key(:ou_process), Access.key(:x)],
           [Access.key(:loss)],
           [Access.key(:loss_denominator)],
           [Access.key(:total_reward)],
-          [Access.key(:performance_memory), Access.key(:data)],
-          [Access.key(:performance_memory), Access.key(:index)],
-          [Access.key(:performance_memory), Access.key(:size)],
-          [Access.key(:performance_threshold)],
           [Access.key(:state_features_memory), Access.key(:data)],
           [Access.key(:state_features_memory), Access.key(:index)],
           [Access.key(:state_features_memory), Access.key(:size)]
@@ -404,14 +372,11 @@ defmodule ReinforcementLearning.Agents.SAC do
 
   @impl true
   def reset(random_key, %ReinforcementLearning{
-        episode: episode,
         environment_state: env,
         agent_state: state
       }) do
     [zero, _] = Nx.broadcast_vectors([Nx.tensor(0, type: :f32), random_key], align_ranks: false)
     total_reward = loss = loss_denominator = zero
-
-    state = adapt_exploration(episode, state)
 
     init_state_features = state.environment_to_state_features_fn.(env)
 
@@ -435,69 +400,6 @@ defmodule ReinforcementLearning.Agents.SAC do
      }, random_key}
   end
 
-  defnp adapt_exploration(
-          episode,
-          %__MODULE__{
-            # exploration_fn: exploration_fn,
-            experience_replay_buffer: experience_replay_buffer,
-            ou_process: ou_process,
-            exploration_decay_rate: exploration_decay_rate,
-            exploration_increase_rate: exploration_increase_rate,
-            min_sigma: min_sigma,
-            max_sigma: max_sigma,
-            total_reward: reward,
-            performance_memory: performance_memory,
-            performance_threshold: performance_threshold
-          } = state
-        ) do
-    n = Nx.axis_size(performance_memory.data, 0)
-
-    {ou_process, performance_memory} =
-      cond do
-        episode == 0 ->
-          {ou_process, performance_memory}
-
-        episode < n or experience_replay_buffer.size < n ->
-          {ou_process, CircularBuffer.append(performance_memory, reward)}
-
-        true ->
-          performance_memory = CircularBuffer.append(performance_memory, reward)
-
-          # After we take and reshape, the first row contains the oldest `n//2` samples
-          # and the second row, the remaining newest samples.
-          windows =
-            performance_memory
-            |> CircularBuffer.ordered_data()
-            |> Nx.reshape({2, :auto})
-
-          # avg[0]: avg of the previous performance window
-          # avg[1]: avg of the current performance window
-          avg = Nx.mean(windows, axes: [1])
-
-          abs_diff = Nx.abs(avg[0] - avg[1])
-
-          sigma =
-            if abs_diff < performance_threshold do
-              # If decayed to less than an "eps" value,
-              # we force it to increase from that "eps" instead.
-              Nx.min(ou_process.sigma * exploration_increase_rate, max_sigma)
-            else
-              # can decay to 0
-              Nx.max(ou_process.sigma * exploration_decay_rate, min_sigma)
-            end
-
-          {%OUProcess{ou_process | sigma: sigma}, performance_memory}
-      end
-
-    ou_process = %{ou_process | x: Nx.squeeze(ou_process.x)}
-
-    %__MODULE__{
-      state
-      | ou_process: OUProcess.reset(ou_process),
-        performance_memory: performance_memory
-    }
-  end
-
   @impl true
   defn select_action(
          %ReinforcementLearning{random_key: random_key, agent_state: agent_state} = state,
@@ -509,8 +411,7 @@ defmodule ReinforcementLearning.Agents.SAC do
       environment_to_state_features_fn: environment_to_state_features_fn,
       state_features_memory: state_features_memory,
       action_lower_limit: action_lower_limit,
-      action_upper_limit: action_upper_limit,
-      ou_process: ou_process
+      action_upper_limit: action_upper_limit
     } = agent_state
 
     state_features = environment_to_state_features_fn.(state.environment_state)
@@ -524,11 +425,6 @@ defmodule ReinforcementLearning.Agents.SAC do
         CircularBuffer.ordered_data(state_features_memory)
       )
 
-    {%OUProcess{x: additive_noise} = ou_process, random_key} =
-      OUProcess.sample(random_key, ou_process)
-
-    action_vector = action_vector + additive_noise
-
     clipped_action_vector =
       action_vector
       |> Nx.max(action_lower_limit)
@@ -539,8 +435,7 @@ defmodule ReinforcementLearning.Agents.SAC do
        state
        | agent_state: %{
            agent_state
-           | state_features_memory: state_features_memory,
-             ou_process: ou_process
+           | state_features_memory: state_features_memory
          },
          random_key: random_key
      }}
@@ -648,9 +543,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     updated_state =
       %{state | random_key: random_key}
       |> train(batch, train_actor)
-      |> then(fn {state, critic1_loss, critic2_loss} ->
-        soft_update_targets(state, train_actor, critic1_loss, critic2_loss)
-      end)
+      |> soft_update_targets(train_actor)
 
     {updated_state, exploring}
   end
@@ -663,7 +556,8 @@ defmodule ReinforcementLearning.Agents.SAC do
         actor_predict_fn: actor_predict_fn,
         critic1_params: critic1_params,
         critic2_params: critic2_params,
-        critic_target_params: critic_target_params,
+        critic1_target_params: critic1_target_params,
+        critic2_target_params: critic2_target_params,
         critic_predict_fn: critic_predict_fn,
         actor_optimizer_state: actor_optimizer_state,
         critic1_optimizer_state: critic1_optimizer_state,
@@ -730,7 +624,7 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     ### Train critic_params
 
-    {{critic_loss, critic1_loss, critic2_loss, random_key}, {critic1_gradient, critic2_gradient}} =
+    {{critic_loss, random_key}, {critic1_gradient, critic2_gradient}} =
       value_and_grad(
         {critic1_params, critic2_params},
         fn {critic1_params, critic2_params} ->
@@ -739,9 +633,10 @@ defmodule ReinforcementLearning.Agents.SAC do
           {target_actions, log_probability, random_key} =
             actor_predict_fn.(random_key, actor_target_params, next_state_batch)
 
-          q_target = critic_predict_fn.(critic_target_params, next_state_batch, target_actions)
+          q1_target = critic_predict_fn.(critic1_target_params, next_state_batch, target_actions)
+          q2_target = critic_predict_fn.(critic2_target_params, next_state_batch, target_actions)
 
-          %{shape: {k, 1}} = q_target = stop_grad(q_target)
+          %{shape: {k, 1}} = q_target = stop_grad(Nx.min(q1_target, q2_target))
 
           next_log_prob =
             log_probability
@@ -769,7 +664,7 @@ defmodule ReinforcementLearning.Agents.SAC do
           critic1_loss = Nx.mean((backup - Nx.new_axis(q1, 0)) ** 2)
           critic2_loss = Nx.mean((backup - Nx.new_axis(q2, 0)) ** 2)
 
-          {Nx.add(critic1_loss, critic2_loss) / 2, critic1_loss, critic2_loss, random_key}
+          {Nx.add(critic1_loss, critic2_loss), random_key}
         end,
         &elem(&1, 0)
       )
@@ -777,12 +672,12 @@ defmodule ReinforcementLearning.Agents.SAC do
     {critic1_updates, critic1_optimizer_state} =
       critic_optimizer_update_fn.(critic1_gradient, critic1_optimizer_state, critic1_params)
 
-    critic1_params = Axon.Updates.apply_updates(critic1_params, critic1_updates)
+    critic1_params = Polaris.Updates.apply_updates(critic1_params, critic1_updates)
 
     {critic2_updates, critic2_optimizer_state} =
       critic_optimizer_update_fn.(critic2_gradient, critic2_optimizer_state, critic2_params)
 
-    critic2_params = Axon.Updates.apply_updates(critic2_params, critic2_updates)
+    critic2_params = Polaris.Updates.apply_updates(critic2_params, critic2_updates)
 
     ### Train Actor
 
@@ -809,13 +704,13 @@ defmodule ReinforcementLearning.Agents.SAC do
         {actor_updates, actor_optimizer_state} =
           actor_optimizer_update_fn.(actor_gradient, actor_optimizer_state, actor_params)
 
-        actor_params = Axon.Updates.apply_updates(actor_params, actor_updates)
+        actor_params = Polaris.Updates.apply_updates(actor_params, actor_updates)
         {actor_params, actor_optimizer_state}
       else
         {actor_params, actor_optimizer_state}
       end
 
-    state = %{
+    %{
       state
       | agent_state: %{
           state.agent_state
@@ -831,19 +726,18 @@ defmodule ReinforcementLearning.Agents.SAC do
         },
         random_key: random_key
     }
-
-    {state, critic1_loss, critic2_loss}
   end
 
-  defnp soft_update_targets(state, train_actor, critic1_loss, critic2_loss) do
+  defnp soft_update_targets(state, train_actor) do
     %{
       agent_state:
-        %{
+        %__MODULE__{
           actor_target_params: actor_target_params,
           actor_params: actor_params,
           critic1_params: critic1_params,
           critic2_params: critic2_params,
-          critic_target_params: critic_target_params,
+          critic1_target_params: critic1_target_params,
+          critic2_target_params: critic2_target_params,
           tau: tau
         } = agent_state
     } = state
@@ -857,19 +751,19 @@ defmodule ReinforcementLearning.Agents.SAC do
         actor_target_params
       end
 
-    critic_target_params =
-      if critic1_loss < critic2_loss do
-        Axon.Shared.deep_merge(critic1_params, critic_target_params, merge_fn)
-      else
-        Axon.Shared.deep_merge(critic2_params, critic_target_params, merge_fn)
-      end
+    critic1_target_params =
+      Axon.Shared.deep_merge(critic1_params, critic1_target_params, merge_fn)
+
+    critic2_target_params =
+      Axon.Shared.deep_merge(critic2_params, critic2_target_params, merge_fn)
 
     %{
       state
       | agent_state: %{
           agent_state
           | actor_target_params: actor_target_params,
-            critic_target_params: critic_target_params,
+            critic1_target_params: critic1_target_params,
+            critic2_target_params: critic2_target_params
         }
     }
   end
@@ -881,6 +775,7 @@ defmodule ReinforcementLearning.Agents.SAC do
           } = agent_state
         ) do
     data = agent_state.experience_replay_buffer.data
+    size = agent_state.experience_replay_buffer.size
 
     # split and devectorize random_key because we want to keep the replay buffer
     # and its samples devectorized at all times
@@ -900,19 +795,51 @@ defmodule ReinforcementLearning.Agents.SAC do
           Nx.take(k, 0)
       end
 
-    {batch, _} = Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
+    {batch, _} =
+      if size == Nx.axis_size(data, 0) do
+        Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
+      else
+        # This is a trick so that we can avoid needing to pre-slice
+        # the buffer.
+        # The iota < size portion will yield 1s wherever we have filled
+        # indices for the buffer. Then, we divide by size to yield a uniform
+        # probability vector for the Nx.Random.choice function
+        probabilities = (Nx.iota({Nx.axis_size(data, 0)}) < size) / size
+        Nx.Random.choice(k, data, probabilities, samples: batch_size, replace: false, axis: 0)
+      end
 
-    {batch, random_key}
+    {stop_grad(batch), random_key}
   end
 
-  defnp action_log_probability(mu, stddev, x) do
-    # stddev is guaranteed to not be 0 nor negative
-    # because it is derived from a log(stddev) definition
+  defnp action_log_probability(mu, stddev, log_stddev, x) do
+    # x is assumed to be pre tanh squashing
 
-    logprob = -0.5 * ((x - mu) / stddev) ** 2 - 0.5 * Nx.log(2 * pi(Nx.type(stddev)) * stddev ** 2)
-    # x is bounded between -1 and 1, so x ** 2 is bounded between 0 and 1
-    logprob = logprob - Nx.log(1 - x ** 2 + Nx.Constants.epsilon(Nx.type(x)))
+    # this is the same as log_prob - Nx.sum(Nx.log(1 - tanh(x)^2)), derived via the
+    # definition of tanh(x) = (e^x - e^-x) / (e^x + e^-x) as follows:
+    # 1 - tanh(x)^2
+    # = 1 - ((e^2x - 2 + e^-2x) / (e^x + e-^x)^2
+    # = 4 / (e^x + e^-x)^2  (x e^-2x)
+    # = 4e^-2x / (1 + e^-2x)^2
 
-    Nx.sum(logprob, axes: [1], keep_axes: true)
+    # then, log(1 - tanh(x)^2) becomes:
+    # log(4) + log(e^-2x) - log((1 + e^-2x)^2)
+    # = 2log(2) - 2x - 2log(1 + e^-2x)
+    # = 2(log(2) - x - log(1 + e^-2x)), which is the version of the correction used below
+
+    log_prob(mu, stddev, log_stddev, x) -
+      2 * Nx.sum(Nx.log(2) - x - Nx.log1p(Nx.exp(-2 * x)), axes: [1], keep_axes: true)
+  end
+
+  defnp log_prob(mu, stddev, log_stddev, x) do
+    # compute the variance
+    type = Nx.type(x)
+    eps = Nx.Constants.epsilon(type)
+
+    # formula for the log-probability density function of a Normal distribution
+    z = (x - mu) / (stddev + eps)
+
+    log_prob = -0.5 * z ** 2 - log_stddev - Nx.log(Nx.sqrt(2 * pi(type)))
+
+    Nx.sum(log_prob, axes: [-1], keep_axes: true)
   end
 end

@@ -522,7 +522,6 @@ plot_fn = fn axon_state ->
     global_kv_key = :rl_training_metadata_key
 
     :persistent_term.put(global_kv_key, %{
-      sigma: to_number.(axon_state.step_state.agent_state.ou_process.sigma, index),
       episode: episode,
       total_reward: total_reward,
       exploring: to_number.(axon_state.step_state.agent_state.exploration_fn.(episode), index)
@@ -544,10 +543,10 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.da
   actor_target_params,
   critic1_params,
   critic2_params,
-  critic_target_params,
+  critic1_target_params,
+  critic2_target_params,
   experience_replay_buffer,
   total_episodes,
-  performance_memory,
   state_features_memory
 } =
   try do
@@ -561,19 +560,19 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.da
       actor_target_params: actor_target_params,
       critic1_params: critic1_params,
       critic2_params: critic2_params,
-      critic_target_params: critic_target_params,
+      critic1_target_params: critic1_target_params,
+      critic2_target_params: critic2_target_params,
       experience_replay_buffer: exp_replay_buffer,
-      performance_memory: performance_memory,
       state_features_memory: state_features_memory
     } =
       Nx.with_default_backend({EXLA.Backend, client: :host}, fn -> Nx.deserialize(serialized) end)
 
-    {actor_params, actor_target_params, critic1_params, critic2_params, critic_target_params,
-     exp_replay_buffer, total_episodes, performance_memory, state_features_memory}
+    {actor_params, actor_target_params, critic1_params, critic2_params, critic1_target_params,
+     critic2_target_params, exp_replay_buffer, total_episodes, state_features_memory}
   rescue
     _ in [File.Error, MatchError] ->
       critic_params = %{}
-      {%{}, %{}, critic_params, critic_params, critic_params, false, 0, false, false}
+      {%{}, %{}, critic_params, critic_params, critic_params, critic_params, false, 0, false}
   end
 
 fields = [
@@ -623,35 +622,34 @@ policy = Axon.MixedPrecision.create_policy(params: {:f, 32}, compute: {:f, 16}, 
 actor_net_base =
   state_input
   |> Axon.namespace("actor")
-  |> Axon.dense(64, activation: :linear)
+  |> Axon.dense(128, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
   |> PositionalEncoding.layer(
     sequence_length: state_features_memory_length,
-    state_space_size: 64
+    state_space_size: 128
   )
   |> Bumblebee.Layers.Transformer.blocks(
-    num_blocks: 4,
+    num_blocks: 3,
     name: "actor_transformer_prefix",
     num_attention_heads: 12,
-    hidden_size: 64,
-    attention_head_size: 64,
+    hidden_size: 128,
+    attention_head_size: 128,
     ffn: [
-      intermediate_size: 64,
+      intermediate_size: 128,
       activation: :gelu
     ]
   )
   |> Map.get(:hidden_state)
   |> Axon.flatten()
-  |> Axon.dense(200, activation: :linear)
+  |> Axon.dense(400, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(200, activation: :linear)
+  |> Axon.dense(400, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
 
 actor_net_mean_out =
   actor_net_base
@@ -665,12 +663,16 @@ actor_net_mean_out =
 actor_net_stddev_out =
   actor_net_base
   |> Axon.dense(num_actions,
-    activation: :linear,
+    activation: :relu,
     kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3),
     bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3)
   )
   |> Axon.reshape({:batch, num_actions, 1})
-  |> Axon.nx(&Nx.clip(&1, -20, 2))
+  |> Axon.nx(fn rectified ->
+    rectified
+    |> Nx.negate()
+    |> Nx.add(2)
+  end)
 
 actor_net =
   [actor_net_mean_out, actor_net_stddev_out]
@@ -683,23 +685,22 @@ critic_net =
   |> Axon.nx(fn state_memory ->
     Nx.take(state_memory, state_features_memory_length - 1, axis: 1)
   end)
-  |> Axon.dense(100, activation: :linear)
-  # |> Axon.batch_norm()
+  |> Axon.dense(300, activation: :linear)
+  |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(50, activation: :linear)
-  # |> Axon.batch_norm()
+  |> Axon.dense(200, activation: :linear)
+  |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
   |> then(&Axon.concatenate([&1, action_input], name: "critic_combined_input"))
-  |> Axon.dense(200, activation: :linear)
-  # |> Axon.batch_norm()
+  |> Axon.dense(400, activation: :linear)
+  |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(200, activation: :linear)
-  # |> Axon.batch_norm()
+  |> Axon.dense(400, activation: :linear)
+  |> Axon.batch_norm()
   |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
   |> Axon.dense(1,
     kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-4),
     bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-4)
@@ -766,18 +767,20 @@ end
 
 # actor_params = %{}
 # actor_target_params = %{}
-# critic_params = %{}
-# critic_target_params = %{}
+# critic1_params = %{}
+# critic2_params = %{}
+# critic1_target_params = %{}
+# critic2_target_params = %{}
 # total_episodes = 0
 # experience_replay_buffer = nil
 # performance_memory = nil
 # state_features_memory = nil
 
 IO.inspect(
-  {actor_params, actor_target_params, critic1_params, critic2_params, critic_target_params,
-   total_episodes},
+  {actor_params, actor_target_params, critic1_params, critic2_params, critic1_target_params,
+   critic2_target_params, total_episodes},
   label:
-    "{actor_params, actor_target_params, critic1_params, critic2_params, critic_target_params, total_episodes}"
+    "{actor_params, actor_target_params, critic1_params, critic2_params, critic1_target_params, critic2_target_params, total_episodes}"
 )
 
 # input_template =
@@ -834,10 +837,11 @@ checkpoint_serialization_fn = fn loop_state ->
     Map.take(loop_state.step_state.agent_state, [
       :actor_params,
       :actor_target_params,
-      :critic_params,
-      :critic_target_params,
+      :critic1_params,
+      :critic2_params,
+      :critic1_target_params,
+      :critic2_target_params,
       :experience_replay_buffer,
-      :performance_memory,
       :state_features_memory
     ])
 
@@ -847,30 +851,13 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-# session 1: 1_000
+# session 1: 5_000
 # session 2: 10_000
-episodes = 1_000
+# session 3: 2_500
+episodes = 2_500
 
-# session 1: 100
-# session 2: 125
+# session 1: 125
 max_iter = 125
-
-# session 1:
-max_sigma = 1 / 4
-sigma = 1 / 8
-min_sigma = 1 / 128
-
-# session 2:
-max_sigma = 1 / 8
-sigma = 1 / 64
-min_sigma = 1 / 128
-
-# validation:
-# max_sigma = sigma = min_sigma = 0
-
-exploration_decay_rate = 0.97
-exploration_increase_rate = 1.03
-exploration_threshold = 0.05
 
 defmodule Exploration do
   import Nx.Defn
@@ -894,7 +881,7 @@ defmodule Exploration do
     warmup_steps = opts[:warmup_steps]
 
     lr = amplitude * Nx.min(Nx.rsqrt(step), step * Nx.rsqrt(warmup_steps ** 3))
-    Nx.min(lr, opts[:min_value])
+    Nx.max(lr, opts[:min_value])
   end
 
   def resetting_linear_schedule(start, stop, steps) do
@@ -910,10 +897,12 @@ defmodule Exploration do
   end
 end
 
-exploration_fn = &Nx.less(Nx.remainder(&1, 50), 20)
+exploration_fn = fn x -> Nx.remainder(x, 2) |> Nx.equal(0) end
+# exploration_fn = &Nx.less(Nx.remainder(&1, 5), 2)
+# exploration_fn = &Exploration.run(&1, 500)
 
 # session 1, 2:
-targets_probs = :uniform
+# targets_probs = :uniform
 # session 2, 3, 4:
 # targets_probs =
 #   Nx.all(Nx.equal(targets_tensor, Nx.tensor([[0, r]])), axes: [1])
@@ -921,10 +910,10 @@ targets_probs = :uniform
 #   |> Nx.add(1)
 
 # targets_probs = Nx.divide(targets_probs, Nx.sum(targets_probs))
-IO.inspect(targets_probs, label: "targets_probs")
+# IO.inspect(targets_probs, label: "targets_probs")
 
 random_key_init = Nx.Random.key(42)
-num_vectors = 25
+num_vectors = 15
 
 random_key_devec =
   Nx.Random.randint_split(random_key_init, 0, Nx.Constants.max_finite(:u32),
@@ -944,7 +933,7 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         max_remaining_seconds: 400,
         coords: points_tensor,
         coord_probabilities: points_probs,
-        max_tacks: 3
+        max_tacks: 2
       },
       {
         ReinforcementLearning.Agents.SAC,
@@ -953,57 +942,57 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         # session 1:
         # batch_size: 200,
         # session 2:
+        # session 1: 0.1
+        # session 2: 0.25
         exploration_fn: exploration_fn,
-        tau: 0.001,
-        performance_memory_length: 256,
-        performance_memory: performance_memory,
+        tau: 0.005,
+        gamma: 0.99,
         actor_net: actor_net,
         actor_params: actor_params,
         actor_target_params: actor_target_params,
         critic_net: critic_net,
         critic1_params: critic1_params,
         critic2_params: critic2_params,
-        critic_target_params: critic_target_params,
+        critic1_target_params: critic1_target_params,
+        critic2_target_params: critic2_target_params,
         state_features_memory: state_features_memory,
         state_features_memory_length: state_features_memory_length,
         experience_replay_buffer: experience_replay_buffer,
-        experience_replay_buffer_max_size: 300_000,
+        experience_replay_buffer_max_size: 400_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
         training_frequency: 16,
-        batch_size: 400,
-        exploration_decay_rate: exploration_decay_rate,
-        exploration_increase_rate: exploration_increase_rate,
-        performance_threshold: exploration_threshold,
-        ou_process_opts: [
-          max_sigma: max_sigma,
-          min_sigma: min_sigma,
-          sigma: sigma
-        ],
+        batch_size: 200,
+        entropy_coefficient: 0.1,
         actor_optimizer:
-          Axon.Updates.compose(
-            Axon.Updates.clip_by_global_norm(max_norm: 2),
-            Axon.Optimizers.adamw(
+          Polaris.Updates.compose(
+            Polaris.Updates.clip_by_global_norm(),
+            Polaris.Optimizers.adam(
               # session 1, 2:
-              Exploration.attention_is_all_you_need_lr_schedule(
-                warmup_steps: 500,
-                amplitude: 1.0e-4,
-                min_value: 1.0e-6
-              ),
-              # Exploration.resetting_linear_schedule(3.0e-6, 3.0e-7, 500),
-              eps: 1.0e-8,
-              decay: 0.01
+              learning_rate:
+                Exploration.attention_is_all_you_need_lr_schedule(
+                  warmup_steps: 300,
+                  amplitude: 1.0e-3,
+                  min_value: 1.0e-5
+                ),
+              # decay: 0.01,
+              eps: 1.0e-7
             )
           ),
         critic_optimizer:
-          Axon.Updates.compose(
-            Axon.Updates.clip_by_global_norm(max_norm: 2),
-            Axon.Optimizers.adamw(
+          Polaris.Updates.compose(
+            Polaris.Updates.clip_by_global_norm(),
+            Polaris.Optimizers.adam(
               # session 1, 2
-              Exploration.resetting_linear_schedule(3.0e-3, 3.0e-5, 500),
-              eps: 1.0e-8,
-              decay: 0.01
+              learning_rate:
+                Exploration.attention_is_all_you_need_lr_schedule(
+                  warmup_steps: 250,
+                  amplitude: 1.0e-3,
+                  min_value: 1.0e-5
+                ),
+              # decay: 0.01,
+              eps: 1.0e-7
             )
           )
       },
