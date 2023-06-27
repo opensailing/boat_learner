@@ -159,7 +159,8 @@ defmodule ReinforcementLearning do
     |> Axon.Loop.run(Stream.cycle([Nx.tensor(1)]), initial_state,
       iterations: max_iter,
       epochs: num_episodes,
-      debug: Application.get_env(:boat_learner, :debug, false)
+      debug: Application.get_env(:boat_learner, :debug, false),
+      jit_compile?: false
     )
   end
 

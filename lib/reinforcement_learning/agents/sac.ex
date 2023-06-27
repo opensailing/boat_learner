@@ -500,7 +500,7 @@ defmodule ReinforcementLearning.Agents.SAC do
   end
 
   @impl true
-  defn optimize_model(state) do
+  def optimize_model(state) do
     %{
       experience_replay_buffer: experience_replay_buffer,
       batch_size: batch_size,
@@ -517,6 +517,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       state.environment_state.is_terminal
       |> Nx.devectorize()
       |> Nx.all()
+      |> Nx.to_number()
+      |> Kernel.==(1)
 
     should_train = is_terminal and has_at_least_one_batch
 
@@ -531,7 +533,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     end
   end
 
-  deftransformp vectorized_axes(t) do
+  defp vectorized_axes(t) do
     # flat_size is all entries, inclusing vectorized axes
     # size is just the non-vectorized part
     # So training frequency here is the number of vectorized axes,
@@ -543,12 +545,14 @@ defmodule ReinforcementLearning.Agents.SAC do
     if training_frequency == 1 do
       train_loop_step(state, exploring)
     else
-      train_loop_while(state, training_frequency, exploring)
+      train_loop_while(state, exploring, training_frequency: training_frequency)
     end
     |> elem(0)
   end
 
-  defnp train_loop_while(state, training_frequency, exploring) do
+  defnp train_loop_while(state, exploring, opts \\ []) do
+    training_frequency = opts[:training_frequency]
+
     while {state, exploring}, _ <- 0..(training_frequency - 1)//1, unroll: false do
       train_loop_step(state, exploring)
     end
@@ -815,18 +819,24 @@ defmodule ReinforcementLearning.Agents.SAC do
           Nx.take(k, 0)
       end
 
-    {batch, _} =
-      if size == Nx.axis_size(data, 0) do
-        Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
-      else
-        Nx.Random.choice(k, Nx.slice_along_axis(data, 0, filled_entries, axis: 0),
-          samples: batch_size,
-          replace: false,
-          axis: 0
-        )
-      end
+    batch = sample(k, data, filled_entries: filled_entries, batch_size: batch_size)
 
     {stop_grad(batch), random_key}
+  end
+
+  deftransformp sample(k, data, opts \\ []) do
+    filled_entries = opts[:filled_entries]
+    batch_size = opts[:batch_size]
+
+    {batch, _} =
+      if filled_entries do
+        data = Nx.slice_along_axis(data, 0, min(filled_entries, batch_size), axis: 0)
+        Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
+      else
+        Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
+      end
+
+    batch
   end
 
   defnp action_log_probability(mu, stddev, log_stddev, x) do

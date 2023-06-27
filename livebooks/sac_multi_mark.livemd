@@ -622,32 +622,32 @@ policy = Axon.MixedPrecision.create_policy(params: {:f, 32}, compute: {:f, 16}, 
 actor_net_base =
   state_input
   |> Axon.namespace("actor")
-  |> Axon.dense(128, activation: :linear)
+  |> Axon.dense(64, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
   |> PositionalEncoding.layer(
     sequence_length: state_features_memory_length,
-    state_space_size: 128
+    state_space_size: 64
   )
   |> Bumblebee.Layers.Transformer.blocks(
-    num_blocks: 3,
+    num_blocks: 4,
     name: "actor_transformer_prefix",
-    num_attention_heads: 12,
-    hidden_size: 128,
-    attention_head_size: 128,
+    num_attention_heads: 16,
+    hidden_size: 64,
+    attention_head_size: 64,
     ffn: [
-      intermediate_size: 128,
+      intermediate_size: 64,
       activation: :gelu
     ]
   )
   |> Map.get(:hidden_state)
   |> Axon.flatten()
-  |> Axon.dense(400, activation: :linear)
+  |> Axon.dense(300, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(400, activation: :linear)
+  |> Axon.dense(300, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
 
@@ -685,20 +685,20 @@ critic_net =
   |> Axon.nx(fn state_memory ->
     Nx.take(state_memory, state_features_memory_length - 1, axis: 1)
   end)
-  |> Axon.dense(300, activation: :linear)
-  |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
   |> Axon.dense(200, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> then(&Axon.concatenate([&1, action_input], name: "critic_combined_input"))
-  |> Axon.dense(400, activation: :linear)
+  |> Axon.dense(100, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(400, activation: :linear)
+  |> then(&Axon.concatenate([&1, action_input], name: "critic_combined_input"))
+  |> Axon.dense(200, activation: :linear)
+  |> Axon.batch_norm()
+  |> Axon.activation(:relu)
+  |> Axon.dropout(rate: 0.1)
+  |> Axon.dense(200, activation: :linear)
   |> Axon.batch_norm()
   |> Axon.activation(:relu)
   |> Axon.dense(1,
@@ -851,9 +851,7 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-# session 1: 5_000
-# session 2: 10_000
-# session 3: 2_500
+# session 1: 2_500
 episodes = 2_500
 
 # session 1: 125
@@ -929,11 +927,11 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
     ReinforcementLearning.train(
       {
         BoatLearner.Environments.MultiMark,
-        # session 1, 2, 3:
+        # session 1:
         max_remaining_seconds: 400,
         coords: points_tensor,
         coord_probabilities: points_probs,
-        max_tacks: 2
+        max_tacks: 3
       },
       {
         ReinforcementLearning.Agents.SAC,
@@ -964,7 +962,7 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         state_features_size: state_features_size,
         training_frequency: 1,
         batch_size: 200,
-        entropy_coefficient: 0.1,
+        entropy_coefficient: 0.2,
         actor_optimizer:
           Polaris.Updates.compose(
             Polaris.Updates.clip_by_global_norm(),
