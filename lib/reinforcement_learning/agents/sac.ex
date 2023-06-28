@@ -61,7 +61,7 @@ defmodule ReinforcementLearning.Agents.SAC do
              :batch_size,
              :training_frequency,
              :input_entry_size,
-             :filled_entries
+             :reward_scale
            ]}
 
   defstruct [
@@ -98,7 +98,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     :state_features_memory,
     :input_entry_size,
     :entropy_coefficient,
-    :filled_entries
+    :reward_scale
   ]
 
   @impl true
@@ -119,6 +119,7 @@ defmodule ReinforcementLearning.Agents.SAC do
       :state_features_size,
       :actor_optimizer,
       :critic_optimizer,
+      reward_scale: 1,
       state_features_memory_length: 1,
       exploration_decay_rate: 0.9995,
       exploration_increase_rate: 1.1,
@@ -333,7 +334,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       critic2_optimizer_state: critic2_optimizer_state,
       action_lower_limit: opts[:action_lower_limit],
       action_upper_limit: opts[:action_upper_limit],
-      entropy_coefficient: opts[:entropy_coefficient]
+      entropy_coefficient: opts[:entropy_coefficient],
+      reward_scale: opts[:reward_scale]
     }
 
     case random_key.vectorized_axes do
@@ -450,7 +452,8 @@ defmodule ReinforcementLearning.Agents.SAC do
            agent_state: %__MODULE__{
              state_features_memory: state_features_memory,
              environment_to_state_features_fn: environment_to_state_features_fn,
-             experience_replay_buffer: experience_replay_buffer
+             experience_replay_buffer: experience_replay_buffer,
+             reward_scale: reward_scale
            }
          },
          action_vector,
@@ -461,6 +464,8 @@ defmodule ReinforcementLearning.Agents.SAC do
        ) do
     next_state_features = environment_to_state_features_fn.(next_env_state)
     state_data = CircularBuffer.ordered_data(state_features_memory)
+
+    reward = reward * reward_scale
 
     updates =
       Nx.concatenate([
@@ -523,7 +528,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       train_loop(
         state,
         training_frequency * vectorized_axes(state.environment_state.is_terminal),
-        Nx.u8(0)
+        Nx.u8(0),
+        filled_entries
       )
     else
       state
@@ -538,11 +544,14 @@ defmodule ReinforcementLearning.Agents.SAC do
     div(Nx.flat_size(t), Nx.size(t))
   end
 
-  deftransformp train_loop(state, training_frequency, exploring) do
+  deftransformp train_loop(state, training_frequency, exploring, filled_entries) do
     if training_frequency == 1 do
       train_loop_step(state, exploring)
     else
-      train_loop_while(state, exploring, training_frequency: training_frequency)
+      train_loop_while(state, exploring,
+        training_frequency: training_frequency,
+        filled_entries: filled_entries
+      )
     end
     |> elem(0)
   end
@@ -551,12 +560,13 @@ defmodule ReinforcementLearning.Agents.SAC do
     training_frequency = opts[:training_frequency]
 
     while {state, exploring}, _ <- 0..(training_frequency - 1)//1, unroll: false do
-      train_loop_step(state, exploring)
+      train_loop_step(state, exploring, opts)
     end
   end
 
-  defnp train_loop_step(state, exploring) do
-    {batch, random_key} = sample_experience_replay_buffer(state.random_key, state.agent_state)
+  defnp train_loop_step(state, exploring, opts \\ []) do
+    {batch, random_key} =
+      sample_experience_replay_buffer(state.random_key, state.agent_state, opts)
 
     train_actor = not exploring
 
@@ -790,11 +800,10 @@ defmodule ReinforcementLearning.Agents.SAC do
 
   defnp sample_experience_replay_buffer(
           random_key,
-          %__MODULE__{
-            batch_size: batch_size,
-            filled_entries: filled_entries
-          } = agent_state
+          %__MODULE__{batch_size: batch_size} = agent_state,
+          opts \\ []
         ) do
+    filled_entries = opts[:filled_entries]
     data = agent_state.experience_replay_buffer.data
 
     # split and devectorize random_key because we want to keep the replay buffer
