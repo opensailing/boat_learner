@@ -115,12 +115,9 @@ defmodule ReinforcementLearning do
     max_iter = Keyword.fetch!(opts, :max_iter)
 
     batch_step_fn = fn input, state ->
-      f =
-        Nx.Defn.jit(
-          &batch_step(&1, &2, agent, environment, state_to_trajectory_fn, state.agent_opts)
-        )
+      f = Nx.Defn.jit(&batch_step(&1, &2, &3, agent, environment, state_to_trajectory_fn))
 
-      f.(input, state)
+      f.(input, state, state.agent_opts)
     end
 
     loop = Axon.Loop.loop(batch_step_fn)
@@ -213,9 +210,9 @@ defmodule ReinforcementLearning do
          _inputs,
          prev_state,
          agent,
+         agent_opts,
          environment,
-         state_to_trajectory_fn,
-         agent_opts
+         state_to_trajectory_fn
        ) do
     {action, state} = agent.select_action(prev_state, prev_state.iteration, agent_opts)
 
