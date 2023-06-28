@@ -815,7 +815,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     {stop_grad(batch), random_key}
   end
 
-  deftransformp sample(k, data, size, opts \\ []) do
+  defnp sample(k, data, size, opts \\ []) do
     batch_size = opts[:batch_size]
 
     n = Nx.axis_size(data, 0)
