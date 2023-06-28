@@ -14,7 +14,7 @@ defmodule ReinforcementLearning do
              :episode,
              :trajectory
            ],
-           keep: []}
+           keep: [:agent_opts]}
   defstruct [
     :agent,
     :agent_state,
@@ -23,7 +23,8 @@ defmodule ReinforcementLearning do
     :random_key,
     :iteration,
     :episode,
-    :trajectory
+    :trajectory,
+    :agent_opts
   ]
 
   @spec train(
@@ -78,7 +79,8 @@ defmodule ReinforcementLearning do
 
     initial_state = %__MODULE__{
       agent: agent,
-      agent_state: {agent_state, agent_opts},
+      agent_state: agent_state,
+      agent_opts: agent_opts,
       environment: environment,
       environment_state: environment_state,
       random_key: random_key,
@@ -185,7 +187,8 @@ defmodule ReinforcementLearning do
 
     state = %{
       loop_state
-      | agent_state: {agent_state, agent_opts},
+      | agent_state: agent_state,
+        agent_opts: agent_opts,
         environment_state: environment_state,
         random_key: random_key,
         trajectory: Nx.broadcast(Nx.tensor(:nan, type: :f32), loop_state.trajectory),
@@ -198,12 +201,12 @@ defmodule ReinforcementLearning do
 
   defp batch_step(
          _inputs,
-         %{agent_state: {_, agent_opts}} = prev_state,
+         prev_state,
          agent,
          environment,
          state_to_trajectory_fn
        ) do
-    {action, state} = agent.select_action(prev_state, prev_state.iteration, agent_opts)
+    {action, state} = agent.select_action(prev_state, prev_state.iteration, prev_state.agent_opts)
 
     %{environment_state: %{reward: reward, is_terminal: is_terminal}} =
       state = environment.apply_action(state, action)
@@ -214,9 +217,9 @@ defmodule ReinforcementLearning do
       reward,
       is_terminal,
       state,
-      agent_opts
+      prev_state.agent_opts
     )
-    |> agent.optimize_model(agent_opts)
+    |> agent.optimize_model(prev_state.agent_opts)
     |> persist_trajectory(state_to_trajectory_fn)
   end
 
