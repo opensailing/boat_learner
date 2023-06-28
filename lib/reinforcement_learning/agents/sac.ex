@@ -407,8 +407,7 @@ defmodule ReinforcementLearning.Agents.SAC do
   @impl true
   defn select_action(
          %ReinforcementLearning{random_key: random_key, agent_state: agent_state} = state,
-         _iteration,
-         _opts
+         _iteration
        ) do
     %__MODULE__{
       actor_params: actor_params,
@@ -459,8 +458,7 @@ defmodule ReinforcementLearning.Agents.SAC do
          action_vector,
          reward,
          is_terminal,
-         %{environment_state: next_env_state} = state,
-         _opts
+         %{environment_state: next_env_state} = state
        ) do
     next_state_features = environment_to_state_features_fn.(next_env_state)
     state_data = CircularBuffer.ordered_data(state_features_memory)
@@ -506,7 +504,7 @@ defmodule ReinforcementLearning.Agents.SAC do
   end
 
   @impl true
-  defn optimize_model(state, opts \\ []) do
+  defn optimize_model(state) do
     %{
       batch_size: batch_size,
       training_frequency: training_frequency
