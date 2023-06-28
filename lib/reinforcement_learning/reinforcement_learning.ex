@@ -209,8 +209,8 @@ defmodule ReinforcementLearning do
   defp batch_step(
          _inputs,
          prev_state,
-         agent,
          agent_opts,
+         agent,
          environment,
          state_to_trajectory_fn
        ) do
