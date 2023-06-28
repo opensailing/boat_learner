@@ -810,14 +810,6 @@ defmodule ReinforcementLearning.Agents.SAC do
           Nx.take(k, 0)
       end
 
-    batch = sample(k, data, size, batch_size: batch_size)
-
-    {stop_grad(batch), random_key}
-  end
-
-  defnp sample(k, data, size, opts \\ []) do
-    batch_size = opts[:batch_size]
-
     n = Nx.axis_size(data, 0)
 
     {batch, _} =
@@ -828,7 +820,7 @@ defmodule ReinforcementLearning.Agents.SAC do
         Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
       end
 
-    batch
+    {stop_grad(batch), random_key}
   end
 
   defnp action_log_probability(mu, stddev, log_stddev, x) do

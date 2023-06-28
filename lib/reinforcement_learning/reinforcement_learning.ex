@@ -114,7 +114,9 @@ defmodule ReinforcementLearning do
     num_episodes = Keyword.fetch!(opts, :num_episodes)
     max_iter = Keyword.fetch!(opts, :max_iter)
 
-    &batch_step(&1, &2, agent, environment, state_to_trajectory_fn)
+    loop_fn = &batch_step(&1, &2, agent, environment, state_to_trajectory_fn)
+
+    loop_fn
     |> Axon.Loop.loop()
     |> Axon.Loop.handle_event(
       :epoch_started,
