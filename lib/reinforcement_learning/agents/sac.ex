@@ -514,25 +514,27 @@ defmodule ReinforcementLearning.Agents.SAC do
       training_frequency: training_frequency
     } = state.agent_state
 
-    has_at_least_one_batch = filled_entries > batch_size
-
     # Run training after all simulations have ended.
     is_terminal =
       state.environment_state.is_terminal
       |> Nx.devectorize()
       |> Nx.all()
 
-    should_train = is_terminal and has_at_least_one_batch
+    case {filled_entries, batch_size} do
+      {l, r} when l > r ->
+        if is_terminal do
+          train_loop(
+            state,
+            training_frequency * vectorized_axes(state.environment_state.is_terminal),
+            Nx.u8(0),
+            filled_entries
+          )
+        else
+          state
+        end
 
-    if should_train do
-      train_loop(
-        state,
-        training_frequency * vectorized_axes(state.environment_state.is_terminal),
-        Nx.u8(0),
-        filled_entries
-      )
-    else
-      state
+      _ ->
+        state
     end
   end
 
