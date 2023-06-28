@@ -115,14 +115,15 @@ defmodule ReinforcementLearning do
     max_iter = Keyword.fetch!(opts, :max_iter)
 
     batch_step_fn = fn input, state ->
-      f = Nx.Defn.jit(&batch_step(&1, &2, &3, agent, environment, state_to_trajectory_fn))
-
-      f.(input, state, state.agent_opts)
+      Nx.Defn.jit_apply(&batch_step(&1, &2, &3, agent, environment, state_to_trajectory_fn), [
+        input,
+        state,
+        state.agent_opts
+      ])
     end
 
-    loop = Axon.Loop.loop(batch_step_fn)
-
-    loop
+    batch_step_fn
+    |> Axon.Loop.loop()
     |> Axon.Loop.handle_event(
       :epoch_started,
       &{:continue,

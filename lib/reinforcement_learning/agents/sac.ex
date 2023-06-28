@@ -834,8 +834,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     batch_size = opts[:batch_size]
 
     {batch, _} =
-      if filled_entries do
-        data = Nx.slice_along_axis(data, 0, min(filled_entries, batch_size), axis: 0)
+      if filled_entries < Nx.axis_size(data, 0) do
+        data = Nx.slice_along_axis(data, 0, max(filled_entries, batch_size), axis: 0)
         Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
       else
         Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
