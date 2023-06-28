@@ -21,7 +21,7 @@
   "nx": {:git, "https://github.com/elixir-nx/nx.git", "0af36df37f6b7582e242a9aa19748fb6a5e12dcd", [sparse: "nx"]},
   "nx_image": {:hex, :nx_image, "0.1.1", "69cf0d2fd873d12b028583aa49b5e0a25f6aca307afc337a5d871851a20fba1d", [:mix], [{:nx, "~> 0.4", [hex: :nx, repo: "hexpm", optional: false]}], "hexpm", "55c8206a822237f6027168f11214e3887263c5b8a1f8e0634eea82c96e5093e3"},
   "nx_signal": {:hex, :nx_signal, "0.1.0", "403ac73140e2f368e827e0aca1a3035abaf6d890b00376742b359a6838e00d7f", [:mix], [{:nx, "~> 0.5", [hex: :nx, repo: "hexpm", optional: false]}], "hexpm", "1c68f2f0d186700819287f37ee6154a11e06bf5dbb30b73fcc92776293309a05"},
-  "polaris": {:git, "https://github.com/elixir-nx/polaris.git", "f38837b5337b4ca7b9cfb954e4c9ea892452d2e4", []},
+  "polaris": {:hex, :polaris, "0.1.0", "dca61b18e3e801ecdae6ac9f0eca5f19792b44a5cb4b8d63db50fc40fc038d22", [:mix], [{:nx, "~> 0.5", [hex: :nx, repo: "hexpm", optional: false]}], "hexpm", "13ef2b166650e533cb24b10e2f3b8ab4f2f449ba4d63156e8c569527f206e2c2"},
   "progress_bar": {:hex, :progress_bar, "2.0.1", "7b40200112ae533d5adceb80ff75fbe66dc753bca5f6c55c073bfc122d71896d", [:mix], [{:decimal, "~> 2.0", [hex: :decimal, repo: "hexpm", optional: false]}], "hexpm", "2519eb58a2f149a3a094e729378256d8cb6d96a259ec94841bd69fdc71f18f87"},
   "rustler_precompiled": {:hex, :rustler_precompiled, "0.6.1", "160b545bce8bf9a3f1b436b2c10f53574036a0db628e40f393328cbbe593602f", [:mix], [{:castore, "~> 0.1 or ~> 1.0", [hex: :castore, repo: "hexpm", optional: false]}, {:rustler, "~> 0.23", [hex: :rustler, repo: "hexpm", optional: true]}], "hexpm", "0dd269fa261c4e3df290b12031c575fff07a542749f7b0e8b744d72d66c43600"},
   "scholar": {:git, "https://github.com/elixir-nx/scholar.git", "7f2d814358f32956f4c9b04270ee32b304010e70", []},

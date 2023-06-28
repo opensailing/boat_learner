@@ -398,15 +398,15 @@ defmodule ReinforcementLearning.Agents.SAC do
        | total_reward: total_reward,
          loss: loss,
          loss_denominator: loss_denominator,
-         state_features_memory: state_features_memory,
-         filled_entries: Nx.to_number(state.experience_replay_buffer.size)
-     }, random_key}
+         state_features_memory: state_features_memory
+     }, [filled_entries: Nx.to_number(state.experience_replay_buffer.size)], random_key}
   end
 
   @impl true
   defn select_action(
          %ReinforcementLearning{random_key: random_key, agent_state: agent_state} = state,
-         _iteration
+         _iteration,
+         _opts
        ) do
     %__MODULE__{
       actor_params: actor_params,
@@ -456,7 +456,8 @@ defmodule ReinforcementLearning.Agents.SAC do
          action_vector,
          reward,
          is_terminal,
-         %{environment_state: next_env_state} = state
+         %{environment_state: next_env_state} = state,
+         _opts
        ) do
     next_state_features = environment_to_state_features_fn.(next_env_state)
     state_data = CircularBuffer.ordered_data(state_features_memory)
@@ -500,16 +501,14 @@ defmodule ReinforcementLearning.Agents.SAC do
   end
 
   @impl true
-  def optimize_model(state) do
+  defn optimize_model(state, opts \\ []) do
+    filled_entries = opts[:filled_entries]
+
     %{
-      experience_replay_buffer: experience_replay_buffer,
       batch_size: batch_size,
-      exploration_fn: exploration_fn,
-      training_frequency: training_frequency,
-      filled_entries: filled_entries
+      training_frequency: training_frequency
     } = state.agent_state
 
-    # exploring = state.episode |> Nx.devectorize() |> Nx.take(0) |> exploration_fn.()
     has_at_least_one_batch = filled_entries > batch_size
 
     # Run training after all simulations have ended.
@@ -517,8 +516,6 @@ defmodule ReinforcementLearning.Agents.SAC do
       state.environment_state.is_terminal
       |> Nx.devectorize()
       |> Nx.all()
-      |> Nx.to_number()
-      |> Kernel.==(1)
 
     should_train = is_terminal and has_at_least_one_batch
 
@@ -533,7 +530,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     end
   end
 
-  defp vectorized_axes(t) do
+  deftransformp vectorized_axes(t) do
     # flat_size is all entries, inclusing vectorized axes
     # size is just the non-vectorized part
     # So training frequency here is the number of vectorized axes,
@@ -799,7 +796,6 @@ defmodule ReinforcementLearning.Agents.SAC do
           } = agent_state
         ) do
     data = agent_state.experience_replay_buffer.data
-    size = agent_state.experience_replay_buffer.size
 
     # split and devectorize random_key because we want to keep the replay buffer
     # and its samples devectorized at all times

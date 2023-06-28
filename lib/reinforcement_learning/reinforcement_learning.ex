@@ -159,8 +159,7 @@ defmodule ReinforcementLearning do
     |> Axon.Loop.run(Stream.cycle([Nx.tensor(1)]), initial_state,
       iterations: max_iter,
       epochs: num_episodes,
-      debug: Application.get_env(:boat_learner, :debug, false),
-      jit_compile?: false
+      debug: Application.get_env(:boat_learner, :debug, false)
     )
   end
 
@@ -175,12 +174,15 @@ defmodule ReinforcementLearning do
        ) do
     {environment_state, random_key} = environment.reset(random_key, environment_state)
 
-    {agent_state, random_key} =
-      agent.reset(random_key, %{loop_state | environment_state: environment_state})
+    {agent_state, agent_opts, random_key} =
+      case agent.reset(random_key, %{loop_state | environment_state: environment_state}) do
+        {state, opts, key} -> {state, opts, key}
+        {state, key} -> {state, [], key}
+      end
 
     state = %{
       loop_state
-      | agent_state: agent_state,
+      | agent_state: {agent_state, agent_opts},
         environment_state: environment_state,
         random_key: random_key,
         trajectory: Nx.broadcast(Nx.tensor(:nan, type: :f32), loop_state.trajectory),
@@ -193,12 +195,12 @@ defmodule ReinforcementLearning do
 
   defp batch_step(
          _inputs,
-         prev_state,
+         %{agent_state: {_, agent_opts}} = prev_state,
          agent,
          environment,
          state_to_trajectory_fn
        ) do
-    {action, state} = agent.select_action(prev_state, prev_state.iteration)
+    {action, state} = agent.select_action(prev_state, prev_state.iteration, agent_opts)
 
     %{environment_state: %{reward: reward, is_terminal: is_terminal}} =
       state = environment.apply_action(state, action)
@@ -208,9 +210,10 @@ defmodule ReinforcementLearning do
       action,
       reward,
       is_terminal,
-      state
+      state,
+      agent_opts
     )
-    |> agent.optimize_model()
+    |> agent.optimize_model(agent_opts)
     |> persist_trajectory(state_to_trajectory_fn)
   end
 
