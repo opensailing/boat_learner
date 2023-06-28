@@ -550,13 +550,12 @@ defmodule ReinforcementLearning.Agents.SAC do
     training_frequency = opts[:training_frequency]
 
     while {state, exploring}, _ <- 0..(training_frequency - 1)//1, unroll: false do
-      train_loop_step(state, exploring, opts)
+      train_loop_step(state, exploring)
     end
   end
 
-  defnp train_loop_step(state, exploring, opts \\ []) do
-    {batch, random_key} =
-      sample_experience_replay_buffer(state.random_key, state.agent_state, opts)
+  defnp train_loop_step(state, exploring) do
+    {batch, random_key} = sample_experience_replay_buffer(state.random_key, state.agent_state)
 
     train_actor = not exploring
 
