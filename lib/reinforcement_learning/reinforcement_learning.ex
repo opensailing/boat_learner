@@ -65,17 +65,20 @@ defmodule ReinforcementLearning do
 
     {environment_state, random_key} = environment.init(random_key, environment_init_opts)
 
-    {agent_state, random_key} =
-      agent.reset(random_key, %__MODULE__{
-        environment_state: environment_state,
-        agent: agent,
-        agent_state: init_agent_state,
-        episode: episode
-      })
+    {agent_state, agent_opts, random_key} =
+      case agent.reset(random_key, %__MODULE__{
+             environment_state: environment_state,
+             agent: agent,
+             agent_state: init_agent_state,
+             episode: episode
+           }) do
+        {s, o, k} -> {s, o, k}
+        {s, k} -> {s, [], k}
+      end
 
     initial_state = %__MODULE__{
       agent: agent,
-      agent_state: agent_state,
+      agent_state: {agent_state, agent_opts},
       environment: environment,
       environment_state: environment_state,
       random_key: random_key,
