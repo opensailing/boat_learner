@@ -114,7 +114,16 @@ defmodule ReinforcementLearning do
     num_episodes = Keyword.fetch!(opts, :num_episodes)
     max_iter = Keyword.fetch!(opts, :max_iter)
 
-    loop = Axon.Loop.loop(&batch_step(&1, &2, agent, environment, state_to_trajectory_fn))
+    batch_step_fn = fn input, state ->
+      f =
+        Nx.Defn.jit(
+          &batch_step(&1, &2, agent, environment, state_to_trajectory_fn, state.agent_opts)
+        )
+
+      f.(input, state)
+    end
+
+    loop = Axon.Loop.loop(batch_step_fn)
 
     loop
     |> Axon.Loop.handle_event(
@@ -164,7 +173,8 @@ defmodule ReinforcementLearning do
     |> Axon.Loop.run(Stream.cycle([Nx.tensor(1)]), initial_state,
       iterations: max_iter,
       epochs: num_episodes,
-      debug: Application.get_env(:boat_learner, :debug, false)
+      debug: Application.get_env(:boat_learner, :debug, false),
+      jit_compile?: false
     )
   end
 
@@ -204,9 +214,10 @@ defmodule ReinforcementLearning do
          prev_state,
          agent,
          environment,
-         state_to_trajectory_fn
+         state_to_trajectory_fn,
+         agent_opts
        ) do
-    {action, state} = agent.select_action(prev_state, prev_state.iteration, prev_state.agent_opts)
+    {action, state} = agent.select_action(prev_state, prev_state.iteration, agent_opts)
 
     %{environment_state: %{reward: reward, is_terminal: is_terminal}} =
       state = environment.apply_action(state, action)
@@ -217,9 +228,9 @@ defmodule ReinforcementLearning do
       reward,
       is_terminal,
       state,
-      prev_state.agent_opts
+      agent_opts
     )
-    |> agent.optimize_model(prev_state.agent_opts)
+    |> agent.optimize_model(agent_opts)
     |> persist_trajectory(state_to_trajectory_fn)
   end
 
