@@ -747,7 +747,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
     {critic_updates, critic_optimizer_state} =
       critic_optimizer_update_fn.(critic_gradient, critic_optimizer_state, critic_params)
 
-    critic_params = Axon.Updates.apply_updates(critic_params, critic_updates)
+    critic_params = Polaris.Updates.apply_updates(critic_params, critic_updates)
 
     ### Train Actor
 
@@ -766,7 +766,7 @@ defmodule ReinforcementLearning.Agents.DDPG do
         {actor_updates, actor_optimizer_state} =
           actor_optimizer_update_fn.(actor_gradient, actor_optimizer_state, actor_params)
 
-        actor_params = Axon.Updates.apply_updates(actor_params, actor_updates)
+        actor_params = Polaris.Updates.apply_updates(actor_params, actor_updates)
         {actor_params, actor_optimizer_state}
       else
         {actor_params, actor_optimizer_state}

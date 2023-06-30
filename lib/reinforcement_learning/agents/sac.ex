@@ -48,7 +48,9 @@ defmodule ReinforcementLearning.Agents.SAC do
              :gamma,
              :tau,
              :state_features_memory,
-             :entropy_coefficient
+             :log_entropy_coefficient,
+             :target_entropy,
+             :log_entropy_coefficient_optimizer_state
            ],
            keep: [
              :exploration_fn,
@@ -61,7 +63,8 @@ defmodule ReinforcementLearning.Agents.SAC do
              :batch_size,
              :training_frequency,
              :input_entry_size,
-             :reward_scale
+             :reward_scale,
+             :log_entropy_coefficient_optimizer_update_fn
            ]}
 
   defstruct [
@@ -97,8 +100,11 @@ defmodule ReinforcementLearning.Agents.SAC do
     :exploration_fn,
     :state_features_memory,
     :input_entry_size,
-    :entropy_coefficient,
-    :reward_scale
+    :log_entropy_coefficient,
+    :reward_scale,
+    :log_entropy_coefficient_optimizer_update_fn,
+    :target_entropy,
+    :log_entropy_coefficient_optimizer_state
   ]
 
   @impl true
@@ -119,6 +125,7 @@ defmodule ReinforcementLearning.Agents.SAC do
       :state_features_size,
       :actor_optimizer,
       :critic_optimizer,
+      :entropy_coefficient_optimizer,
       reward_scale: 1,
       state_features_memory_length: 1,
       exploration_decay_rate: 0.9995,
@@ -140,7 +147,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     expected_opts
     |> Enum.filter(fn x -> is_atom(x) or (is_tuple(x) and is_nil(elem(x, 1))) end)
     |> Enum.reject(fn k ->
-      k in [:state_features_memory, :experience_replay_buffer]
+      k in [:state_features_memory, :experience_replay_buffer, :entropy_coefficient_optimizer]
     end)
     |> Enum.reduce(opts, fn
       k, opts ->
@@ -157,6 +164,13 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     {actor_optimizer_init_fn, actor_optimizer_update_fn} = opts[:actor_optimizer]
     {critic_optimizer_init_fn, critic_optimizer_update_fn} = opts[:critic_optimizer]
+
+    {log_entropy_coefficient_optimizer_init_fn, log_entropy_coefficient_optimizer_update_fn,
+     log_entropy_coefficient} =
+      case opts[:entropy_coefficient_optimizer] do
+        {init, upd} -> {init, upd, 0}
+        _ -> {&Function.identity/1, nil, :math.log(opts[:entropy_coefficient])}
+      end
 
     actor_net = opts[:actor_net]
     critic_net = opts[:critic_net]
@@ -248,6 +262,9 @@ defmodule ReinforcementLearning.Agents.SAC do
         :ok
     end
 
+    log_entropy_coefficient_optimizer_state =
+      log_entropy_coefficient_optimizer_init_fn.(log_entropy_coefficient)
+
     actor_params = actor_init_fn.(input_template, initial_actor_params_state)
     actor_optimizer_state = actor_optimizer_init_fn.(actor_params)
 
@@ -304,6 +321,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       exploration_fn: opts[:exploration_fn],
       exploration_decay_rate: opts[:exploration_decay_rate],
       exploration_increase_rate: opts[:exploration_increase_rate],
+      log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state,
+      log_entropy_coefficient_optimizer_update_fn: log_entropy_coefficient_optimizer_update_fn,
       state_features_memory:
         opts[:state_features_memory] ||
           CircularBuffer.new({state_features_memory_length, state_features_size}),
@@ -334,8 +353,9 @@ defmodule ReinforcementLearning.Agents.SAC do
       critic2_optimizer_state: critic2_optimizer_state,
       action_lower_limit: opts[:action_lower_limit],
       action_upper_limit: opts[:action_upper_limit],
-      entropy_coefficient: opts[:entropy_coefficient],
-      reward_scale: opts[:reward_scale]
+      log_entropy_coefficient: log_entropy_coefficient,
+      reward_scale: opts[:reward_scale],
+      target_entropy: 0.98 * num_actions
     }
 
     case random_key.vectorized_axes do
@@ -599,7 +619,10 @@ defmodule ReinforcementLearning.Agents.SAC do
         experience_replay_buffer: experience_replay_buffer,
         num_actions: num_actions,
         gamma: gamma,
-        entropy_coefficient: entropy_coefficient
+        log_entropy_coefficient: log_entropy_coefficient,
+        log_entropy_coefficient_optimizer_update_fn: log_entropy_coefficient_optimizer_update_fn,
+        log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state,
+        target_entropy: target_entropy
       },
       random_key: random_key
     } = state
@@ -651,6 +674,38 @@ defmodule ReinforcementLearning.Agents.SAC do
       end
 
     non_final_mask = not is_terminal_batch
+
+    ### Train entropy_coefficient
+
+    {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key} =
+      case log_entropy_coefficient_optimizer_update_fn do
+        nil ->
+          # entropy_coef is non-trainable
+          {log_entropy_coefficient, random_key}
+
+        update_fn ->
+          {_actions, log_probs, random_key} =
+            actor_predict_fn.(random_key, actor_params, state_batch)
+
+          g =
+            grad(log_entropy_coefficient, fn log_entropy_coefficient ->
+              -Nx.mean(log_entropy_coefficient * stop_grad(log_probs + target_entropy))
+            end)
+
+          {updates, log_entropy_coefficient_optimizer_state} =
+            log_entropy_coefficient_optimizer_update_fn.(
+              g,
+              log_entropy_coefficient_optimizer_state,
+              log_entropy_coefficient
+            )
+
+          log_entropy_coefficient =
+            Polaris.Updates.apply_updates(log_entropy_coefficient, updates)
+
+          {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key}
+      end
+
+    entropy_coefficient = stop_grad(Nx.exp(log_entropy_coefficient))
 
     ### Train critic_params
 
@@ -752,7 +807,9 @@ defmodule ReinforcementLearning.Agents.SAC do
             critic2_optimizer_state: critic2_optimizer_state,
             loss: state.agent_state.loss + critic_loss,
             loss_denominator: state.agent_state.loss_denominator + 1,
-            experience_replay_buffer: experience_replay_buffer
+            experience_replay_buffer: experience_replay_buffer,
+            log_entropy_coefficient: log_entropy_coefficient,
+            log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state
         },
         random_key: random_key
     }

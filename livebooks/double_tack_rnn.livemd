@@ -740,22 +740,22 @@ episodes = 7_000
 # session 1, 2, 3: 50
 max_iter = 50
 
-# session 1: 
+# session 1:
 max_sigma = 1 / 4
 sigma = 1 / 8
 min_sigma = 1 / 64
 
-# session 2: 
+# session 2:
 max_sigma = 1 / 16
 sigma = 1 / 64
 min_sigma = 1 / 128
 
-# session 3: 
+# session 3:
 max_sigma = 1 / 32
 sigma = 1 / 64
 min_sigma = 1 / 128
 
-# validation: 
+# validation:
 max_sigma = sigma = min_sigma = 0
 
 exploration_decay_rate = 0.97
@@ -843,8 +843,8 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
           sigma: sigma
         ],
         actor_optimizer:
-          Axon.Updates.compose(
-            Axon.Updates.clip_by_global_norm(max_norm: 2),
+          Polaris.Updates.compose(
+            Polaris.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
               # session 1:
               # Exploration.attention_is_all_you_need_lr_schedule(
@@ -861,8 +861,8 @@ exploration_fn = &Nx.less(Nx.remainder(&1, 500), 200)
             )
           ),
         critic_optimizer:
-          Axon.Updates.compose(
-            Axon.Updates.clip_by_global_norm(max_norm: 2),
+          Polaris.Updates.compose(
+            Polaris.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
               # session 1, 2
               Exploration.resetting_linear_schedule(3.0e-3, 3.0e-5, 500),

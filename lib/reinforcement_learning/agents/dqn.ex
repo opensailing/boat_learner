@@ -133,9 +133,9 @@ defmodule ReinforcementLearning.Agents.DQN do
     {policy_init_fn, policy_predict_fn} = Axon.build(policy_net, seed: 0)
 
     {optimizer_init_fn, optimizer_update_fn} =
-      Axon.Updates.clip_by_global_norm()
-      |> Axon.Updates.compose(
-        Axon.Optimizers.adamw(@learning_rate, eps: @eps, decay: @adamw_decay)
+      Polaris.Updates.clip_by_global_norm()
+      |> Polaris.Updates.compose(
+        Polaris.Optimizers.adamw(learning_rate: @learning_rate, eps: @eps, decay: @adamw_decay)
       )
 
     initial_q_policy_state = opts[:q_policy] || raise "missing initial q_policy"
@@ -525,7 +525,7 @@ defmodule ReinforcementLearning.Agents.DQN do
     {scaled_updates, optimizer_state} =
       optimizer_update_fn.(gradient, q_policy_optimizer_state, q_policy)
 
-    q_policy = Axon.Updates.apply_updates(q_policy, scaled_updates)
+    q_policy = Polaris.Updates.apply_updates(q_policy, scaled_updates)
 
     %{
       state

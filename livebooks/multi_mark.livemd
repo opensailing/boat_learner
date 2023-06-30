@@ -953,8 +953,8 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
           sigma: sigma
         ],
         actor_optimizer:
-          Axon.Updates.compose(
-            Axon.Updates.clip_by_global_norm(max_norm: 2),
+          Polaris.Updates.compose(
+            Polaris.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
               # session 1, 2:
               Exploration.attention_is_all_you_need_lr_schedule(
@@ -968,8 +968,8 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
             )
           ),
         critic_optimizer:
-          Axon.Updates.compose(
-            Axon.Updates.clip_by_global_norm(max_norm: 2),
+          Polaris.Updates.compose(
+            Polaris.Updates.clip_by_global_norm(max_norm: 2),
             Axon.Optimizers.adamw(
               # session 1, 2
               Exploration.resetting_linear_schedule(3.0e-3, 3.0e-5, 500),
