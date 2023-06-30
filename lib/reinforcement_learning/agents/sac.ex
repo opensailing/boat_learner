@@ -421,14 +421,13 @@ defmodule ReinforcementLearning.Agents.SAC do
          loss: loss,
          loss_denominator: loss_denominator,
          state_features_memory: state_features_memory
-     }, [filled_entries: Nx.to_number(state.experience_replay_buffer.size)], random_key}
+     }, random_key}
   end
 
   @impl true
   defn select_action(
          %ReinforcementLearning{random_key: random_key, agent_state: agent_state} = state,
-         _iteration,
-         _opts
+         _iteration
        ) do
     %__MODULE__{
       actor_params: actor_params,
@@ -479,8 +478,7 @@ defmodule ReinforcementLearning.Agents.SAC do
          action_vector,
          reward,
          is_terminal,
-         %{environment_state: next_env_state} = state,
-         _opts
+         %{environment_state: next_env_state} = state
        ) do
     next_state_features = environment_to_state_features_fn.(next_env_state)
     state_data = CircularBuffer.ordered_data(state_features_memory)
@@ -526,15 +524,11 @@ defmodule ReinforcementLearning.Agents.SAC do
   end
 
   @impl true
-  defn optimize_model(state, opts \\ []) do
-    filled_entries = opts[:filled_entries]
-
+  defn optimize_model(state) do
     %{
       batch_size: batch_size,
       training_frequency: training_frequency
     } = state.agent_state
-
-    has_at_least_one_batch = filled_entries > batch_size
 
     # Run training after all simulations have ended.
     is_terminal =
@@ -542,14 +536,11 @@ defmodule ReinforcementLearning.Agents.SAC do
       |> Nx.devectorize()
       |> Nx.all()
 
-    should_train = is_terminal and has_at_least_one_batch
-
-    if should_train do
+    if is_terminal and state.agent_state.experience_replay_buffer.size > batch_size do
       train_loop(
         state,
         training_frequency * vectorized_axes(state.environment_state.is_terminal),
-        Nx.u8(0),
-        filled_entries
+        Nx.u8(0)
       )
     else
       state
@@ -564,14 +555,11 @@ defmodule ReinforcementLearning.Agents.SAC do
     div(Nx.flat_size(t), Nx.size(t))
   end
 
-  deftransformp train_loop(state, training_frequency, exploring, filled_entries) do
+  deftransformp train_loop(state, training_frequency, exploring) do
     if training_frequency == 1 do
       train_loop_step(state, exploring)
     else
-      train_loop_while(state, exploring,
-        training_frequency: training_frequency,
-        filled_entries: filled_entries
-      )
+      train_loop_while(state, exploring, training_frequency: training_frequency)
     end
     |> elem(0)
   end
@@ -580,13 +568,12 @@ defmodule ReinforcementLearning.Agents.SAC do
     training_frequency = opts[:training_frequency]
 
     while {state, exploring}, _ <- 0..(training_frequency - 1)//1, unroll: false do
-      train_loop_step(state, exploring, opts)
+      train_loop_step(state, exploring)
     end
   end
 
-  defnp train_loop_step(state, exploring, opts \\ []) do
-    {batch, random_key} =
-      sample_experience_replay_buffer(state.random_key, state.agent_state, opts)
+  defnp train_loop_step(state, exploring) do
+    {batch, random_key} = sample_experience_replay_buffer(state.random_key, state.agent_state)
 
     train_actor = not exploring
 
@@ -857,11 +844,10 @@ defmodule ReinforcementLearning.Agents.SAC do
 
   defnp sample_experience_replay_buffer(
           random_key,
-          %__MODULE__{batch_size: batch_size} = agent_state,
-          opts \\ []
+          %__MODULE__{batch_size: batch_size} = agent_state
         ) do
-    filled_entries = opts[:filled_entries]
     data = agent_state.experience_replay_buffer.data
+    size = agent_state.experience_replay_buffer.size
 
     # split and devectorize random_key because we want to keep the replay buffer
     # and its samples devectorized at all times
@@ -881,24 +867,17 @@ defmodule ReinforcementLearning.Agents.SAC do
           Nx.take(k, 0)
       end
 
-    batch = sample(k, data, filled_entries: filled_entries, batch_size: batch_size)
-
-    {stop_grad(batch), random_key}
-  end
-
-  deftransformp sample(k, data, opts \\ []) do
-    filled_entries = opts[:filled_entries]
-    batch_size = opts[:batch_size]
+    n = Nx.axis_size(data, 0)
 
     {batch, _} =
-      if filled_entries do
-        data = Nx.slice_along_axis(data, 0, min(filled_entries, batch_size), axis: 0)
-        Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
+      if size < n do
+        probabilities = (Nx.iota({n}) < size) / size
+        Nx.Random.choice(k, data, probabilities, samples: batch_size, replace: false, axis: 0)
       else
         Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
       end
 
-    batch
+    {stop_grad(batch), random_key}
   end
 
   defnp action_log_probability(mu, stddev, log_stddev, x) do
