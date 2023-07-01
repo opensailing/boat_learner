@@ -64,7 +64,8 @@ defmodule ReinforcementLearning.Agents.SAC do
              :training_frequency,
              :input_entry_size,
              :reward_scale,
-             :log_entropy_coefficient_optimizer_update_fn
+             :log_entropy_coefficient_optimizer_update_fn,
+             :train_log_entropy_coefficient
            ]}
 
   defstruct [
@@ -104,7 +105,8 @@ defmodule ReinforcementLearning.Agents.SAC do
     :reward_scale,
     :log_entropy_coefficient_optimizer_update_fn,
     :target_entropy,
-    :log_entropy_coefficient_optimizer_state
+    :log_entropy_coefficient_optimizer_state,
+    :train_log_entropy_coefficient
   ]
 
   @impl true
@@ -165,11 +167,11 @@ defmodule ReinforcementLearning.Agents.SAC do
     {actor_optimizer_init_fn, actor_optimizer_update_fn} = opts[:actor_optimizer]
     {critic_optimizer_init_fn, critic_optimizer_update_fn} = opts[:critic_optimizer]
 
-    {log_entropy_coefficient_optimizer_init_fn, log_entropy_coefficient_optimizer_update_fn,
+    {train_log_entropy_coefficient, log_entropy_coefficient_optimizer_init_fn, log_entropy_coefficient_optimizer_update_fn,
      log_entropy_coefficient} =
       case opts[:entropy_coefficient_optimizer] do
-        {init, upd} -> {init, upd, 0}
-        _ -> {&Function.identity/1, nil, :math.log(opts[:entropy_coefficient])}
+        {init, upd} -> {true, init, upd, 0}
+        _ -> {false, &Function.identity/1, nil, :math.log(opts[:entropy_coefficient])}
       end
 
     actor_net = opts[:actor_net]
@@ -355,7 +357,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       action_upper_limit: opts[:action_upper_limit],
       log_entropy_coefficient: log_entropy_coefficient,
       reward_scale: opts[:reward_scale],
-      target_entropy: 0.98 * num_actions
+      target_entropy: 0.98 * num_actions,
+      train_log_entropy_coefficient: train_log_entropy_coefficient
     }
 
     case random_key.vectorized_axes do
@@ -609,7 +612,8 @@ defmodule ReinforcementLearning.Agents.SAC do
         log_entropy_coefficient: log_entropy_coefficient,
         log_entropy_coefficient_optimizer_update_fn: log_entropy_coefficient_optimizer_update_fn,
         log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state,
-        target_entropy: target_entropy
+        target_entropy: target_entropy,
+        train_log_entropy_coefficient: train_log_entropy_coefficient
       },
       random_key: random_key
     } = state
@@ -665,12 +669,12 @@ defmodule ReinforcementLearning.Agents.SAC do
     ### Train entropy_coefficient
 
     {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key} =
-      case log_entropy_coefficient_optimizer_update_fn do
-        nil ->
+      case train_log_entropy_coefficient do
+        false ->
           # entropy_coef is non-trainable
           {log_entropy_coefficient, random_key}
 
-        update_fn ->
+        true ->
           {_actions, log_probs, random_key} =
             actor_predict_fn.(random_key, actor_params, state_batch)
 
