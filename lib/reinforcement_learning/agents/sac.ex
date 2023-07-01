@@ -140,7 +140,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       training_frequency: 32,
       action_lower_limit: -1.0,
       action_upper_limit: 1.0,
-      entropy_coefficient: 0.2
+      entropy_coefficient: 0.2,
+      saved_state: %{}
     ]
 
     opts = Keyword.validate!(opts, expected_opts)
@@ -360,6 +361,8 @@ defmodule ReinforcementLearning.Agents.SAC do
       target_entropy: 0.98 * num_actions,
       train_log_entropy_coefficient: train_log_entropy_coefficient
     }
+
+    state = Map.merge(state, Map.take(opts[:saved_state], Map.keys(%__MODULE__{})))
 
     case random_key.vectorized_axes do
       [] ->
