@@ -210,18 +210,6 @@ defmodule ReinforcementLearning.Agents.SAC do
       critic_predict_fn.(params, input)
     end
 
-    initial_actor_params_state = opts[:actor_params]
-    initial_actor_target_params_state = opts[:actor_target_params]
-
-    initial_critic1_params_state = opts[:critic1_params]
-    initial_critic2_params_state = opts[:critic2_params]
-
-    initial_critic1_target_params_state =
-      opts[:critic1_target_params] || initial_critic1_params_state
-
-    initial_critic2_target_params_state =
-      opts[:critic2_target_params] || initial_critic2_params_state
-
     input_template = input_template(actor_net)
 
     case input_template do
@@ -260,19 +248,19 @@ defmodule ReinforcementLearning.Agents.SAC do
     log_entropy_coefficient_optimizer_state =
       log_entropy_coefficient_optimizer_init_fn.(log_entropy_coefficient)
 
-    actor_params = actor_init_fn.(input_template, initial_actor_params_state)
+    actor_params = actor_init_fn.(input_template, %{})
     actor_optimizer_state = actor_optimizer_init_fn.(actor_params)
 
-    actor_target_params = actor_init_fn.(input_template, initial_actor_target_params_state)
+    actor_target_params = actor_init_fn.(input_template, %{})
 
-    critic1_params = critic_init_fn.(critic_template, initial_critic1_params_state)
-    critic2_params = critic_init_fn.(critic_template, initial_critic2_params_state)
+    critic1_params = critic_init_fn.(critic_template, %{})
+    critic2_params = critic_init_fn.(critic_template, %{})
 
-    critic1_target_params = critic_init_fn.(critic_template, initial_critic1_target_params_state)
-    critic2_target_params = critic_init_fn.(critic_template, initial_critic2_target_params_state)
+    critic1_target_params = critic_init_fn.(critic_template, %{})
+    critic2_target_params = critic_init_fn.(critic_template, %{})
 
-    critic1_optimizer_state = critic_optimizer_init_fn.(critic1_params)
-    critic2_optimizer_state = critic_optimizer_init_fn.(critic2_params)
+    critic1_optimizer_state = critic_optimizer_init_fn.(%{})
+    critic2_optimizer_state = critic_optimizer_init_fn.(%{})
 
     state_features_size = opts[:state_features_size]
 
