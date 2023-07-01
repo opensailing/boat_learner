@@ -112,18 +112,10 @@ defmodule ReinforcementLearning.Agents.SAC do
   @impl true
   def init(random_key, opts \\ []) do
     expected_opts = [
-      :actor_params,
-      :actor_target_params,
       :actor_net,
-      :critic1_params,
-      :critic2_params,
-      :critic1_target_params,
-      :critic2_target_params,
       :critic_net,
-      :experience_replay_buffer,
       :environment_to_state_features_fn,
       :state_features_memory_to_input_fn,
-      :state_features_memory,
       :state_features_size,
       :actor_optimizer,
       :critic_optimizer,
