@@ -342,7 +342,13 @@ defmodule ReinforcementLearning.Agents.SAC do
       train_log_entropy_coefficient: train_log_entropy_coefficient
     }
 
-    state = Map.merge(state, Map.take(opts[:saved_state], Map.keys(%__MODULE__{})))
+    saved_state =
+      (opts[:saved_state] || %{})
+      |> Map.take(Map.keys(%__MODULE__{}))
+      |> Enum.filter(fn {_, v} -> v end)
+      |> Map.new()
+      
+    state = Map.merge(state, saved_state)
 
     case random_key.vectorized_axes do
       [] ->
