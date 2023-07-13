@@ -792,7 +792,10 @@ checkpoint_serialization_fn = fn loop_state ->
       :critic1_target_params,
       :critic2_target_params,
       :experience_replay_buffer,
-      :state_features_memory
+      :state_features_memory,
+      :critic1_optimizer_state,
+      :critic2_optimizer_state,
+      :actor_optimizer_state
     ])
 
   :erlang.term_to_binary(%{
@@ -891,7 +894,7 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         actor_net: actor_net,
         critic_net: critic_net,
         state_features_memory_length: state_features_memory_length,
-        experience_replay_buffer_max_size: 400_000,
+        experience_replay_buffer_max_size: 200_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
@@ -929,7 +932,6 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
               eps: 1.0e-7
             )
           )
-          |> IO.inspect()
       },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,

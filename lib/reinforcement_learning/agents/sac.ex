@@ -261,16 +261,19 @@ defmodule ReinforcementLearning.Agents.SAC do
         :critic1_target_params,
         :critic2_target_params,
         :critic1_optimizer_state,
-        :critic2_optimizer_state
+        :critic2_optimizer_state,
+        :actor_optimizer_state
       ])
 
     log_entropy_coefficient_optimizer_state =
       log_entropy_coefficient_optimizer_init_fn.(
-        saved_state[:log_entropy_coefficient] || log_entropy_coefficient
+        init_params[:log_entropy_coefficient] || log_entropy_coefficient
       )
 
     actor_params = actor_init_fn.(input_template, init_params[:actor_params] || %{})
-    actor_optimizer_state = actor_optimizer_init_fn.(actor_params)
+
+    actor_optimizer_state =
+      actor_optimizer_init_fn.(init_params[:actor_optimizer_state] || actor_params)
 
     actor_target_params = actor_init_fn.(input_template, init_params[:actor_target_params] || %{})
 
@@ -284,10 +287,10 @@ defmodule ReinforcementLearning.Agents.SAC do
       critic_init_fn.(critic_template, init_params[:critic2_target_params] || %{})
 
     critic1_optimizer_state =
-      critic_optimizer_init_fn.(init_params[:critic1_optimizer_state] || %{})
+      critic_optimizer_init_fn.(init_params[:critic1_optimizer_state] || critic1_params)
 
     critic2_optimizer_state =
-      critic_optimizer_init_fn.(init_params[:critic2_optimizer_state] || %{})
+      critic_optimizer_init_fn.(init_params[:critic2_optimizer_state] || critic2_params)
 
     state_features_size = opts[:state_features_size]
 
@@ -756,12 +759,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     {critic1_updates, critic1_optimizer_state} =
       critic_optimizer_update_fn.(critic1_gradient, critic1_optimizer_state, critic1_params)
 
-    print_expr(critic1_updates)
-    print_expr(critic1_optimizer_state)
-    validate_nils({critic1_optimizer_state, critic1_updates})
-
     critic1_params = Polaris.Updates.apply_updates(critic1_params, critic1_updates)
-
 
     {critic2_updates, critic2_optimizer_state} =
       critic_optimizer_update_fn.(critic2_gradient, critic2_optimizer_state, critic2_params)
@@ -805,28 +803,22 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     %{
       state
-      | agent_state:
-          %{
-            state.agent_state
-            | actor_params: actor_params,
-              actor_optimizer_state: actor_optimizer_state,
-              critic1_params: critic1_params,
-              critic1_optimizer_state: critic1_optimizer_state,
-              critic2_params: critic2_params,
-              critic2_optimizer_state: critic2_optimizer_state,
-              loss: state.agent_state.loss + critic_loss,
-              loss_denominator: state.agent_state.loss_denominator + 1,
-              experience_replay_buffer: experience_replay_buffer,
-              log_entropy_coefficient: log_entropy_coefficient,
-              log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state
-          }
-          |> print_expr(),
+      | agent_state: %{
+          state.agent_state
+          | actor_params: actor_params,
+            actor_optimizer_state: actor_optimizer_state,
+            critic1_params: critic1_params,
+            critic1_optimizer_state: critic1_optimizer_state,
+            critic2_params: critic2_params,
+            critic2_optimizer_state: critic2_optimizer_state,
+            loss: state.agent_state.loss + critic_loss,
+            loss_denominator: state.agent_state.loss_denominator + 1,
+            experience_replay_buffer: experience_replay_buffer,
+            log_entropy_coefficient: log_entropy_coefficient,
+            log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state
+        },
         random_key: random_key
     }
-  end
-
-  deftransformp validate_nils(map) do
-    Nx.Defn.Composite.flatten_list([map]) |> Enum.reject(& &1) |> IO.inspect()
   end
 
   defnp soft_update_targets(state, train_actor) do
