@@ -183,7 +183,15 @@ defmodule BoatLearner.Environments.MultiMark do
     zero = Nx.tensor(0, type: :f32)
     vmg = speed = reward = zero
 
-    {heading, random_key} = Nx.Random.uniform(random_key, -:math.pi(), :math.pi())
+    # {heading, random_key} = Nx.Random.uniform(random_key, -:math.pi(), :math.pi())
+
+    {heading, random_key} =
+      Nx.Random.choice(random_key, Nx.tensor([:math.pi() / 4]),
+        samples: 1,
+        axis: 0
+      )
+
+    heading = Nx.squeeze(heading)
 
     {coords, random_key} =
       Nx.Random.choice(random_key, state.coords, state.coord_probabilities, samples: 1, axis: 0)
@@ -251,7 +259,7 @@ defmodule BoatLearner.Environments.MultiMark do
 
     next_env =
       env
-      |> turn_and_move(action * pi())
+      |> turn_and_move(action * pi() / 2)
       |> is_terminal_state()
       |> calculate_reward()
 
@@ -423,7 +431,7 @@ defmodule BoatLearner.Environments.MultiMark do
 
     # normalize the reward by the initial distance so that we need to cover twice
     # the iterations to get the same reward for a longer initial distance
-    reward = reward / (initial_distance / 100)
+    # reward = reward / (initial_distance / 100)
 
     %__MODULE__{env | reward: reward}
   end

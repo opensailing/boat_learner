@@ -26,12 +26,16 @@ r = 250
 pi = :math.pi()
 theta = 42.7 / 180 * pi
 
-valid_points = [[0, r], [0, 0], [0, -r]]
+# valid_points = [[0, r], [0, 0], [0, -r]]
 
-points =
-  for start <- valid_points, target <- valid_points, start != target do
-    start ++ target
-  end
+valid_points = [[0, 0], [r * :math.tan(theta), r]]
+
+# points =
+#   for start <- valid_points, target <- valid_points, start != target do
+#     start ++ target
+#   end
+
+points = [[0, 0, r * :math.tan(theta), r]]
 
 # for angle <- [0, theta, -theta, pi, pi + theta, pi - theta, pi / 2, -pi / 2] do
 #   [
@@ -744,17 +748,8 @@ state_features_memory_to_input_fn = fn state_features ->
   }
 end
 
-# actor_params = %{}
-# actor_target_params = %{}
-# critic1_params = %{}
-# critic2_params = %{}
-# critic1_target_params = %{}
-# critic2_target_params = %{}
-# total_episodes = 0
-# experience_replay_buffer = nil
-# performance_memory = nil
-# state_features_memory = nil
-
+total_episodes = 0
+saved_state = %{}
 IO.inspect({saved_state, total_episodes}, label: "{saved_state, total_episodes}")
 ```
 
@@ -792,10 +787,7 @@ checkpoint_serialization_fn = fn loop_state ->
       :critic1_target_params,
       :critic2_target_params,
       :experience_replay_buffer,
-      :state_features_memory,
-      :critic1_optimizer_state,
-      :critic2_optimizer_state,
-      :actor_optimizer_state
+      :state_features_memory
     ])
 
   :erlang.term_to_binary(%{
@@ -805,7 +797,7 @@ checkpoint_serialization_fn = fn loop_state ->
 end
 
 # session 1: 2_500
-episodes = 2_500
+episodes = 5000
 
 # session 1: 125
 max_iter = 125
@@ -929,6 +921,15 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
                   min_value: 1.0e-5
                 ),
               # decay: 0.01,
+              eps: 1.0e-7
+            )
+          ),
+        entropy_coefficient_optimizer:
+          Polaris.Updates.compose(
+            Polaris.Updates.clip_by_global_norm(),
+            Polaris.Optimizers.adamw(
+              learning_rate: 0.01,
+              decay: 0.001,
               eps: 1.0e-7
             )
           )
