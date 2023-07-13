@@ -538,41 +538,20 @@ checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
 
-{
-  actor_params,
-  actor_target_params,
-  critic1_params,
-  critic2_params,
-  critic1_target_params,
-  critic2_target_params,
-  experience_replay_buffer,
-  total_episodes,
-  state_features_memory
-} =
+{saved_state, total_episodes} =
   try do
     contents = File.read!(filename)
     File.write!(filename <> "_bak", contents)
 
     %{serialized: serialized, total_episodes: total_episodes} = :erlang.binary_to_term(contents)
 
-    %{
-      actor_params: actor_params,
-      actor_target_params: actor_target_params,
-      critic1_params: critic1_params,
-      critic2_params: critic2_params,
-      critic1_target_params: critic1_target_params,
-      critic2_target_params: critic2_target_params,
-      experience_replay_buffer: exp_replay_buffer,
-      state_features_memory: state_features_memory
-    } =
+    saved_state =
       Nx.with_default_backend({EXLA.Backend, client: :host}, fn -> Nx.deserialize(serialized) end)
 
-    {actor_params, actor_target_params, critic1_params, critic2_params, critic1_target_params,
-     critic2_target_params, exp_replay_buffer, total_episodes, state_features_memory}
+    {saved_state, total_episodes}
   rescue
     _ in [File.Error, MatchError] ->
-      critic_params = %{}
-      {%{}, %{}, critic_params, critic_params, critic_params, critic_params, false, 0, false}
+      {%{}, 0}
   end
 
 fields = [
@@ -776,36 +755,7 @@ end
 # performance_memory = nil
 # state_features_memory = nil
 
-IO.inspect(
-  {actor_params, actor_target_params, critic1_params, critic2_params, critic1_target_params,
-   critic2_target_params, total_episodes},
-  label:
-    "{actor_params, actor_target_params, critic1_params, critic2_params, critic1_target_params, critic2_target_params, total_episodes}"
-)
-
-# input_template =
-#   actor_net
-#   |> Axon.get_inputs()
-#   |> Map.new(fn {name, shape} ->
-#     [nil | shape] = Tuple.to_list(shape)
-#     shape = List.to_tuple([1 | shape])
-#     {name, Nx.template(shape, :f32)}
-#   end)
-
-# actor = Axon.Display.as_graph(actor_net, input_template)
-
-# input_template =
-#   critic_net
-#   |> Axon.get_inputs()
-#   |> Map.new(fn {name, shape} ->
-#     [nil | shape] = Tuple.to_list(shape)
-#     shape = List.to_tuple([1 | shape])
-#     {name, Nx.template(shape, :f32)}
-#   end)
-
-# critic = Axon.Display.as_graph(critic_net, input_template)
-
-# Kino.Layout.tabs([{"Actor", actor}, {"Critic", critic}])
+IO.inspect({saved_state, total_episodes}, label: "{saved_state, total_episodes}")
 ```
 
 ```elixir
@@ -935,27 +885,12 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
       },
       {
         ReinforcementLearning.Agents.SAC,
-        # exploration_fn: &Exploration.run(&1, 2000),
-        # session 1, 2:
-        # session 1:
-        # batch_size: 200,
-        # session 2:
-        # session 1: 0.1
-        # session 2: 0.25
         exploration_fn: exploration_fn,
         tau: 0.005,
         gamma: 0.99,
         actor_net: actor_net,
-        actor_params: actor_params,
-        actor_target_params: actor_target_params,
         critic_net: critic_net,
-        critic1_params: critic1_params,
-        critic2_params: critic2_params,
-        critic1_target_params: critic1_target_params,
-        critic2_target_params: critic2_target_params,
-        state_features_memory: state_features_memory,
         state_features_memory_length: state_features_memory_length,
-        experience_replay_buffer: experience_replay_buffer,
         experience_replay_buffer_max_size: 400_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
@@ -963,6 +898,7 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         training_frequency: 1,
         batch_size: 200,
         entropy_coefficient: 0.2,
+        saved_state: saved_state,
         actor_optimizer:
           Polaris.Updates.compose(
             Polaris.Updates.clip_by_global_norm(),
@@ -993,6 +929,7 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
               eps: 1.0e-7
             )
           )
+          |> IO.inspect()
       },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,

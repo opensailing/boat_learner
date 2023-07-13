@@ -72,12 +72,10 @@ defmodule ReinforcementLearning.Agents.SAC do
     :num_actions,
     :actor_params,
     :actor_target_params,
-    :actor_net,
     :critic1_params,
     :critic2_params,
     :critic1_target_params,
     :critic2_target_params,
-    :critic_net,
     :actor_predict_fn,
     :critic_predict_fn,
     :experience_replay_buffer,
@@ -160,11 +158,15 @@ defmodule ReinforcementLearning.Agents.SAC do
     {actor_optimizer_init_fn, actor_optimizer_update_fn} = opts[:actor_optimizer]
     {critic_optimizer_init_fn, critic_optimizer_update_fn} = opts[:critic_optimizer]
 
-    {train_log_entropy_coefficient, log_entropy_coefficient_optimizer_init_fn, log_entropy_coefficient_optimizer_update_fn,
-     log_entropy_coefficient} =
+    {
+      train_log_entropy_coefficient,
+      log_entropy_coefficient_optimizer_init_fn,
+      log_entropy_coefficient_optimizer_update_fn,
+      log_entropy_coefficient
+    } =
       case opts[:entropy_coefficient_optimizer] do
         {init, upd} -> {true, init, upd, 0}
-        _ -> {false, &Function.identity/1, nil, :math.log(opts[:entropy_coefficient])}
+        _ -> {false, fn _ -> 0 end, nil, :math.log(opts[:entropy_coefficient])}
       end
 
     actor_net = opts[:actor_net]
@@ -245,22 +247,47 @@ defmodule ReinforcementLearning.Agents.SAC do
         :ok
     end
 
-    log_entropy_coefficient_optimizer_state =
-      log_entropy_coefficient_optimizer_init_fn.(log_entropy_coefficient)
+    {init_params, saved_state} =
+      (opts[:saved_state] || %{})
+      |> Map.take(Map.keys(%__MODULE__{}))
+      |> Enum.filter(fn {_, v} -> v end)
+      |> Map.new()
+      |> Map.split([
+        :log_entropy_coefficient,
+        :actor_params,
+        :actor_target_params,
+        :critic1_params,
+        :critic2_params,
+        :critic1_target_params,
+        :critic2_target_params,
+        :critic1_optimizer_state,
+        :critic2_optimizer_state
+      ])
 
-    actor_params = actor_init_fn.(input_template, %{})
+    log_entropy_coefficient_optimizer_state =
+      log_entropy_coefficient_optimizer_init_fn.(
+        saved_state[:log_entropy_coefficient] || log_entropy_coefficient
+      )
+
+    actor_params = actor_init_fn.(input_template, init_params[:actor_params] || %{})
     actor_optimizer_state = actor_optimizer_init_fn.(actor_params)
 
-    actor_target_params = actor_init_fn.(input_template, %{})
+    actor_target_params = actor_init_fn.(input_template, init_params[:actor_target_params] || %{})
 
-    critic1_params = critic_init_fn.(critic_template, %{})
-    critic2_params = critic_init_fn.(critic_template, %{})
+    critic1_params = critic_init_fn.(critic_template, init_params[:critic1_params] || %{})
+    critic2_params = critic_init_fn.(critic_template, init_params[:critic2_params] || %{})
 
-    critic1_target_params = critic_init_fn.(critic_template, %{})
-    critic2_target_params = critic_init_fn.(critic_template, %{})
+    critic1_target_params =
+      critic_init_fn.(critic_template, init_params[:critic1_target_params] || %{})
 
-    critic1_optimizer_state = critic_optimizer_init_fn.(%{})
-    critic2_optimizer_state = critic_optimizer_init_fn.(%{})
+    critic2_target_params =
+      critic_init_fn.(critic_template, init_params[:critic2_target_params] || %{})
+
+    critic1_optimizer_state =
+      critic_optimizer_init_fn.(init_params[:critic1_optimizer_state] || %{})
+
+    critic2_optimizer_state =
+      critic_optimizer_init_fn.(init_params[:critic2_optimizer_state] || %{})
 
     state_features_size = opts[:state_features_size]
 
@@ -312,12 +339,10 @@ defmodule ReinforcementLearning.Agents.SAC do
       num_actions: num_actions,
       actor_params: actor_params,
       actor_target_params: actor_target_params,
-      actor_net: actor_net,
       critic1_params: critic1_params,
       critic2_params: critic2_params,
       critic1_target_params: critic1_target_params,
       critic2_target_params: critic2_target_params,
-      critic_net: critic_net,
       actor_predict_fn: actor_predict_fn,
       critic_predict_fn: critic_predict_fn,
       experience_replay_buffer: exp_replay_buffer,
@@ -342,12 +367,6 @@ defmodule ReinforcementLearning.Agents.SAC do
       train_log_entropy_coefficient: train_log_entropy_coefficient
     }
 
-    saved_state =
-      (opts[:saved_state] || %{})
-      |> Map.take(Map.keys(%__MODULE__{}))
-      |> Enum.filter(fn {_, v} -> v end)
-      |> Map.new()
-      
     state = Map.merge(state, saved_state)
 
     case random_key.vectorized_axes do
@@ -657,33 +676,33 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     ### Train entropy_coefficient
 
-    {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key} =
-      case train_log_entropy_coefficient do
-        false ->
-          # entropy_coef is non-trainable
-          {log_entropy_coefficient, random_key}
+    # {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key} =
+    # case train_log_entropy_coefficient do
+    #   false ->
+    #     # entropy_coef is non-trainable
+    # {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key}
 
-        true ->
-          {_actions, log_probs, random_key} =
-            actor_predict_fn.(random_key, actor_params, state_batch)
+    #   true ->
+    #     {_actions, log_probs, random_key} =
+    #       actor_predict_fn.(random_key, actor_params, state_batch)
 
-          g =
-            grad(log_entropy_coefficient, fn log_entropy_coefficient ->
-              -Nx.mean(log_entropy_coefficient * stop_grad(log_probs + target_entropy))
-            end)
+    #     g =
+    #       grad(log_entropy_coefficient, fn log_entropy_coefficient ->
+    #         -Nx.mean(log_entropy_coefficient * stop_grad(log_probs + target_entropy))
+    #       end)
 
-          {updates, log_entropy_coefficient_optimizer_state} =
-            log_entropy_coefficient_optimizer_update_fn.(
-              g,
-              log_entropy_coefficient_optimizer_state,
-              log_entropy_coefficient
-            )
+    #     {updates, log_entropy_coefficient_optimizer_state} =
+    #       log_entropy_coefficient_optimizer_update_fn.(
+    #         g,
+    #         log_entropy_coefficient_optimizer_state,
+    #         log_entropy_coefficient
+    #       )
 
-          log_entropy_coefficient =
-            Polaris.Updates.apply_updates(log_entropy_coefficient, updates)
+    #     log_entropy_coefficient =
+    #       Polaris.Updates.apply_updates(log_entropy_coefficient, updates)
 
-          {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key}
-      end
+    #     {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key}
+    # end
 
     entropy_coefficient = stop_grad(Nx.exp(log_entropy_coefficient))
 
@@ -737,7 +756,12 @@ defmodule ReinforcementLearning.Agents.SAC do
     {critic1_updates, critic1_optimizer_state} =
       critic_optimizer_update_fn.(critic1_gradient, critic1_optimizer_state, critic1_params)
 
+    print_expr(critic1_updates)
+    print_expr(critic1_optimizer_state)
+    validate_nils({critic1_optimizer_state, critic1_updates})
+
     critic1_params = Polaris.Updates.apply_updates(critic1_params, critic1_updates)
+
 
     {critic2_updates, critic2_optimizer_state} =
       critic_optimizer_update_fn.(critic2_gradient, critic2_optimizer_state, critic2_params)
@@ -748,7 +772,11 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     ks = Nx.Random.split(random_key)
     random_key = ks[0]
-    k1 = ks[1] |> Nx.devectorize() |> Nx.take(0)
+
+    k1 =
+      ks[1]
+      |> Nx.devectorize()
+      |> Nx.take(0)
 
     {actor_params, actor_optimizer_state} =
       if train_actor do
@@ -777,22 +805,28 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     %{
       state
-      | agent_state: %{
-          state.agent_state
-          | actor_params: actor_params,
-            actor_optimizer_state: actor_optimizer_state,
-            critic1_params: critic1_params,
-            critic1_optimizer_state: critic1_optimizer_state,
-            critic2_params: critic2_params,
-            critic2_optimizer_state: critic2_optimizer_state,
-            loss: state.agent_state.loss + critic_loss,
-            loss_denominator: state.agent_state.loss_denominator + 1,
-            experience_replay_buffer: experience_replay_buffer,
-            log_entropy_coefficient: log_entropy_coefficient,
-            log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state
-        },
+      | agent_state:
+          %{
+            state.agent_state
+            | actor_params: actor_params,
+              actor_optimizer_state: actor_optimizer_state,
+              critic1_params: critic1_params,
+              critic1_optimizer_state: critic1_optimizer_state,
+              critic2_params: critic2_params,
+              critic2_optimizer_state: critic2_optimizer_state,
+              loss: state.agent_state.loss + critic_loss,
+              loss_denominator: state.agent_state.loss_denominator + 1,
+              experience_replay_buffer: experience_replay_buffer,
+              log_entropy_coefficient: log_entropy_coefficient,
+              log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state
+          }
+          |> print_expr(),
         random_key: random_key
     }
+  end
+
+  deftransformp validate_nils(map) do
+    Nx.Defn.Composite.flatten_list([map]) |> Enum.reject(& &1) |> IO.inspect()
   end
 
   defnp soft_update_targets(state, train_actor) do
