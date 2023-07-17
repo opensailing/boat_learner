@@ -33,7 +33,10 @@ defmodule BoatLearner.Environments.MultiMark do
              :initial_x,
              :initial_y,
              :initial_distance,
-             :max_tacks
+             :max_tacks,
+             :delta_t,
+             :has_reached_target,
+             :has_collided
            ]}
   defstruct [
     :x,
@@ -56,7 +59,10 @@ defmodule BoatLearner.Environments.MultiMark do
     :initial_x,
     :initial_y,
     :initial_distance,
-    :max_tacks
+    :max_tacks,
+    :delta_t,
+    :has_reached_target,
+    :has_collided
   ]
 
   @min_x -400
@@ -181,7 +187,7 @@ defmodule BoatLearner.Environments.MultiMark do
   @impl true
   def reset(random_key, state) do
     zero = Nx.tensor(0, type: :f32)
-    vmg = speed = reward = zero
+    vmg = speed = reward = delta_t = zero
 
     # {heading, random_key} = Nx.Random.uniform(random_key, -:math.pi(), :math.pi())
 
@@ -223,11 +229,14 @@ defmodule BoatLearner.Environments.MultiMark do
         angle_to_target: heading,
         speed: speed,
         reward: reward,
-        is_terminal: Nx.tensor(0, type: :u8),
+        is_terminal: Nx.u8(0),
+        has_reached_target: Nx.u8(0),
+        has_tacked: Nx.u8(0),
+        has_collided: Nx.u8(0),
         remaining_seconds: state.max_remaining_seconds,
         vmg: vmg,
-        tack_count: Nx.tensor(0, type: :s64),
-        has_tacked: Nx.tensor(0, type: :u8)
+        tack_count: Nx.s64(0),
+        delta_t: delta_t
     }
 
     case random_key.vectorized_axes do
@@ -286,6 +295,7 @@ defmodule BoatLearner.Environments.MultiMark do
 
     # 1 if that position has tacked since the beginning
     tacking_mask = heading_steps < pi() != prev_heading < pi()
+    tacking_mask = Nx.cumulative_max(tacking_mask)
 
     speed_penalty_multiplier = 1 - @speed_penalty
 
@@ -340,14 +350,17 @@ defmodule BoatLearner.Environments.MultiMark do
 
     vmg = Nx.dot(target_unit, heading_unit) * speed
 
+    delta_t = turning_time + @speed_recovery_in_seconds
+
     %__MODULE__{
       env
       | remaining_seconds:
           Nx.select(
             env.is_terminal,
             env.remaining_seconds,
-            Nx.max(env.remaining_seconds - (turning_time + @speed_recovery_in_seconds), 0)
+            Nx.max(env.remaining_seconds - delta_t, 0)
           ),
+        delta_t: delta_t,
         heading: Nx.select(env.is_terminal, env.heading, heading),
         speed: Nx.select(env.is_terminal, env.speed, speed),
         tack_count: Nx.select(env.is_terminal, env.tack_count, tack_count),
@@ -389,12 +402,17 @@ defmodule BoatLearner.Environments.MultiMark do
       max_tacks: max_tacks
     } = env
 
-    is_terminal =
-      env.is_terminal or has_reached_target(env) or x < @min_x or x > @max_x or y < @min_y or
-        y > @max_y or
-        remaining_seconds < 1 or tack_count > max_tacks
+    has_reached_target = has_reached_target(env)
+    has_collided = x < @min_x or x > @max_x or y < @min_y or y > @max_y
 
-    %__MODULE__{env | is_terminal: is_terminal}
+    # is_terminal = env.is_terminal or has_reached_target or has_collided or remaining_seconds < 1
+
+    %__MODULE__{
+      env
+      | has_reached_target: has_reached_target,
+        has_collided: has_collided,
+        is_terminal: has_reached_target or remaining_seconds <= 1
+    }
   end
 
   defnp has_reached_target(env) do
@@ -403,41 +421,18 @@ defmodule BoatLearner.Environments.MultiMark do
 
   defnp calculate_reward(env) do
     %__MODULE__{
-      is_terminal: is_terminal,
-      vmg: vmg,
-      remaining_seconds: remaining_seconds,
-      max_remaining_seconds: max_remaining_seconds,
-      has_tacked: has_tacked,
+      # vmg: vmg,
+      # remaining_seconds: remaining_seconds,
+      # max_remaining_seconds: max_remaining_seconds,
+      has_reached_target: has_reached_target,
+      delta_t: delta_t,
       initial_distance: initial_distance
-      # heading: heading
     } = env
 
-    reward =
-      cond do
-        not is_terminal and Nx.abs(vmg) < 0.01 ->
-          -0.1 - 1 * has_tacked
-
-        true ->
-          distance_decay = 1 - decay(distance(env), initial_distance)
-
-          distance_decay = Nx.clip(distance_decay, -2, 1)
-
-          time_decay = decay(remaining_seconds, max_remaining_seconds)
-
-          vmg_component = Nx.select(has_tacked, 0, Nx.clip(vmg, -@max_speed, @max_speed))
-
-          time_decay * (vmg_component + 0.1 * distance_decay) - 1 * has_tacked
-      end
-
-    # normalize the reward by the initial distance so that we need to cover twice
-    # the iterations to get the same reward for a longer initial distance
-    # reward = reward / (initial_distance / 100)
-
-    %__MODULE__{env | reward: reward}
-  end
-
-  defnp decay(current, max) do
-    current / max
+    %__MODULE__{
+      env
+      | reward: -0.1 * delta_t + has_reached_target + (1 - distance(env) / initial_distance)
+    }
   end
 
   defnp distance(env) do

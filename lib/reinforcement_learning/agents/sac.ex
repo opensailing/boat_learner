@@ -35,16 +35,16 @@ defmodule ReinforcementLearning.Agents.SAC do
              :critic1_target_params,
              :critic2_target_params,
              :experience_replay_buffer,
-             :loss,
-             :loss_denominator,
+             :critic_loss,
+             :critic_loss_denominator,
+             :actor_loss,
+             :actor_loss_denominator,
              :total_reward,
              :actor_optimizer_state,
              :critic1_optimizer_state,
              :critic2_optimizer_state,
              :action_lower_limit,
              :action_upper_limit,
-             :exploration_decay_rate,
-             :exploration_increase_rate,
              :gamma,
              :tau,
              :state_features_memory,
@@ -53,7 +53,6 @@ defmodule ReinforcementLearning.Agents.SAC do
              :log_entropy_coefficient_optimizer_state
            ],
            keep: [
-             :exploration_fn,
              :environment_to_state_features_fn,
              :actor_predict_fn,
              :critic_predict_fn,
@@ -89,14 +88,13 @@ defmodule ReinforcementLearning.Agents.SAC do
     :critic2_optimizer_state,
     :action_lower_limit,
     :action_upper_limit,
-    :loss,
-    :loss_denominator,
+    :critic_loss,
+    :critic_loss_denominator,
+    :actor_loss,
+    :actor_loss_denominator,
     :total_reward,
     :actor_optimizer_update_fn,
     :critic_optimizer_update_fn,
-    :exploration_decay_rate,
-    :exploration_increase_rate,
-    :exploration_fn,
     :state_features_memory,
     :input_entry_size,
     :log_entropy_coefficient,
@@ -120,9 +118,6 @@ defmodule ReinforcementLearning.Agents.SAC do
       :entropy_coefficient_optimizer,
       reward_scale: 1,
       state_features_memory_length: 1,
-      exploration_decay_rate: 0.9995,
-      exploration_increase_rate: 1.1,
-      exploration_fn: &Nx.less(&1, 500),
       gamma: 0.99,
       experience_replay_buffer_max_size: 100_000,
       tau: 0.005,
@@ -165,7 +160,7 @@ defmodule ReinforcementLearning.Agents.SAC do
       log_entropy_coefficient
     } =
       case opts[:entropy_coefficient_optimizer] do
-        {init, upd} -> {true, init, upd, 0}
+        {init, upd} -> {true, init, upd, :math.log(opts[:entropy_coefficient])}
         _ -> {false, fn _ -> 0 end, nil, :math.log(opts[:entropy_coefficient])}
       end
 
@@ -259,16 +254,13 @@ defmodule ReinforcementLearning.Agents.SAC do
         :critic1_params,
         :critic2_params,
         :critic1_target_params,
-        :critic2_target_params,
-        :critic1_optimizer_state,
-        :critic2_optimizer_state,
-        :actor_optimizer_state
+        :critic2_target_params
       ])
 
+    log_entropy_coefficient = init_params[:log_entropy_coefficient] || log_entropy_coefficient
+
     log_entropy_coefficient_optimizer_state =
-      log_entropy_coefficient_optimizer_init_fn.(
-        init_params[:log_entropy_coefficient] || log_entropy_coefficient
-      )
+      log_entropy_coefficient_optimizer_init_fn.(log_entropy_coefficient)
 
     actor_params = actor_init_fn.(input_template, init_params[:actor_params] || %{})
 
@@ -315,8 +307,10 @@ defmodule ReinforcementLearning.Agents.SAC do
             shape: {experience_replay_buffer_max_size, state_features_size + 1}
           )
 
+        init_td_error = Nx.broadcast(0.0, {experience_replay_buffer_max_size, 1})
+
         data =
-          [random_data_1, init_reward, random_data_2]
+          [random_data_1, init_reward, random_data_2, init_td_error]
           |> Nx.concatenate(axis: 1)
           |> then(&Nx.revectorize(&1, [], target_shape: Tuple.insert_at(&1.shape, 0, :auto)))
 
@@ -331,9 +325,6 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     state = %__MODULE__{
       input_entry_size: input_entry_size,
-      exploration_fn: opts[:exploration_fn],
-      exploration_decay_rate: opts[:exploration_decay_rate],
-      exploration_increase_rate: opts[:exploration_increase_rate],
       log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state,
       log_entropy_coefficient_optimizer_update_fn: log_entropy_coefficient_optimizer_update_fn,
       state_features_memory:
@@ -355,8 +346,10 @@ defmodule ReinforcementLearning.Agents.SAC do
       batch_size: opts[:batch_size],
       training_frequency: opts[:training_frequency],
       total_reward: total_reward,
-      loss: loss,
-      loss_denominator: loss_denominator,
+      critic_loss: loss,
+      critic_loss_denominator: loss_denominator,
+      actor_loss: loss,
+      actor_loss_denominator: loss_denominator,
       actor_optimizer_update_fn: actor_optimizer_update_fn,
       critic_optimizer_update_fn: critic_optimizer_update_fn,
       actor_optimizer_state: actor_optimizer_state,
@@ -378,8 +371,10 @@ defmodule ReinforcementLearning.Agents.SAC do
 
       _ ->
         vectorizable_paths = [
-          [Access.key(:loss)],
-          [Access.key(:loss_denominator)],
+          [Access.key(:critic_loss)],
+          [Access.key(:critic_loss_denominator)],
+          [Access.key(:actor_loss)],
+          [Access.key(:actor_loss_denominator)],
           [Access.key(:total_reward)],
           [Access.key(:state_features_memory), Access.key(:data)],
           [Access.key(:state_features_memory), Access.key(:index)],
@@ -432,8 +427,10 @@ defmodule ReinforcementLearning.Agents.SAC do
     {%{
        state
        | total_reward: total_reward,
-         loss: loss,
-         loss_denominator: loss_denominator,
+         critic_loss: loss,
+         critic_loss_denominator: loss_denominator,
+         actor_loss: loss,
+         actor_loss_denominator: loss_denominator,
          state_features_memory: state_features_memory
      }, random_key}
   end
@@ -486,8 +483,17 @@ defmodule ReinforcementLearning.Agents.SAC do
              state_features_memory: state_features_memory,
              environment_to_state_features_fn: environment_to_state_features_fn,
              experience_replay_buffer: experience_replay_buffer,
-             reward_scale: reward_scale
-           }
+             reward_scale: reward_scale,
+             gamma: gamma,
+             actor_predict_fn: actor_predict_fn,
+             critic_predict_fn: critic_predict_fn,
+             actor_target_params: actor_target_params,
+             critic1_target_params: critic1_target_params,
+             critic2_target_params: critic2_target_params,
+             critic1_params: critic1_params,
+             critic2_params: critic2_params
+           },
+           random_key: random_key
          },
          action_vector,
          reward,
@@ -499,13 +505,37 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     reward = reward * reward_scale
 
+    next_state_features_memory = CircularBuffer.append(state_features_memory, next_state_features)
+    next_state_data = CircularBuffer.ordered_data(next_state_features_memory)
+
+    {target_action_vector, _log_probs, random_key} =
+      actor_predict_fn.(random_key, actor_target_params, next_state_data)
+
+    target_prediction1 =
+      critic_predict_fn.(critic1_target_params, next_state_data, target_action_vector)
+
+    target_prediction2 =
+      critic_predict_fn.(critic2_target_params, next_state_data, target_action_vector)
+
+    target_prediction = Nx.min(target_prediction1, target_prediction2)
+
+    prediction1 = critic_predict_fn.(critic1_params, state_data, action_vector)
+    prediction2 = critic_predict_fn.(critic2_params, state_data, action_vector)
+
+    prediction = Nx.min(prediction1, prediction2)
+
+    temporal_difference = reward + gamma * target_prediction * (1 - is_terminal) - prediction
+
+    temporal_difference = Nx.abs(temporal_difference)
+
     updates =
       Nx.concatenate([
         Nx.flatten(state_data),
         Nx.flatten(action_vector),
         Nx.new_axis(reward, 0),
         Nx.new_axis(is_terminal, 0),
-        Nx.flatten(next_state_features)
+        Nx.flatten(next_state_features),
+        Nx.reshape(temporal_difference, {1})
       ])
 
     updates =
@@ -523,7 +553,8 @@ defmodule ReinforcementLearning.Agents.SAC do
           state.agent_state
           | experience_replay_buffer: experience_replay_buffer,
             total_reward: state.agent_state.total_reward + reward
-        }
+        },
+        random_key: random_key
     }
   end
 
@@ -551,11 +582,7 @@ defmodule ReinforcementLearning.Agents.SAC do
       |> Nx.all()
 
     if is_terminal and state.agent_state.experience_replay_buffer.size > batch_size do
-      train_loop(
-        state,
-        training_frequency * vectorized_axes(state.environment_state.is_terminal),
-        Nx.u8(0)
-      )
+      train_loop(state, training_frequency * vectorized_axes(state.environment_state.is_terminal))
     else
       state
     end
@@ -569,37 +596,31 @@ defmodule ReinforcementLearning.Agents.SAC do
     div(Nx.flat_size(t), Nx.size(t))
   end
 
-  deftransformp train_loop(state, training_frequency, exploring) do
+  deftransformp train_loop(state, training_frequency) do
     if training_frequency == 1 do
-      train_loop_step(state, exploring)
+      train_loop_step(state)
     else
-      train_loop_while(state, exploring, training_frequency: training_frequency)
+      train_loop_while(state, training_frequency: training_frequency)
     end
-    |> elem(0)
   end
 
-  defnp train_loop_while(state, exploring, opts \\ []) do
+  defnp train_loop_while(state, opts \\ []) do
     training_frequency = opts[:training_frequency]
 
-    while {state, exploring}, _ <- 0..(training_frequency - 1)//1, unroll: false do
-      train_loop_step(state, exploring)
+    while state, _ <- 0..(training_frequency - 1)//1, unroll: false do
+      train_loop_step(state)
     end
   end
 
-  defnp train_loop_step(state, exploring) do
+  defnp train_loop_step(state) do
     {batch, random_key} = sample_experience_replay_buffer(state.random_key, state.agent_state)
 
-    train_actor = not exploring
-
-    updated_state =
-      %{state | random_key: random_key}
-      |> train(batch, train_actor)
-      |> soft_update_targets(train_actor)
-
-    {updated_state, exploring}
+    %{state | random_key: random_key}
+    |> train(batch)
+    |> soft_update_targets()
   end
 
-  defnp train(state, batch, train_actor) do
+  defnp train(state, batch) do
     %{
       agent_state: %__MODULE__{
         actor_params: actor_params,
@@ -628,6 +649,19 @@ defmodule ReinforcementLearning.Agents.SAC do
       },
       random_key: random_key
     } = state
+
+    # we split the key here because we want to apply only non-vectorized
+    # actions to our training code
+
+    ks = Nx.Random.split(random_key)
+    # next_random_key is to be passed onwards,
+    # random_key will be used by the function
+    next_random_key = ks[0]
+
+    random_key =
+      ks[1]
+      |> Nx.devectorize()
+      |> Nx.take(0)
 
     batch_len = Nx.axis_size(batch, 0)
     {num_states, state_features_size} = state_features_memory.data.shape
@@ -678,36 +712,38 @@ defmodule ReinforcementLearning.Agents.SAC do
     non_final_mask = not is_terminal_batch
 
     ### Train entropy_coefficient
-
-    # {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key} =
-    # case train_log_entropy_coefficient do
-    #   false ->
-    #     # entropy_coef is non-trainable
-    # {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key}
-
-    #   true ->
-    #     {_actions, log_probs, random_key} =
-    #       actor_predict_fn.(random_key, actor_params, state_batch)
-
-    #     g =
-    #       grad(log_entropy_coefficient, fn log_entropy_coefficient ->
-    #         -Nx.mean(log_entropy_coefficient * stop_grad(log_probs + target_entropy))
-    #       end)
-
-    #     {updates, log_entropy_coefficient_optimizer_state} =
-    #       log_entropy_coefficient_optimizer_update_fn.(
-    #         g,
-    #         log_entropy_coefficient_optimizer_state,
-    #         log_entropy_coefficient
-    #       )
-
-    #     log_entropy_coefficient =
-    #       Polaris.Updates.apply_updates(log_entropy_coefficient, updates)
-
-    #     {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key}
-    # end
-
     entropy_coefficient = stop_grad(Nx.exp(log_entropy_coefficient))
+
+    {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key} =
+      case train_log_entropy_coefficient do
+        false ->
+          # entropy_coef is non-trainable
+          {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key}
+
+        true ->
+          {_actions, log_probs, random_key} =
+            actor_predict_fn.(random_key, actor_params, state_batch)
+
+          g =
+            grad(log_entropy_coefficient, fn log_entropy_coefficient ->
+              -Nx.mean(
+                log_entropy_coefficient *
+                  stop_grad(Nx.sum(log_probs + target_entropy, axes: [1], keep_axes: true))
+              )
+            end)
+
+          {updates, log_entropy_coefficient_optimizer_state} =
+            log_entropy_coefficient_optimizer_update_fn.(
+              g,
+              log_entropy_coefficient_optimizer_state,
+              log_entropy_coefficient
+            )
+
+          log_entropy_coefficient =
+            Polaris.Updates.apply_updates(log_entropy_coefficient, updates)
+
+          {log_entropy_coefficient, log_entropy_coefficient_optimizer_state, random_key}
+      end
 
     ### Train critic_params
 
@@ -717,20 +753,15 @@ defmodule ReinforcementLearning.Agents.SAC do
         fn {critic1_params, critic2_params} ->
           # y_i = r_i + γ * min_{j=1,2} Q'(s_{i+1}, π(s_{i+1}|θ)|φ'_j)
 
-          {target_actions, log_probability, random_key} =
+          {next_actions, log_probability, random_key} =
             actor_predict_fn.(random_key, actor_target_params, next_state_batch)
 
-          q1_target = critic_predict_fn.(critic1_target_params, next_state_batch, target_actions)
-          q2_target = critic_predict_fn.(critic2_target_params, next_state_batch, target_actions)
+          q1_target = critic_predict_fn.(critic1_target_params, next_state_batch, next_actions)
+          q2_target = critic_predict_fn.(critic2_target_params, next_state_batch, next_actions)
 
           %{shape: {k, 1}} = q_target = stop_grad(Nx.min(q1_target, q2_target))
 
-          next_log_prob =
-            log_probability
-            |> Nx.devectorize()
-            |> Nx.sum(axes: [0])
-
-          q_target = q_target - entropy_coefficient * next_log_prob
+          q_target = q_target - entropy_coefficient * log_probability
 
           %{shape: {m, 1}} = backup = reward_batch + gamma * non_final_mask * q_target
 
@@ -747,11 +778,10 @@ defmodule ReinforcementLearning.Agents.SAC do
               1
           end
 
-          backup = Nx.devectorize(backup)
-          critic1_loss = Nx.mean((backup - Nx.new_axis(q1, 0)) ** 2)
-          critic2_loss = Nx.mean((backup - Nx.new_axis(q2, 0)) ** 2)
+          critic1_loss = Nx.mean(Nx.devectorize(backup - Nx.new_axis(q1, 0)) ** 2)
+          critic2_loss = Nx.mean(Nx.devectorize(backup - Nx.new_axis(q2, 0)) ** 2)
 
-          {Nx.add(critic1_loss, critic2_loss), random_key}
+          {0.5 * Nx.add(critic1_loss, critic2_loss), random_key}
         end,
         &elem(&1, 0)
       )
@@ -768,38 +798,30 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     ### Train Actor
 
-    ks = Nx.Random.split(random_key)
-    random_key = ks[0]
+    {{actor_loss, _random_key}, actor_gradient} =
+      value_and_grad(
+        actor_params,
+        fn actor_params ->
+          {actions, log_probability, random_key} =
+            actor_predict_fn.(random_key, actor_params, state_batch)
 
-    k1 =
-      ks[1]
-      |> Nx.devectorize()
-      |> Nx.take(0)
+          q1 = critic_predict_fn.(critic1_params, state_batch, actions)
 
-    {actor_params, actor_optimizer_state} =
-      if train_actor do
-        actor_gradient =
-          grad(actor_params, fn actor_params ->
-            {actions, log_probability, _random_key} =
-              actor_predict_fn.(k1, actor_params, state_batch)
+          q2 = critic_predict_fn.(critic2_params, state_batch, actions)
 
-            q1 = critic_predict_fn.(critic1_params, state_batch, actions)
+          q = Nx.min(q1, q2)
 
-            q2 = critic_predict_fn.(critic2_params, state_batch, actions)
+          loss = Nx.mean(entropy_coefficient * log_probability - q)
 
-            q = Nx.min(q1, q2)
+          {loss, random_key}
+        end,
+        &elem(&1, 0)
+      )
 
-            Nx.mean(entropy_coefficient * log_probability - q)
-          end)
+    {actor_updates, actor_optimizer_state} =
+      actor_optimizer_update_fn.(actor_gradient, actor_optimizer_state, actor_params)
 
-        {actor_updates, actor_optimizer_state} =
-          actor_optimizer_update_fn.(actor_gradient, actor_optimizer_state, actor_params)
-
-        actor_params = Polaris.Updates.apply_updates(actor_params, actor_updates)
-        {actor_params, actor_optimizer_state}
-      else
-        {actor_params, actor_optimizer_state}
-      end
+    actor_params = Polaris.Updates.apply_updates(actor_params, actor_updates)
 
     %{
       state
@@ -811,17 +833,19 @@ defmodule ReinforcementLearning.Agents.SAC do
             critic1_optimizer_state: critic1_optimizer_state,
             critic2_params: critic2_params,
             critic2_optimizer_state: critic2_optimizer_state,
-            loss: state.agent_state.loss + critic_loss,
-            loss_denominator: state.agent_state.loss_denominator + 1,
+            critic_loss: state.agent_state.critic_loss + critic_loss,
+            critic_loss_denominator: state.agent_state.critic_loss_denominator + 1,
+            actor_loss: state.agent_state.actor_loss + actor_loss,
+            actor_loss_denominator: state.agent_state.actor_loss_denominator + 1,
             experience_replay_buffer: experience_replay_buffer,
             log_entropy_coefficient: log_entropy_coefficient,
             log_entropy_coefficient_optimizer_state: log_entropy_coefficient_optimizer_state
         },
-        random_key: random_key
+        random_key: next_random_key
     }
   end
 
-  defnp soft_update_targets(state, train_actor) do
+  defnp soft_update_targets(state) do
     %{
       agent_state:
         %__MODULE__{
@@ -837,12 +861,7 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     merge_fn = &Nx.as_type(&1 * tau + &2 * (1 - tau), Nx.type(&1))
 
-    actor_target_params =
-      if train_actor do
-        Axon.Shared.deep_merge(actor_params, actor_target_params, merge_fn)
-      else
-        actor_target_params
-      end
+    actor_target_params = Axon.Shared.deep_merge(actor_params, actor_target_params, merge_fn)
 
     critic1_target_params =
       Axon.Shared.deep_merge(critic1_params, critic1_target_params, merge_fn)
@@ -861,6 +880,7 @@ defmodule ReinforcementLearning.Agents.SAC do
     }
   end
 
+  @alpha 0.6
   defnp sample_experience_replay_buffer(
           random_key,
           %__MODULE__{batch_size: batch_size} = agent_state
@@ -886,15 +906,24 @@ defmodule ReinforcementLearning.Agents.SAC do
           Nx.take(k, 0)
       end
 
-    n = Nx.axis_size(data, 0)
+    # n = Nx.axis_size(data, 0)
 
-    {batch, _} =
-      if size < n do
-        probabilities = (Nx.iota({n}) < size) / size
-        Nx.Random.choice(k, data, probabilities, samples: batch_size, replace: false, axis: 0)
-      else
-        Nx.Random.choice(k, data, samples: batch_size, replace: false, axis: 0)
-      end
+    temporal_difference =
+      data
+      |> Nx.slice_along_axis(size - 1, 1, axis: 1)
+      |> Nx.flatten()
+
+    priorities = temporal_difference ** @alpha
+    probs = priorities / (Nx.sum(priorities) + Nx.Constants.epsilon(Nx.type(priorities)))
+
+    {batch, _} = Nx.Random.choice(k, data, probs, samples: batch_size, replace: false, axis: 0)
+
+    # {batch, _} =
+    #   if size < n do
+    #     probabilities = (Nx.iota({n}) < size) / size
+    #     Nx.Random.choice(k, data, probabilities, samples: batch_size, replace: false, axis: 0)
+    #   else
+    #   end
 
     {stop_grad(batch), random_key}
   end
