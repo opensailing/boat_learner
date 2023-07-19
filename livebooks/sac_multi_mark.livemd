@@ -27,15 +27,16 @@ pi = :math.pi()
 theta = 42.7 / 180 * pi
 
 # valid_points = [[0, r], [0, 0], [0, -r]]
+valid_points = [[0, r], [0, 0]]
 
-valid_points = [[0, 0], [r * :math.tan(theta), r]]
+# valid_points = [[0, 0], [r * :math.tan(theta), r]]
 
 # points =
 #   for start <- valid_points, target <- valid_points, start != target do
 #     start ++ target
 #   end
 
-points = [[0, 0, r * :math.tan(theta), r]]
+points = [[0, 0, 0, r]]
 
 # for angle <- [0, theta, -theta, pi, pi + theta, pi - theta, pi / 2, -pi / 2] do
 #   [
@@ -526,7 +527,7 @@ end
 ```
 
 ```elixir
-model_name = "sac_multi_mark_v3"
+model_name = "sac_multi_mark_v5"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -548,16 +549,17 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.da
   end
 
 fields = [
-  :x,
-  :target_x,
-  :target_y,
-  :y,
+  :left,
+  :right,
+  :down,
+  :up,
+  :distance_ration,
   :distance,
+  :prev_distance,
   :vmg,
   :heading,
   :angle_to_target,
   :has_tacked,
-  :has_collided,
   :has_reached_target
 ]
 
@@ -593,12 +595,22 @@ action_input = Axon.input("actions", shape: {nil, num_actions})
 
 policy = Axon.MixedPrecision.create_policy(params: {:f, 32}, compute: {:f, 16}, output: {:f, 32})
 
+state_size = state_features_size * state_features_memory_length
+
 actor_net_base =
   state_input
   |> Axon.namespace("actor")
   |> Axon.flatten()
-  |> Axon.dense(200, activation: :relu)
+  |> Axon.nx(&(&1 |> Nx.new_axis(1) |> Nx.tile([1, 4 | List.duplicate(1, Nx.rank(&1) - 1)])))
+  |> Axon.dense(30, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.dense(20, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.flatten()
+  |> Axon.dense(400, activation: :relu)
+  |> Axon.dropout()
   |> Axon.dense(300, activation: :relu)
+  |> Axon.dropout()
 
 actor_net_mean_out =
   actor_net_base
@@ -623,8 +635,16 @@ critic_net =
   |> Axon.namespace("critic")
   |> Axon.flatten()
   |> then(&Axon.concatenate([&1, action_input], name: "critic_combined_input"))
-  |> Axon.dense(200, activation: :relu)
+  |> Axon.nx(&(&1 |> Nx.new_axis(1) |> Nx.tile([1, 2 | List.duplicate(1, Nx.rank(&1) - 1)])))
+  |> Axon.dense(30, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.dense(20, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.flatten()
   |> Axon.dense(300, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.dense(200, activation: :relu)
+  |> Axon.dropout()
   |> Axon.dense(1, activation: :linear)
   |> Axon.MixedPrecision.apply_policy(policy, except: [:batch_norm])
 
@@ -659,23 +679,18 @@ environment_to_state_features_fn = fn env_state ->
   target_x = normalize_x.(env_state.target_x)
   target_y = normalize_y.(env_state.target_y)
 
-  distance_squared =
-    Nx.pow(Nx.subtract(norm_x, target_x), 2) |> Nx.add(Nx.pow(Nx.subtract(norm_y, target_y), 2))
-
-  # d**2 = x**2 + y**2, max(d**2) = 1**2 + 1**2 = 2
-  distance_squared_norm = Nx.divide(distance_squared, 2)
-
   [
-    norm_x,
-    norm_y,
-    target_x,
-    target_y,
-    distance_squared_norm,
+    Nx.greater(norm_x, target_x),
+    Nx.less_equal(norm_x, target_x),
+    Nx.greater(norm_y, target_y),
+    Nx.less_equal(norm_y, target_y),
+    Nx.greater(env_state.distance, env_state.prev_distance),
+    Nx.divide(env_state.distance, :math.sqrt((max_x - min_x) ** 2 + (max_y - min_y) ** 2)),
+    Nx.divide(env_state.prev_distance, :math.sqrt((max_x - min_x) ** 2 + (max_y - min_y) ** 2)),
     normalize_speed.(env_state.vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.angle_to_target),
     env_state.has_tacked,
-    env_state.has_collided,
     env_state.has_reached_target
   ]
   |> Nx.stack()
@@ -692,6 +707,25 @@ end
 # saved_state = %{}
 # saved_state = Map.delete(saved_state, :log_entropy_coefficient)
 IO.inspect({saved_state, total_episodes}, label: "{saved_state, total_episodes}")
+
+Kino.Layout.grid(
+  [
+    Kino.Layout.tabs([
+      {"Critic",
+       Axon.Display.as_graph(critic_net, %{
+         "actions" => Nx.template({1, num_actions}, :f32),
+         "state" => Nx.template({1, state_features_memory_length, state_features_size}, :f32)
+       })}
+    ]),
+    Kino.Layout.tabs([
+      {"Actor",
+       Axon.Display.as_graph(actor_net, %{
+         "state" => Nx.template({1, state_features_memory_length, state_features_size}, :f32)
+       })}
+    ])
+  ],
+  columns: 2
+)
 ```
 
 ```elixir
@@ -740,7 +774,7 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-episodes = 1000
+episodes = 4000
 
 max_iter = 10000
 
@@ -783,7 +817,7 @@ defmodule Exploration do
 end
 
 random_key_init = Nx.Random.key(42)
-num_vectors = 40
+num_vectors = 30
 
 random_key_devec =
   Nx.Random.randint_split(random_key_init, 0, Nx.Constants.max_finite(:u32),
@@ -806,28 +840,28 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
       },
       {
         ReinforcementLearning.Agents.SAC,
-        tau: 0.005,
+        tau: 0.001,
         gamma: 0.99,
         actor_net: actor_net,
         critic_net: critic_net,
         state_features_memory_length: state_features_memory_length,
-        experience_replay_buffer_max_size: 300_000,
+        experience_replay_buffer_max_size: 400_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
         training_frequency: 1,
         batch_size: 2048,
-        entropy_coefficient: 0.5,
+        entropy_coefficient: 0.2,
         saved_state: saved_state,
         actor_optimizer:
           Polaris.Updates.compose(
             Polaris.Updates.clip(),
-            Polaris.Optimizers.adam(learning_rate: 1.0e-6)
+            Polaris.Optimizers.rmsprop(learning_rate: 1.0e-5)
           ),
         critic_optimizer:
           Polaris.Updates.compose(
             Polaris.Updates.clip(),
-            Polaris.Optimizers.adam(learning_rate: 3.0e-6)
+            Polaris.Optimizers.rmsprop(learning_rate: 1.0e-5)
           )
       },
       plot_fn,

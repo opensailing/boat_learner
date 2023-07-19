@@ -36,7 +36,9 @@ defmodule BoatLearner.Environments.MultiMark do
              :max_tacks,
              :delta_t,
              :has_reached_target,
-             :has_collided
+             :has_collided,
+             :distance,
+             :prev_distance
            ]}
   defstruct [
     :x,
@@ -62,7 +64,9 @@ defmodule BoatLearner.Environments.MultiMark do
     :max_tacks,
     :delta_t,
     :has_reached_target,
-    :has_collided
+    :has_collided,
+    :distance,
+    :prev_distance
   ]
 
   @min_x -400
@@ -167,16 +171,19 @@ defmodule BoatLearner.Environments.MultiMark do
     dtheta = 0.1
     min_theta = theta |> Nx.reduce_min() |> Nx.new_axis(0)
 
-    dspeed = Scholar.Interpolation.BezierSpline.predict(spline_model, Nx.add(min_theta, dtheta))
+    dspeed =
+      Scholar.Interpolation.BezierSpline.predict(spline_model, Nx.subtract(min_theta, dtheta))
 
     # Fit {0, 0}, {15deg, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
-    dead_zone_thetas = Nx.tensor([0, @dead_zone_angle])
-    dead_zone_speeds = Nx.tensor([0, 0])
+    # dead_zone_thetas = Nx.tensor([0, @dead_zone_angle])
+    # dead_zone_speeds = Nx.tensor([0, 0])
 
     linear_model =
       Scholar.Interpolation.Linear.fit(
-        Nx.concatenate([dead_zone_thetas, min_theta, theta]),
-        Nx.concatenate([dead_zone_speeds, dspeed, speed])
+        Nx.concatenate([Nx.tensor([0]), min_theta, theta]),
+        # Nx.concatenate([dead_zone_thetas, min_theta, theta]),
+        Nx.concatenate([Nx.tensor([0]), dspeed, speed])
+        # Nx.concatenate([dead_zone_speeds, dspeed, speed])
       )
 
     cutoff_angle = Nx.reduce_min(spline_model.k, axes: [0])[0]
@@ -236,8 +243,12 @@ defmodule BoatLearner.Environments.MultiMark do
         remaining_seconds: state.max_remaining_seconds,
         vmg: vmg,
         tack_count: Nx.s64(0),
-        delta_t: delta_t
+        delta_t: delta_t,
+        distance: initial_distance,
+        prev_distance: initial_distance
     }
+
+    state = %__MODULE__{state | distance: distance(state), prev_distance: state.distance}
 
     case random_key.vectorized_axes do
       [] ->
@@ -352,7 +363,7 @@ defmodule BoatLearner.Environments.MultiMark do
 
     delta_t = turning_time + @speed_recovery_in_seconds
 
-    %__MODULE__{
+    env = %__MODULE__{
       env
       | remaining_seconds:
           Nx.select(
@@ -370,6 +381,8 @@ defmodule BoatLearner.Environments.MultiMark do
         y: Nx.select(env.is_terminal, env.y, y),
         angle_to_target: Nx.select(env.is_terminal, env.angle_to_target, angle_to_target)
     }
+
+    %{env | distance: distance(env), prev_distance: env.distance}
   end
 
   defn speed_from_heading({linear_model, spline_model, cutoff_angle}, angle) do
@@ -416,23 +429,41 @@ defmodule BoatLearner.Environments.MultiMark do
   end
 
   defnp has_reached_target(env) do
-    distance(env) < 10
+    env.distance < 10
   end
 
   defnp calculate_reward(env) do
     %__MODULE__{
-      # vmg: vmg,
-      # remaining_seconds: remaining_seconds,
-      # max_remaining_seconds: max_remaining_seconds,
+      vmg: vmg,
+      # distance: distance,
+      # prev_distance: prev_distance,
       has_reached_target: has_reached_target,
-      delta_t: delta_t,
-      initial_distance: initial_distance
+      # initial_distance: initial_distance,
+      remaining_seconds: remaining_seconds,
+      max_remaining_seconds: max_remaining_seconds,
+      has_tacked: has_tacked
+      # delta_t: delta_t
     } = env
 
-    %__MODULE__{
-      env
-      | reward: -0.1 * delta_t + has_reached_target + (1 - distance(env) / initial_distance)
-    }
+    # [reward, _] = Nx.broadcast_vectors([-0.01, delta_t])
+
+    time_decay = remaining_seconds / max_remaining_seconds
+
+    reward = 0.1 * vmg / @max_speed
+
+    reward =
+      cond do
+        has_reached_target ->
+          reward + time_decay
+
+        has_tacked ->
+          -1
+
+        true ->
+          reward
+      end
+
+    %__MODULE__{env | reward: reward}
   end
 
   defnp distance(env) do

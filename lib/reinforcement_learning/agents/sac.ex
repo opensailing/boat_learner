@@ -174,11 +174,29 @@ defmodule ReinforcementLearning.Agents.SAC do
     {critic_init_fn, critic_predict_fn} = Axon.build(critic_net, seed: 1)
 
     actor_predict_fn = fn random_key, params, state_features_memory ->
+      vectorized_axes = state_features_memory.vectorized_axes
+      batch_size = Nx.axis_size(state_features_memory, 0)
+
+      state_features_memory =
+        Nx.revectorize(state_features_memory, [],
+          target_shape: put_elem(state_features_memory.shape, 0, :auto)
+        )
+
       action_distribution_vector =
-        actor_predict_fn.(params, state_features_memory_to_input_fn.(state_features_memory))
+        actor_predict_fn.(
+          params,
+          state_features_memory_to_input_fn.(state_features_memory)
+        )
 
       mu = action_distribution_vector[[.., .., 0]]
       log_stddev = action_distribution_vector[[.., .., 1]]
+
+      mu = Nx.revectorize(mu, vectorized_axes, target_shape: {batch_size, Nx.axis_size(mu, 1)})
+
+      log_stddev =
+        Nx.revectorize(log_stddev, vectorized_axes,
+          target_shape: {batch_size, Nx.axis_size(log_stddev, 1)}
+        )
 
       stddev = Nx.exp(log_stddev)
 
@@ -199,12 +217,25 @@ defmodule ReinforcementLearning.Agents.SAC do
     end
 
     critic_predict_fn = fn params, state_features_memory, action_vector ->
+      vectorized_axes = state_features_memory.vectorized_axes
+      batch_size = Nx.axis_size(state_features_memory, 0)
+
+      state_features_memory =
+        Nx.revectorize(state_features_memory, [],
+          target_shape: put_elem(state_features_memory.shape, 0, :auto)
+        )
+
+      action_vector =
+        Nx.revectorize(action_vector, [], target_shape: put_elem(action_vector.shape, 0, :auto))
+
       input =
         state_features_memory
         |> state_features_memory_to_input_fn.()
         |> Map.put("actions", action_vector)
 
-      critic_predict_fn.(params, input)
+      preds = critic_predict_fn.(params, input)
+
+      Nx.revectorize(preds, vectorized_axes, target_shape: put_elem(preds.shape, 0, batch_size))
     end
 
     input_template = input_template(actor_net)
@@ -613,14 +644,15 @@ defmodule ReinforcementLearning.Agents.SAC do
   end
 
   defnp train_loop_step(state) do
-    {batch, random_key} = sample_experience_replay_buffer(state.random_key, state.agent_state)
+    {batch, batch_idx, random_key} =
+      sample_experience_replay_buffer(state.random_key, state.agent_state)
 
     %{state | random_key: random_key}
-    |> train(batch)
+    |> train(batch, batch_idx)
     |> soft_update_targets()
   end
 
-  defnp train(state, batch) do
+  defnp train(state, batch, batch_idx) do
     %{
       agent_state: %__MODULE__{
         actor_params: actor_params,
@@ -747,7 +779,7 @@ defmodule ReinforcementLearning.Agents.SAC do
 
     ### Train critic_params
 
-    {{critic_loss, random_key}, {critic1_gradient, critic2_gradient}} =
+    {{critic_loss, td_errors, random_key}, {critic1_gradient, critic2_gradient}} =
       value_and_grad(
         {critic1_params, critic2_params},
         fn {critic1_params, critic2_params} ->
@@ -778,13 +810,20 @@ defmodule ReinforcementLearning.Agents.SAC do
               1
           end
 
-          critic1_loss = Nx.mean(Nx.devectorize(backup - Nx.new_axis(q1, 0)) ** 2)
-          critic2_loss = Nx.mean(Nx.devectorize(backup - Nx.new_axis(q2, 0)) ** 2)
+          td_errors1 = Nx.devectorize(backup - q1)
+          td_errors2 = Nx.devectorize(backup - q2)
 
-          {0.5 * Nx.add(critic1_loss, critic2_loss), random_key}
+          critic1_loss = Nx.mean(td_errors1 ** 2)
+          critic2_loss = Nx.mean(td_errors2 ** 2)
+
+          td_errors = Nx.select(critic1_loss > critic2_loss, td_errors1, td_errors2)
+
+          {0.5 * Nx.add(critic1_loss, critic2_loss), td_errors, random_key}
         end,
         &elem(&1, 0)
       )
+
+    experience_replay_buffer = update_priorities(experience_replay_buffer, batch_idx, td_errors)
 
     {critic1_updates, critic1_optimizer_state} =
       critic_optimizer_update_fn.(critic1_gradient, critic1_optimizer_state, critic1_params)
@@ -906,8 +945,6 @@ defmodule ReinforcementLearning.Agents.SAC do
           Nx.take(k, 0)
       end
 
-    # n = Nx.axis_size(data, 0)
-
     temporal_difference =
       data
       |> Nx.slice_along_axis(size - 1, 1, axis: 1)
@@ -916,16 +953,34 @@ defmodule ReinforcementLearning.Agents.SAC do
     priorities = temporal_difference ** @alpha
     probs = priorities / (Nx.sum(priorities) + Nx.Constants.epsilon(Nx.type(priorities)))
 
-    {batch, _} = Nx.Random.choice(k, data, probs, samples: batch_size, replace: false, axis: 0)
+    {batch_idx, _} =
+      Nx.Random.choice(k, Nx.iota({Nx.axis_size(data, 0)}), probs,
+        samples: batch_size,
+        replace: false,
+        axis: 0
+      )
 
-    # {batch, _} =
-    #   if size < n do
-    #     probabilities = (Nx.iota({n}) < size) / size
-    #     Nx.Random.choice(k, data, probabilities, samples: batch_size, replace: false, axis: 0)
-    #   else
-    #   end
+    batch = Nx.take(data, batch_idx)
 
-    {stop_grad(batch), random_key}
+    {stop_grad(batch), batch_idx, random_key}
+  end
+
+  defnp update_priorities(
+          %{data: %{shape: {_, item_size}}} = buffer,
+          %{shape: {n}} = entry_indices,
+          td_errors
+        ) do
+    case td_errors.shape do
+      {^n, 1} ->
+        :ok
+
+      shape ->
+        raise "invalid shape for td_errors, got: #{inspect(shape)}, expected: #{inspect({n, 1})}"
+    end
+
+    indices = Nx.stack([entry_indices, Nx.broadcast(item_size - 1, {n})], axis: -1)
+
+    %{buffer | data: Nx.indexed_put(buffer.data, indices, Nx.reshape(td_errors, {n}))}
   end
 
   defnp action_log_probability(mu, stddev, log_stddev, x) do
