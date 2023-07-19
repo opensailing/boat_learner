@@ -436,7 +436,9 @@ defmodule BoatLearner.Environments.MultiMark do
     %__MODULE__{
       has_reached_target: has_reached_target,
       has_tacked: has_tacked,
-      is_terminal: is_terminal
+      is_terminal: is_terminal,
+      distance: distance,
+      initial_distance: initial_distance
     } = env
 
     [one, _] = Nx.broadcast_vectors([1, is_terminal])
@@ -447,7 +449,7 @@ defmodule BoatLearner.Environments.MultiMark do
           one
 
         is_terminal ->
-          -one
+          -distance / initial_distanc e
 
         has_tacked ->
           -0.1 * one
