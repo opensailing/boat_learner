@@ -157,7 +157,23 @@ grid_widget =
   ])
   |> Kino.VegaLite.new()
 
-value_widget_fn = fn title ->
+value_widget_fn = fn title, plot_median ->
+  transform =
+    if plot_median do
+      &Vl.transform(&1,
+        frame: [-30, 0],
+        window: [
+          [
+            field: "y",
+            op: "median",
+            as: "rolling_median"
+          ]
+        ]
+      )
+    else
+      &Function.identity/1
+    end
+
   Vl.new(width: width, height: div(height, 2), title: title)
   |> Vl.data(name: "values")
   |> Vl.layers([
@@ -181,19 +197,11 @@ value_widget_fn = fn title ->
     ),
     Vl.new()
     |> Vl.mark(:line, grid: true)
-    |> Vl.transform(
-      frame: [-30, 0],
-      window: [
-        [
-          field: "y",
-          op: "median",
-          as: "rolling_median"
-        ]
-      ]
-    )
+    |> transform.()
+    |> Vl.encode_field(:color, "source", type: :nominal)
     |> Vl.encode_field(:x, "x", legend: false, type: :quantitative)
     |> Vl.encode_field(:order, "x", legend: false)
-    |> Vl.encode_field(:y, "rolling_median",
+    |> Vl.encode_field(:y, if(plot_median, do: "rolling_median", else: "y"),
       legend: false,
       type: :quantitative,
       scale: [
@@ -207,10 +215,10 @@ value_widget_fn = fn title ->
   |> Kino.VegaLite.new()
 end
 
-actor_loss_widget = value_widget_fn.("Actor Loss")
-critic_loss_widget = value_widget_fn.("Critic Loss")
-reward_widget = value_widget_fn.("Total Reward")
-entropy_coefficient_widget = value_widget_fn.("Entropy Coefficient")
+actor_loss_widget = value_widget_fn.("Actor Loss", true)
+critic_loss_widget = value_widget_fn.("Critic Loss", true)
+reward_widget = value_widget_fn.("Total Reward", true)
+misc_value_widget = value_widget_fn.("Misc. Values", false)
 
 global_kv_key = :rl_training_metadata_key
 data = %{optimizer_stepsoptimizer_steps: nil, total_reward: nil}
@@ -250,7 +258,7 @@ training_widget =
     Kino.Layout.grid([actor_loss_widget], boxed: true),
     Kino.Layout.grid([critic_loss_widget], boxed: true),
     Kino.Layout.grid([reward_widget], boxed: true),
-    Kino.Layout.grid([entropy_coefficient_widget], boxed: true)
+    Kino.Layout.grid([misc_value_widget], boxed: true)
   ])
 
 Kino.Layout.tabs([{"Simulation", simulation_widget}, {"Training", training_widget}])
@@ -502,13 +510,25 @@ plot_fn = fn axon_state ->
     log_entropy_coefficient =
       to_number.(axon_state.step_state.agent_state.log_entropy_coefficient, index)
 
-    Kino.VegaLite.push(
-      entropy_coefficient_widget,
-      %{
-        x: axon_state.epoch,
-        y: :math.exp(log_entropy_coefficient),
-        iterations: axon_state.iteration
-      },
+    exp_buf_index =
+      to_number.(axon_state.step_state.agent_state.experience_replay_buffer.index, index)
+
+    Kino.VegaLite.push_many(
+      misc_value_widget,
+      [
+        %{
+          x: axon_state.epoch,
+          y: :math.exp(log_entropy_coefficient),
+          source: "log_entropy_coefficient",
+          iterations: axon_state.iteration
+        },
+        %{
+          x: axon_state.epoch,
+          y: exp_buf_index,
+          source: "IDX(exp. replay buffer)",
+          iterations: axon_state.iteration
+        }
+      ],
       dataset: "values"
     )
 
@@ -749,7 +769,7 @@ Kino.VegaLite.clear(grid_widget)
 Kino.VegaLite.clear(actor_loss_widget, dataset: "values")
 Kino.VegaLite.clear(critic_loss_widget, dataset: "values")
 Kino.VegaLite.clear(reward_widget, dataset: "values")
-Kino.VegaLite.clear(entropy_coefficient_widget, dataset: "values")
+Kino.VegaLite.clear(misc_value_widget, dataset: "values")
 
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
