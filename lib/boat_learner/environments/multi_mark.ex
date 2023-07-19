@@ -449,7 +449,7 @@ defmodule BoatLearner.Environments.MultiMark do
           one
 
         is_terminal ->
-          -distance / initial_distanc e
+          -distance / initial_distance
 
         has_tacked ->
           -0.1 * one
