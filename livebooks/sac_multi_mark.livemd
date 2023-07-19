@@ -547,7 +547,7 @@ end
 ```
 
 ```elixir
-model_name = "sac_multi_mark_v5"
+model_name = "sac_multi_mark_v6"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -837,7 +837,7 @@ defmodule Exploration do
 end
 
 random_key_init = Nx.Random.key(42)
-num_vectors = 30
+num_vectors = 1
 
 random_key_devec =
   Nx.Random.randint_split(random_key_init, 0, Nx.Constants.max_finite(:u32),

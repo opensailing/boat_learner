@@ -434,33 +434,26 @@ defmodule BoatLearner.Environments.MultiMark do
 
   defnp calculate_reward(env) do
     %__MODULE__{
-      vmg: vmg,
-      # distance: distance,
-      # prev_distance: prev_distance,
       has_reached_target: has_reached_target,
-      # initial_distance: initial_distance,
-      remaining_seconds: remaining_seconds,
-      max_remaining_seconds: max_remaining_seconds,
-      has_tacked: has_tacked
-      # delta_t: delta_t
+      has_tacked: has_tacked,
+      is_terminal: is_terminal
     } = env
 
-    # [reward, _] = Nx.broadcast_vectors([-0.01, delta_t])
-
-    time_decay = remaining_seconds / max_remaining_seconds
-
-    reward = 0.1 * vmg / @max_speed
+    [one, _] = Nx.broadcast_vectors([1, is_terminal])
 
     reward =
       cond do
         has_reached_target ->
-          reward + time_decay
+          one
+
+        is_terminal ->
+          -one
 
         has_tacked ->
-          -1
+          -0.1 * one
 
         true ->
-          reward
+          -0.01 * one
       end
 
     %__MODULE__{env | reward: reward}
