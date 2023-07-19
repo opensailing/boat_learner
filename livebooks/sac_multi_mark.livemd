@@ -286,13 +286,14 @@ defmodule AccumulateAndExportData do
       env.x,
       env.y,
       env.remaining_seconds,
-      agent.total_reward,
+      env.reward,
       rad_to_deg(env.heading),
       env.speed,
       env.vmg,
       distance_to_mark,
       env.target_x,
-      env.target_y
+      env.target_y,
+      env.is_terminal
     ])
   end
 
@@ -329,7 +330,8 @@ defmodule AccumulateAndExportData do
                               vmg,
                               distance_to_mark,
                               target_x,
-                              target_y
+                              target_y,
+                              is_terminal
                             ],
                             index ->
         %{
@@ -344,7 +346,8 @@ defmodule AccumulateAndExportData do
           remaining_seconds: remaining_seconds,
           reward: reward,
           target_x: target_x,
-          target_y: target_y
+          target_y: target_y,
+          is_terminal: is_terminal
         }
       end)
 
@@ -390,11 +393,33 @@ end
 plot_fn = fn axon_state ->
   episode = axon_state.epoch
   IO.inspect("Episode #{episode} ended")
-  devec_total_reward = Nx.devectorize(axon_state.step_state.agent_state.total_reward)
-  index = Nx.argmax(devec_total_reward)
+  devec_trajectory = Nx.devectorize(axon_state.step_state.trajectory) |> Nx.to_list()
+
+  num_vectors = length(devec_trajectory)
+
+  {{_, iteration}, index} =
+    devec_trajectory
+    |> Enum.map(fn traj ->
+      {traj, _nan_rows} =
+        Enum.split_while(traj, fn row ->
+          hd(row) != :nan
+        end)
+
+      Enum.reduce_while(traj, {0, 0}, fn row, {reward_acc, len_acc} ->
+        is_terminal = Enum.at(row, 10)
+        reward = Enum.at(row, 3)
+
+        if is_terminal == 1 do
+          {:halt, {reward_acc + reward, len_acc + 1}}
+        else
+          {:cont, {reward_acc + reward, len_acc + 1}}
+        end
+      end)
+    end)
+    |> Enum.with_index()
+    |> Enum.max_by(fn {{sum, _len}, _idx} -> sum end)
 
   trajectory = axon_state.step_state.trajectory
-  iteration = to_number.(axon_state.step_state.iteration, index)
 
   if rem(episode, 25) == 0 do
     GenServer.cast(
@@ -411,9 +436,9 @@ plot_fn = fn axon_state ->
       trajectory
       |> Nx.revectorize([x: :auto], target_shape: trajectory.shape)
       |> Nx.devectorize()
-      |> then(& &1[[index, 0..(iteration - 1)//1, 0..9]])
+      |> then(& &1[[index, 0..(iteration - 1)//1, 0..10]])
 
-    points =
+    {points, terminal_points} =
       traj
       |> Nx.to_list()
       |> Enum.with_index(fn [
@@ -426,7 +451,8 @@ plot_fn = fn axon_state ->
                               vmg,
                               distance_to_mark,
                               target_x,
-                              target_y
+                              target_y,
+                              is_terminal
                             ],
                             index ->
         %{
@@ -440,9 +466,15 @@ plot_fn = fn axon_state ->
           distance: distance_to_mark,
           vmg: vmg,
           target_x: target_x,
-          target_y: target_y
+          target_y: target_y,
+          is_terminal: is_terminal == 1
         }
       end)
+      |> Enum.split_while(fn row -> not row.is_terminal end)
+
+    points = points ++ Enum.take(terminal_points, 1)
+
+    total_reward = Enum.reduce(points, 0, fn row, acc -> acc + row.reward end)
 
     Kino.VegaLite.push_many(grid_widget, points, dataset: "trajectory")
 
@@ -495,8 +527,6 @@ plot_fn = fn axon_state ->
       )
     end
 
-    total_reward = to_number.(axon_state.step_state.agent_state.total_reward, index)
-
     Kino.VegaLite.push(
       reward_widget,
       %{
@@ -533,8 +563,6 @@ plot_fn = fn axon_state ->
     )
 
     global_kv_key = :rl_training_metadata_key
-
-    num_vectors = Nx.size(devec_total_reward)
 
     :persistent_term.put(global_kv_key, %{
       optimizer_steps: episode * num_vectors,
@@ -837,7 +865,7 @@ defmodule Exploration do
 end
 
 random_key_init = Nx.Random.key(42)
-num_vectors = 1
+num_vectors = 40
 
 random_key_devec =
   Nx.Random.randint_split(random_key_init, 0, Nx.Constants.max_finite(:u32),
@@ -865,7 +893,7 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         actor_net: actor_net,
         critic_net: critic_net,
         state_features_memory_length: state_features_memory_length,
-        experience_replay_buffer_max_size: 400_000,
+        experience_replay_buffer_max_size: 4_000_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
