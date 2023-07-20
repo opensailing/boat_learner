@@ -282,7 +282,7 @@ defmodule CriticStepState do
 
     {updates, optimizer_state} = optimizer_update_fn.(gradient, optimizer_state, model_params)
 
-    model_params = Axon.Updates.apply_updates(model_params, updates)
+    model_params = Polaris.Updates.apply_updates(model_params, updates)
 
     %{loss: loss, gamma: gamma, model_params: model_params, optimizer_state: optimizer_state}
   end
@@ -313,8 +313,8 @@ model_params =
   )
 
 {optimizer_init_fn, optimizer_update_fn} =
-  Axon.Updates.compose(
-    Axon.Updates.clip(delta: 2),
+  Polaris.Updates.compose(
+    Polaris.Updates.clip(delta: 2),
     Axon.Optimizers.adamw(1.0e-6, decay: 0.005, eps: 1.0e-12)
   )
 

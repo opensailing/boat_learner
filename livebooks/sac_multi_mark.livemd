@@ -1,4 +1,4 @@
-# Multi-mark
+# SAC Multi-Mark
 
 ```elixir
 my_app_root = Path.join(__DIR__, "..")
@@ -11,7 +11,6 @@ Mix.install(
   lockfile: Path.join(my_app_root, "mix.lock"),
   consolidate_protocols: false,
   system_env: %{"XLA_TARGET" => System.get_env("XLA_TARGET", "cpu")}
-  # force: true
 )
 ```
 
@@ -27,12 +26,17 @@ r = 250
 pi = :math.pi()
 theta = 42.7 / 180 * pi
 
-valid_points = [[0, r], [0, 0], [0, -r]]
+# valid_points = [[0, r], [0, 0], [0, -r]]
+valid_points = [[0, r], [0, 0]]
 
-points =
-  for start <- valid_points, target <- valid_points, start != target do
-    start ++ target
-  end
+# valid_points = [[0, 0], [r * :math.tan(theta), r]]
+
+# points =
+#   for start <- valid_points, target <- valid_points, start != target do
+#     start ++ target
+#   end
+
+points = [[0, 0, 0, r]]
 
 # for angle <- [0, theta, -theta, pi, pi + theta, pi - theta, pi / 2, -pi / 2] do
 #   [
@@ -153,20 +157,36 @@ grid_widget =
   ])
   |> Kino.VegaLite.new()
 
-loss_widget =
-  Vl.new(width: width, height: div(height, 2), title: "Loss")
-  |> Vl.data(name: "loss")
+value_widget_fn = fn title, plot_median ->
+  transform =
+    if plot_median do
+      &Vl.transform(&1,
+        frame: [-30, 0],
+        window: [
+          [
+            field: "y",
+            op: "median",
+            as: "rolling_median"
+          ]
+        ]
+      )
+    else
+      &Function.identity/1
+    end
+
+  Vl.new(width: width, height: div(height, 2), title: title)
+  |> Vl.data(name: "values")
   |> Vl.layers([
     Vl.new()
     |> Vl.mark(:point,
       grid: true,
       tooltip: [content: "data"],
-      color: "red",
       opacity: 0.25
     )
-    |> Vl.encode_field(:x, "episode", legend: false, type: :quantitative)
-    |> Vl.encode_field(:order, "episode", legend: false)
-    |> Vl.encode_field(:y, "loss",
+    |> Vl.encode_field(:color, "source", type: :nominal)
+    |> Vl.encode_field(:x, "x", legend: false, type: :quantitative)
+    |> Vl.encode_field(:order, "x", legend: false)
+    |> Vl.encode_field(:y, "y",
       legend: false,
       type: :quantitative,
       scale: [
@@ -176,87 +196,32 @@ loss_widget =
       axis: [tick_count: 10]
     ),
     Vl.new()
-    |> Vl.mark(:line, grid: true, color: "blue")
-    |> Vl.transform(
-      frame: [-15, 0],
-      window: [
-        [
-          field: "loss",
-          op: "median",
-          as: "rolling_median_loss"
-        ]
-      ]
-    )
-    |> Vl.encode_field(:x, "episode", legend: false, type: :quantitative)
-    |> Vl.encode_field(:order, "episode", legend: false)
-    |> Vl.encode_field(:y, "rolling_median_loss",
+    |> Vl.mark(:line, grid: true)
+    |> transform.()
+    |> Vl.encode_field(:color, "source", type: :nominal)
+    |> Vl.encode_field(:x, "x", legend: false, type: :quantitative)
+    |> Vl.encode_field(:order, "x", legend: false)
+    |> Vl.encode_field(:y, if(plot_median, do: "rolling_median", else: "y"),
       legend: false,
       type: :quantitative,
       scale: [
         domain: %{expr: "[min_y, max_y]"},
-        clamp: true,
-        type: %{expr: "y_scale"}
+        clamp: true
       ]
     )
   ])
   |> Vl.param("max_y", value: 5, bind: [input: "number"])
   |> Vl.param("min_y", value: 0, bind: [input: "number"])
-  |> Vl.param("y_type", value: "linear", bind: [input: "select", options: ["linear", "symlog"]])
   |> Kino.VegaLite.new()
+end
 
-reward_widget =
-  Vl.new(width: width, height: div(height, 2), title: "Total Reward per Epoch")
-  |> Vl.data(name: "reward")
-  |> Vl.layers([
-    Vl.new()
-    |> Vl.mark(:point,
-      grid: true,
-      tooltip: [content: "data"],
-      point: true,
-      color: "red",
-      opacity: 0.25
-    )
-    |> Vl.encode_field(:x, "episode", legend: false, type: :quantitative)
-    |> Vl.encode_field(:y, "reward",
-      legend: false,
-      type: :quantitative,
-      scale: [
-        domain: %{expr: "[min_y, max_y]"},
-        clamp: true
-      ],
-      axis: [tick_count: 10]
-    ),
-    Vl.new()
-    |> Vl.mark(:line, grid: true, color: "blue")
-    |> Vl.transform(
-      frame: [-15, 0],
-      window: [
-        [
-          field: "reward",
-          op: "median",
-          as: "rolling_median_reward"
-        ]
-      ]
-    )
-    |> Vl.encode_field(:x, "episode", legend: false, type: :quantitative)
-    |> Vl.encode_field(:order, "episode", legend: false)
-    |> Vl.encode_field(:y, "rolling_median_reward",
-      legend: false,
-      type: :quantitative,
-      scale: [
-        domain: %{expr: "[min_y, max_y]"},
-        clamp: true
-      ],
-      axis: [tick_count: 10]
-    )
-  ])
-  |> Vl.param("max_y", value: 0.75, bind: [input: "number"])
-  |> Vl.param("min_y", value: -0.75, bind: [input: "number"])
-  |> Vl.encode_field(:order, "episode", legend: false)
-  |> Kino.VegaLite.new()
+actor_loss_widget = value_widget_fn.("Actor Loss", true)
+critic_loss_widget = value_widget_fn.("Critic Loss", true)
+reward_widget = value_widget_fn.("Total Reward", true)
+misc_value_widget = value_widget_fn.("Misc. Values", false)
 
 global_kv_key = :rl_training_metadata_key
-data = %{sigma: nil, episode: nil, total_reward: nil}
+data = %{optimizer_stepsoptimizer_steps: nil, total_reward: nil}
 :persistent_term.put(global_kv_key, data)
 
 metadata_widget = Kino.Frame.new()
@@ -290,8 +255,10 @@ simulation_widget =
 
 training_widget =
   Kino.Layout.grid([
-    Kino.Layout.grid([loss_widget], boxed: true),
-    Kino.Layout.grid([reward_widget], boxed: true)
+    Kino.Layout.grid([actor_loss_widget], boxed: true),
+    Kino.Layout.grid([critic_loss_widget], boxed: true),
+    Kino.Layout.grid([reward_widget], boxed: true),
+    Kino.Layout.grid([misc_value_widget], boxed: true)
   ])
 
 Kino.Layout.tabs([{"Simulation", simulation_widget}, {"Training", training_widget}])
@@ -319,13 +286,14 @@ defmodule AccumulateAndExportData do
       env.x,
       env.y,
       env.remaining_seconds,
-      agent.total_reward,
+      env.reward,
       rad_to_deg(env.heading),
       env.speed,
       env.vmg,
       distance_to_mark,
       env.target_x,
-      env.target_y
+      env.target_y,
+      env.is_terminal
     ])
   end
 
@@ -362,7 +330,8 @@ defmodule AccumulateAndExportData do
                               vmg,
                               distance_to_mark,
                               target_x,
-                              target_y
+                              target_y,
+                              is_terminal
                             ],
                             index ->
         %{
@@ -377,7 +346,8 @@ defmodule AccumulateAndExportData do
           remaining_seconds: remaining_seconds,
           reward: reward,
           target_x: target_x,
-          target_y: target_y
+          target_y: target_y,
+          is_terminal: is_terminal
         }
       end)
 
@@ -410,7 +380,10 @@ end
 # 250 max_iter * 15 episodes
 max_points = 1000
 
-target_data = %{x: Enum.map(points, &Enum.at(&1, 0)), y: Enum.map(points, &Enum.at(&1, 1))}
+target_data = %{
+  x: Enum.map(valid_points, &Enum.at(&1, 0)),
+  y: Enum.map(valid_points, &Enum.at(&1, 1))
+}
 
 to_number = fn
   %{vectorized_axes: []} = t, _index -> Nx.to_number(t)
@@ -420,10 +393,33 @@ end
 plot_fn = fn axon_state ->
   episode = axon_state.epoch
   IO.inspect("Episode #{episode} ended")
-  index = Nx.argmax(Nx.devectorize(axon_state.step_state.agent_state.total_reward))
+  devec_trajectory = Nx.devectorize(axon_state.step_state.trajectory) |> Nx.to_list()
+
+  num_vectors = length(devec_trajectory)
+
+  {{_, iteration}, index} =
+    devec_trajectory
+    |> Enum.map(fn traj ->
+      {traj, _nan_rows} =
+        Enum.split_while(traj, fn row ->
+          hd(row) != :nan
+        end)
+
+      Enum.reduce_while(traj, {0, 0}, fn row, {reward_acc, len_acc} ->
+        is_terminal = Enum.at(row, 10)
+        reward = Enum.at(row, 3)
+
+        if is_terminal == 1 do
+          {:halt, {reward_acc + reward, len_acc + 1}}
+        else
+          {:cont, {reward_acc + reward, len_acc + 1}}
+        end
+      end)
+    end)
+    |> Enum.with_index()
+    |> Enum.max_by(fn {{sum, _len}, _idx} -> sum end)
 
   trajectory = axon_state.step_state.trajectory
-  iteration = to_number.(axon_state.step_state.iteration, index)
 
   if rem(episode, 25) == 0 do
     GenServer.cast(
@@ -432,7 +428,7 @@ plot_fn = fn axon_state ->
     )
   end
 
-  if rem(episode, 3) == 0 and iteration > 0 do
+  if rem(episode, 1) == 0 and iteration > 0 do
     Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
     Kino.VegaLite.clear(grid_widget, dataset: "target")
 
@@ -440,9 +436,9 @@ plot_fn = fn axon_state ->
       trajectory
       |> Nx.revectorize([x: :auto], target_shape: trajectory.shape)
       |> Nx.devectorize()
-      |> then(& &1[[0, 0..(iteration - 1)//1, 0..9]])
+      |> then(& &1[[index, 0..(iteration - 1)//1, 0..10]])
 
-    points =
+    {points, terminal_points} =
       traj
       |> Nx.to_list()
       |> Enum.with_index(fn [
@@ -455,7 +451,8 @@ plot_fn = fn axon_state ->
                               vmg,
                               distance_to_mark,
                               target_x,
-                              target_y
+                              target_y,
+                              is_terminal
                             ],
                             index ->
         %{
@@ -469,9 +466,15 @@ plot_fn = fn axon_state ->
           distance: distance_to_mark,
           vmg: vmg,
           target_x: target_x,
-          target_y: target_y
+          target_y: target_y,
+          is_terminal: is_terminal == 1
         }
       end)
+      |> Enum.split_while(fn row -> not row.is_terminal end)
+
+    points = points ++ Enum.take(terminal_points, 1)
+
+    total_reward = Enum.reduce(points, 0, fn row, acc -> acc + row.reward end)
 
     Kino.VegaLite.push_many(grid_widget, points, dataset: "trajectory")
 
@@ -492,41 +495,78 @@ plot_fn = fn axon_state ->
 
     Kino.VegaLite.push_many(grid_widget, target_data, dataset: "target")
 
-    loss = to_number.(axon_state.step_state.agent_state.loss, index)
-    loss_den = to_number.(axon_state.step_state.agent_state.loss_denominator, index)
+    critic_loss = to_number.(axon_state.step_state.agent_state.critic_loss, index)
+    critic_loss_den = to_number.(axon_state.step_state.agent_state.critic_loss_denominator, index)
 
-    if loss_den > 0 do
-      loss = if is_number(loss), do: loss / loss_den, else: 1000
+    if critic_loss_den > 0 do
+      critic_loss = if is_number(critic_loss), do: critic_loss / critic_loss_den, else: -1
 
       Kino.VegaLite.push(
-        loss_widget,
+        critic_loss_widget,
         %{
-          episode: episode,
-          loss: loss
+          x: episode,
+          y: critic_loss
         },
-        dataset: "loss"
+        dataset: "values"
       )
     end
 
-    total_reward = to_number.(axon_state.step_state.agent_state.total_reward, index)
+    actor_loss = to_number.(axon_state.step_state.agent_state.actor_loss, index)
+    actor_loss_den = to_number.(axon_state.step_state.agent_state.actor_loss_denominator, index)
+
+    if actor_loss_den > 0 do
+      actor_loss = if is_number(actor_loss), do: actor_loss / actor_loss_den, else: -1
+
+      Kino.VegaLite.push(
+        actor_loss_widget,
+        %{
+          x: episode,
+          y: actor_loss
+        },
+        dataset: "values"
+      )
+    end
 
     Kino.VegaLite.push(
       reward_widget,
       %{
-        episode: axon_state.epoch,
-        reward: total_reward,
+        x: axon_state.epoch,
+        y: total_reward,
         iterations: axon_state.iteration
       },
-      dataset: "reward"
+      dataset: "values"
+    )
+
+    log_entropy_coefficient =
+      to_number.(axon_state.step_state.agent_state.log_entropy_coefficient, index)
+
+    exp_buf_index =
+      to_number.(axon_state.step_state.agent_state.experience_replay_buffer.index, index)
+
+    Kino.VegaLite.push_many(
+      misc_value_widget,
+      [
+        %{
+          x: axon_state.epoch,
+          y: :math.exp(log_entropy_coefficient),
+          source: "log_entropy_coefficient",
+          iterations: axon_state.iteration
+        },
+        %{
+          x: axon_state.epoch,
+          y: exp_buf_index,
+          source: "IDX(exp. replay buffer)",
+          iterations: axon_state.iteration
+        }
+      ],
+      dataset: "values"
     )
 
     global_kv_key = :rl_training_metadata_key
 
     :persistent_term.put(global_kv_key, %{
-      sigma: to_number.(axon_state.step_state.agent_state.ou_process.sigma, index),
-      episode: episode,
-      total_reward: total_reward,
-      exploring: to_number.(axon_state.step_state.agent_state.exploration_fn.(episode), index)
+      optimizer_steps: episode * num_vectors,
+      total_reward: total_reward
     })
   end
 
@@ -535,56 +575,40 @@ end
 ```
 
 ```elixir
-model_name = "multi_mark_v1"
+model_name = "sac_multi_mark_v6"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
 
-{
-  actor_params,
-  actor_target_params,
-  critic_params,
-  critic_target_params,
-  experience_replay_buffer,
-  total_episodes,
-  performance_memory,
-  state_features_memory
-} =
+{saved_state, total_episodes} =
   try do
     contents = File.read!(filename)
     File.write!(filename <> "_bak", contents)
 
     %{serialized: serialized, total_episodes: total_episodes} = :erlang.binary_to_term(contents)
 
-    %{
-      actor_params: actor_params,
-      actor_target_params: actor_target_params,
-      critic_params: critic_params,
-      critic_target_params: critic_target_params,
-      experience_replay_buffer: exp_replay_buffer,
-      performance_memory: performance_memory,
-      state_features_memory: state_features_memory
-    } =
+    saved_state =
       Nx.with_default_backend({EXLA.Backend, client: :host}, fn -> Nx.deserialize(serialized) end)
 
-    {actor_params, actor_target_params, critic_params, critic_target_params, exp_replay_buffer,
-     total_episodes, performance_memory, state_features_memory}
+    {saved_state, total_episodes}
   rescue
     _ in [File.Error, MatchError] ->
-      critic_params = %{}
-      {%{}, %{}, critic_params, critic_params, false, 0, false, false}
+      {%{}, 0}
   end
 
 fields = [
-  :x,
-  :y,
+  :left,
+  :right,
+  :down,
+  :up,
+  :distance_ration,
   :distance,
+  :prev_distance,
   :vmg,
   :heading,
   :angle_to_target,
-  :target_x,
-  :target_y,
-  :has_tacked
+  :has_tacked,
+  :has_reached_target
 ]
 
 defmodule PositionalEncoding do
@@ -611,7 +635,7 @@ end
 
 num_actions = BoatLearner.Environments.MultiMark.num_actions()
 state_features_size = length(fields)
-state_features_memory_length = 4
+state_features_memory_length = 1
 
 state_input = Axon.input("state", shape: {nil, state_features_memory_length, state_features_size})
 
@@ -619,67 +643,57 @@ action_input = Axon.input("actions", shape: {nil, num_actions})
 
 policy = Axon.MixedPrecision.create_policy(params: {:f, 32}, compute: {:f, 16}, output: {:f, 32})
 
-actor_net =
+state_size = state_features_size * state_features_memory_length
+
+actor_net_base =
   state_input
-  |> Axon.dense(128, activation: :linear)
-  |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
-  |> PositionalEncoding.layer(sequence_length: state_features_memory_length, state_space_size: 128)
-  |> Bumblebee.Layers.Transformer.blocks(
-    num_blocks: 6,
-    name: "actor_transformer_prefix",
-    num_attention_heads: 20,
-    hidden_size: 128,
-    attention_head_size: 128,
-    ffn: [
-      intermediate_size: 128,
-      activation: :gelu
-    ]
-  )
-  |> Map.get(:hidden_state)
+  |> Axon.namespace("actor")
   |> Axon.flatten()
-  |> Axon.dense(400, activation: :linear)
-  |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(300, activation: :linear)
-  |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(num_actions,
-    activation: :tanh,
-    kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3),
-    bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-3)
-  )
+  |> Axon.nx(&(&1 |> Nx.new_axis(1) |> Nx.tile([1, 4 | List.duplicate(1, Nx.rank(&1) - 1)])))
+  |> Axon.dense(30, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.dense(20, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.flatten()
+  |> Axon.dense(400, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.dense(300, activation: :relu)
+  |> Axon.dropout()
+
+actor_net_mean_out =
+  actor_net_base
+  |> Axon.dense(num_actions, activation: :linear)
+  |> Axon.reshape({:batch, num_actions, 1})
+
+actor_net_stddev_out =
+  actor_net_base
+  |> Axon.dense(num_actions, activation: :linear)
+  |> Axon.reshape({:batch, num_actions, 1})
+  |> Axon.nx(fn rectified ->
+    Nx.clip(rectified, -20, 2)
+  end)
+
+actor_net =
+  [actor_net_mean_out, actor_net_stddev_out]
+  |> Axon.concatenate(name: "actor_net_output")
   |> Axon.MixedPrecision.apply_policy(policy, except: [:batch_norm])
 
 critic_net =
   state_input
-  |> Axon.nx(fn state_memory ->
-    Nx.take(state_memory, state_features_memory_length - 1, axis: 1)
-  end)
-  |> Axon.dense(200, activation: :linear)
-  # |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(100, activation: :linear)
-  # |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
-  |> then(&Axon.concatenate([&1, action_input]))
-  |> Axon.dense(400, activation: :linear)
-  # |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(300, activation: :linear)
-  # |> Axon.batch_norm()
-  |> Axon.activation(:relu)
-  |> Axon.dropout(rate: 0.1)
-  |> Axon.dense(1,
-    kernel_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-4),
-    bias_initializer: Axon.Initializers.glorot_uniform(scale: 1.0e-4)
-  )
+  |> Axon.namespace("critic")
+  |> Axon.flatten()
+  |> then(&Axon.concatenate([&1, action_input], name: "critic_combined_input"))
+  |> Axon.nx(&(&1 |> Nx.new_axis(1) |> Nx.tile([1, 2 | List.duplicate(1, Nx.rank(&1) - 1)])))
+  |> Axon.dense(30, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.dense(20, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.flatten()
+  |> Axon.dense(300, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.dense(200, activation: :relu)
+  |> Axon.dropout()
+  |> Axon.dense(1, activation: :linear)
   |> Axon.MixedPrecision.apply_policy(policy, except: [:batch_norm])
 
 # These might seem redundant, but will make more sense for multi-input models
@@ -713,22 +727,19 @@ environment_to_state_features_fn = fn env_state ->
   target_x = normalize_x.(env_state.target_x)
   target_y = normalize_y.(env_state.target_y)
 
-  distance_squared =
-    Nx.pow(Nx.subtract(norm_x, target_x), 2) |> Nx.add(Nx.pow(Nx.subtract(norm_y, target_y), 2))
-
-  # d**2 = x**2 + y**2, max(d**2) = 1**2 + 1**2 = 2
-  distance_squared_norm = Nx.divide(distance_squared, 2)
-
   [
-    norm_x,
-    norm_y,
-    Nx.sqrt(distance_squared_norm),
+    Nx.greater(norm_x, target_x),
+    Nx.less_equal(norm_x, target_x),
+    Nx.greater(norm_y, target_y),
+    Nx.less_equal(norm_y, target_y),
+    Nx.greater(env_state.distance, env_state.prev_distance),
+    Nx.divide(env_state.distance, :math.sqrt((max_x - min_x) ** 2 + (max_y - min_y) ** 2)),
+    Nx.divide(env_state.prev_distance, :math.sqrt((max_x - min_x) ** 2 + (max_y - min_y) ** 2)),
     normalize_speed.(env_state.vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.angle_to_target),
-    target_x,
-    target_y,
-    env_state.has_tacked
+    env_state.has_tacked,
+    env_state.has_reached_target
   ]
   |> Nx.stack()
 end
@@ -740,44 +751,29 @@ state_features_memory_to_input_fn = fn state_features ->
   }
 end
 
-# actor_params = %{}
-# actor_target_params = %{}
-# critic_params = %{}
-# critic_target_params = %{}
 # total_episodes = 0
-# experience_replay_buffer = nil
-# performance_memory = nil
-# state_features_memory = nil
+# saved_state = %{}
+# saved_state = Map.delete(saved_state, :log_entropy_coefficient)
+IO.inspect({saved_state, total_episodes}, label: "{saved_state, total_episodes}")
 
-IO.inspect(
-  {actor_params, actor_target_params, critic_params, critic_target_params, total_episodes},
-  label:
-    "{actor_params, actor_target_params, critic_params, critic_target_params, total_episodes}"
+Kino.Layout.grid(
+  [
+    Kino.Layout.tabs([
+      {"Critic",
+       Axon.Display.as_graph(critic_net, %{
+         "actions" => Nx.template({1, num_actions}, :f32),
+         "state" => Nx.template({1, state_features_memory_length, state_features_size}, :f32)
+       })}
+    ]),
+    Kino.Layout.tabs([
+      {"Actor",
+       Axon.Display.as_graph(actor_net, %{
+         "state" => Nx.template({1, state_features_memory_length, state_features_size}, :f32)
+       })}
+    ])
+  ],
+  columns: 2
 )
-
-# input_template =
-#   actor_net
-#   |> Axon.get_inputs()
-#   |> Map.new(fn {name, shape} ->
-#     [nil | shape] = Tuple.to_list(shape)
-#     shape = List.to_tuple([1 | shape])
-#     {name, Nx.template(shape, :f32)}
-#   end)
-
-# actor = Axon.Display.as_graph(actor_net, input_template)
-
-# input_template =
-#   critic_net
-#   |> Axon.get_inputs()
-#   |> Map.new(fn {name, shape} ->
-#     [nil | shape] = Tuple.to_list(shape)
-#     shape = List.to_tuple([1 | shape])
-#     {name, Nx.template(shape, :f32)}
-#   end)
-
-# critic = Axon.Display.as_graph(critic_net, input_template)
-
-# Kino.Layout.tabs([{"Actor", actor}, {"Critic", critic}])
 ```
 
 ```elixir
@@ -798,8 +794,10 @@ monitor_frame
 
 ```elixir
 Kino.VegaLite.clear(grid_widget)
-Kino.VegaLite.clear(loss_widget, dataset: "loss")
-Kino.VegaLite.clear(reward_widget, dataset: "reward")
+Kino.VegaLite.clear(actor_loss_widget, dataset: "values")
+Kino.VegaLite.clear(critic_loss_widget, dataset: "values")
+Kino.VegaLite.clear(reward_widget, dataset: "values")
+Kino.VegaLite.clear(misc_value_widget, dataset: "values")
 
 AccumulateAndExportData.start_link([])
 AccumulateAndExportData.reset()
@@ -809,11 +807,13 @@ checkpoint_serialization_fn = fn loop_state ->
     Map.take(loop_state.step_state.agent_state, [
       :actor_params,
       :actor_target_params,
-      :critic_params,
-      :critic_target_params,
+      :critic1_params,
+      :critic2_params,
+      :critic1_target_params,
+      :critic2_target_params,
       :experience_replay_buffer,
-      :performance_memory,
-      :state_features_memory
+      :state_features_memory,
+      :log_entropy_coefficient
     ])
 
   :erlang.term_to_binary(%{
@@ -822,30 +822,9 @@ checkpoint_serialization_fn = fn loop_state ->
   })
 end
 
-# session 1: 1_000
-# session 2: 10_000
-episodes = 10_000
+episodes = 4000
 
-# session 1: 100
-# session 2: 125
-max_iter = 125
-
-# session 1:
-max_sigma = 1 / 4
-sigma = 1 / 8
-min_sigma = 1 / 128
-
-# session 2:
-max_sigma = 1 / 8
-sigma = 1 / 64
-min_sigma = 1 / 128
-
-# validation:
-# max_sigma = sigma = min_sigma = 0
-
-exploration_decay_rate = 0.97
-exploration_increase_rate = 1.03
-exploration_threshold = 0.05
+max_iter = 10000
 
 defmodule Exploration do
   import Nx.Defn
@@ -869,7 +848,7 @@ defmodule Exploration do
     warmup_steps = opts[:warmup_steps]
 
     lr = amplitude * Nx.min(Nx.rsqrt(step), step * Nx.rsqrt(warmup_steps ** 3))
-    Nx.min(lr, opts[:min_value])
+    Nx.max(lr, opts[:min_value])
   end
 
   def resetting_linear_schedule(start, stop, steps) do
@@ -885,21 +864,8 @@ defmodule Exploration do
   end
 end
 
-exploration_fn = &Nx.less(Nx.remainder(&1, 50), 20)
-
-# session 1, 2:
-targets_probs = :uniform
-# session 2, 3, 4:
-# targets_probs =
-#   Nx.all(Nx.equal(targets_tensor, Nx.tensor([[0, r]])), axes: [1])
-#   |> Nx.multiply(4)
-#   |> Nx.add(1)
-
-# targets_probs = Nx.divide(targets_probs, Nx.sum(targets_probs))
-IO.inspect(targets_probs, label: "targets_probs")
-
 random_key_init = Nx.Random.key(42)
-num_vectors = 150
+num_vectors = 40
 
 random_key_devec =
   Nx.Random.randint_split(random_key_init, 0, Nx.Constants.max_finite(:u32),
@@ -915,67 +881,35 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
     ReinforcementLearning.train(
       {
         BoatLearner.Environments.MultiMark,
-        # session 1, 2, 3:
-        max_remaining_seconds: 400, coords: points_tensor, coord_probabilities: points_probs
+        max_remaining_seconds: 500,
+        coords: points_tensor,
+        coord_probabilities: points_probs,
+        max_tacks: 1
       },
       {
-        ReinforcementLearning.Agents.DDPG,
-        # exploration_fn: &Exploration.run(&1, 2000),
-        # session 1, 2:
-        # session 1:
-        # batch_size: 200,
-        # session 2:
-        exploration_fn: exploration_fn,
+        ReinforcementLearning.Agents.SAC,
         tau: 0.001,
-        performance_memory_length: 256,
-        performance_memory: performance_memory,
+        gamma: 0.99,
         actor_net: actor_net,
-        actor_params: actor_params,
-        actor_target_params: actor_target_params,
         critic_net: critic_net,
-        critic_params: critic_params,
-        critic_target_params: critic_params,
-        state_features_memory: state_features_memory,
         state_features_memory_length: state_features_memory_length,
-        experience_replay_buffer: experience_replay_buffer,
-        experience_replay_buffer_max_size: 300_000,
+        experience_replay_buffer_max_size: 4_000_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
-        training_frequency: 16,
-        batch_size: 400,
-        exploration_decay_rate: exploration_decay_rate,
-        exploration_increase_rate: exploration_increase_rate,
-        performance_threshold: exploration_threshold,
-        ou_process_opts: [
-          max_sigma: max_sigma,
-          min_sigma: min_sigma,
-          sigma: sigma
-        ],
+        training_frequency: 1,
+        batch_size: 2048,
+        entropy_coefficient: 0.2,
+        saved_state: saved_state,
         actor_optimizer:
           Polaris.Updates.compose(
-            Polaris.Updates.clip_by_global_norm(max_norm: 2),
-            Axon.Optimizers.adamw(
-              # session 1, 2:
-              Exploration.attention_is_all_you_need_lr_schedule(
-                warmup_steps: 500,
-                amplitude: 1.0e-4,
-                min_value: 1.0e-6
-              ),
-              # Exploration.resetting_linear_schedule(3.0e-6, 3.0e-7, 500),
-              eps: 1.0e-8,
-              decay: 0.01
-            )
+            Polaris.Updates.clip(),
+            Polaris.Optimizers.rmsprop(learning_rate: 1.0e-5)
           ),
         critic_optimizer:
           Polaris.Updates.compose(
-            Polaris.Updates.clip_by_global_norm(max_norm: 2),
-            Axon.Optimizers.adamw(
-              # session 1, 2
-              Exploration.resetting_linear_schedule(3.0e-3, 3.0e-5, 500),
-              eps: 1.0e-8,
-              decay: 0.01
-            )
+            Polaris.Updates.clip(),
+            Polaris.Optimizers.rmsprop(learning_rate: 1.0e-5)
           )
       },
       plot_fn,
