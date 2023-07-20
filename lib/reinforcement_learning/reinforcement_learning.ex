@@ -14,7 +14,7 @@ defmodule ReinforcementLearning do
              :episode,
              :trajectory
            ],
-           keep: [:agent_opts]}
+           keep: []}
   defstruct [
     :agent,
     :agent_state,
@@ -23,8 +23,7 @@ defmodule ReinforcementLearning do
     :random_key,
     :iteration,
     :episode,
-    :trajectory,
-    :agent_opts
+    :trajectory
   ]
 
   @spec train(
@@ -66,21 +65,17 @@ defmodule ReinforcementLearning do
 
     {environment_state, random_key} = environment.init(random_key, environment_init_opts)
 
-    {agent_state, agent_opts, random_key} =
-      case agent.reset(random_key, %__MODULE__{
-             environment_state: environment_state,
-             agent: agent,
-             agent_state: init_agent_state,
-             episode: episode
-           }) do
-        {s, o, k} -> {s, o, k}
-        {s, k} -> {s, [], k}
-      end
+    {agent_state, random_key} =
+      agent.reset(random_key, %__MODULE__{
+        environment_state: environment_state,
+        agent: agent,
+        agent_state: init_agent_state,
+        episode: episode
+      })
 
     initial_state = %__MODULE__{
       agent: agent,
       agent_state: agent_state,
-      agent_opts: agent_opts,
       environment: environment,
       environment_state: environment_state,
       random_key: random_key,
@@ -180,16 +175,11 @@ defmodule ReinforcementLearning do
        ) do
     {environment_state, random_key} = environment.reset(random_key, environment_state)
 
-    {agent_state, agent_opts, random_key} =
-      case agent.reset(random_key, %{loop_state | environment_state: environment_state}) do
-        {state, opts, key} -> {state, opts, key}
-        {state, key} -> {state, [], key}
-      end
+    {agent_state, random_key} = agent.reset(random_key, %{loop_state | environment_state: environment_state})
 
     state = %{
       loop_state
       | agent_state: agent_state,
-        agent_opts: agent_opts,
         environment_state: environment_state,
         random_key: random_key,
         trajectory: Nx.broadcast(Nx.tensor(:nan, type: :f32), loop_state.trajectory),
