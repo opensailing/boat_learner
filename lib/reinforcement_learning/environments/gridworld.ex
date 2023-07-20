@@ -14,7 +14,8 @@ defmodule ReinforcementLearning.Environments.Gridworld do
              :reward,
              :reward_stage,
              :is_terminal,
-             :possible_targets
+             :possible_targets,
+             :has_reached_target
            ],
            keep: []}
   defstruct [
@@ -27,13 +28,14 @@ defmodule ReinforcementLearning.Environments.Gridworld do
     :reward,
     :reward_stage,
     :is_terminal,
-    :possible_targets
+    :possible_targets,
+    :has_reached_target
   ]
 
   @min_x 0
-  @max_x 10
+  @max_x 20
   @min_y 0
-  @max_y 10
+  @max_y 20
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
@@ -67,7 +69,10 @@ defmodule ReinforcementLearning.Environments.Gridworld do
 
     target = Nx.reshape(target, {2})
 
-    reward_stage = y = Nx.tensor(0, type: :s64)
+    y = Nx.tensor(0, type: :s64)
+
+    [x, y, target_x, target_y, zero_bool, _key] =
+      Nx.broadcast_vectors([x, y, target[0], target[1], random_key, Nx.u8(0)])
 
     state = %{
       state
@@ -75,11 +80,11 @@ defmodule ReinforcementLearning.Environments.Gridworld do
         y: y,
         prev_x: x,
         prev_y: y,
-        target_x: target[0],
-        target_y: target[1],
+        target_x: target_x,
+        target_y: target_y,
         reward: reward,
-        reward_stage: reward_stage,
-        is_terminal: Nx.tensor(0, type: :u8)
+        is_terminal: zero_bool,
+        has_reached_target: zero_bool
     }
 
     {state, random_key}
@@ -116,18 +121,14 @@ defmodule ReinforcementLearning.Environments.Gridworld do
   end
 
   defnp calculate_reward(env) do
-    %{
-      x: x,
-      y: y,
-      target_x: target_x,
-      target_y: target_y,
+    %__MODULE__{
       is_terminal: is_terminal,
-      reward_stage: reward_stage
+      has_reached_target: has_reached_target
     } = env
 
     reward =
       cond do
-        is_terminal and Nx.abs(target_x - x) <= 1.5 and Nx.abs(target_y - y) <= 1.5 ->
+        has_reached_target ->
           1
 
         is_terminal ->
@@ -137,43 +138,47 @@ defmodule ReinforcementLearning.Environments.Gridworld do
           -0.01
       end
 
-    %{env | reward_stage: reward_stage, reward: reward}
+    %{env | reward: reward}
   end
 
-  defnp is_terminal_state(%{x: x, y: y, target_x: target_x, target_y: target_y} = env) do
-    is_terminal =
-      (Nx.abs(target_x - x) <= 1.5 and Nx.abs(target_y - y) <= 1.5) or x < @min_x or x > @max_x or
-        y < @min_y or
-        y > @max_y
+  defnp is_terminal_state(env) do
+    has_reached_target = has_reached_target(env)
+    out_of_bounds = env.x < @min_x or env.x > @max_x or env.y < @min_y or env.y > @max_y
 
-    %{env | is_terminal: is_terminal}
+    is_terminal = has_reached_target or out_of_bounds
+
+    %__MODULE__{env | is_terminal: is_terminal, has_reached_target: has_reached_target}
   end
+
+  defnp has_reached_target(%__MODULE__{x: x, y: y, target_x: target_x, target_y: target_y}) do
+    Nx.abs(target_x - x) <= 1.5 and Nx.abs(target_y - y) <= 1.5
+  end
+
+  defnp normalize(v, min, max), do: (v - min) / (max - min)
 
   defn as_state_vector(%{
          x: x,
          y: y,
          target_x: target_x,
          target_y: target_y,
-         prev_x: prev_x,
-         prev_y: prev_y,
-         reward_stage: reward_stage
+         has_reached_target: has_reached_target
        }) do
-    x = (x - @min_x) / (@max_x - @min_x)
-    y = (y - @min_y) / (@max_y - @min_y)
+    x = normalize(x, @min_x, @max_x)
+    y = normalize(y, @min_y, @max_y)
 
-    target_x = (target_x - @min_x) / (@max_x - @min_x)
-    target_y = (target_y - @min_y) / (@max_y - @min_y)
-    prev_x = (prev_x - @min_x) / (@max_x - @min_x)
-    prev_y = (prev_y - @min_y) / (@max_y - @min_y)
+    target_x = normalize(target_x, @min_x, @max_x)
+    target_y = normalize(target_y, @min_y, @max_y)
+
+    # max distance is sqrt(1 ** 2 + 1 ** 2) = sqrt(2)
+    distance_norm = Nx.sqrt((x - target_x) ** 2 + (y - target_y) ** 2) / Nx.sqrt(2)
 
     Nx.stack([
       x,
       y,
       target_x,
       target_y,
-      prev_x,
-      prev_y,
-      reward_stage
+      has_reached_target,
+      distance_norm
     ])
     |> Nx.new_axis(0)
   end

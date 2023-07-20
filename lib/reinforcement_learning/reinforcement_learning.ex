@@ -175,7 +175,8 @@ defmodule ReinforcementLearning do
        ) do
     {environment_state, random_key} = environment.reset(random_key, environment_state)
 
-    {agent_state, random_key} = agent.reset(random_key, %{loop_state | environment_state: environment_state})
+    {agent_state, random_key} =
+      agent.reset(random_key, %{loop_state | environment_state: environment_state})
 
     state = %{
       loop_state

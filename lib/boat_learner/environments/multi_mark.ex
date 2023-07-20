@@ -95,7 +95,7 @@ defmodule BoatLearner.Environments.MultiMark do
     3.08
   ]
 
-  @dead_zone_angle @one_deg_in_rad * 30
+  # @dead_zone_angle @one_deg_in_rad * 30
 
   @speed_kts [4.62, 5.02 | @speed_kts]
   @theta_deg [42.7, 137.6 | Enum.to_list(40..180//10)]
@@ -410,9 +410,7 @@ defmodule BoatLearner.Environments.MultiMark do
     %__MODULE__{
       x: x,
       y: y,
-      remaining_seconds: remaining_seconds,
-      tack_count: tack_count,
-      max_tacks: max_tacks
+      remaining_seconds: remaining_seconds
     } = env
 
     has_reached_target = has_reached_target(env)
