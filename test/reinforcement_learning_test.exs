@@ -1,4 +1,4 @@
-defmodule ReinforcementLearningTest do
+defmodule ReinTest do
   use ExUnit.Case, async: true
 
   test "DDPG + multi-mark environment vectorizes based on the random_key" do
@@ -33,7 +33,7 @@ defmodule ReinforcementLearningTest do
     end
 
     ddpg = {
-      ReinforcementLearning.Agents.DDPG,
+      Rein.Agents.DDPG,
       tau: 0.001,
       performance_memory_length: 6,
       actor_net: actor_net,
@@ -75,12 +75,12 @@ defmodule ReinforcementLearningTest do
     assert %{vectorized_axes: [random_key: 5], shape: {2}, type: {:u, 32}} = random_key
 
     assert %Axon.Loop.State{
-             step_state: %ReinforcementLearning{
+             step_state: %Rein{
                agent_state: agent_state,
                environment_state: environment_state
              }
            } =
-             ReinforcementLearning.train(
+             Rein.train(
                env,
                ddpg,
                &Function.identity/1,
@@ -173,7 +173,7 @@ defmodule ReinforcementLearningTest do
     end
 
     ddpg = {
-      ReinforcementLearning.Agents.DDPG,
+      Rein.Agents.DDPG,
       tau: 0.001,
       performance_memory_length: 6,
       actor_net: actor_net,
@@ -215,12 +215,12 @@ defmodule ReinforcementLearningTest do
     assert %{vectorized_axes: [random_key: 5], shape: {2}, type: {:u, 32}} = random_key
 
     assert %Axon.Loop.State{
-             step_state: %ReinforcementLearning{
+             step_state: %Rein{
                agent_state: _agent_state,
                environment_state: _environment_state
              }
            } =
-             ReinforcementLearning.train(
+             Rein.train(
                env,
                ddpg,
                &Function.identity/1,

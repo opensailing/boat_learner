@@ -36,7 +36,8 @@ defmodule BoatLearner.MixProject do
       {:kino, "~> 0.9"},
       {:kino_vega_lite, "~> 0.1"},
       {:table_rex, "~> 3.1"},
-      {:bumblebee, "~> 0.3.0"}
+      {:bumblebee, "~> 0.3.0"},
+      {:rein, "~> 0.1"}
       | backend()
     ]
   end

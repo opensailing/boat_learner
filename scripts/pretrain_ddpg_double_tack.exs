@@ -77,7 +77,7 @@ defmodule GenerateSamples do
 
     speeds = DT.speed_from_heading(polar_chart, headings)
 
-    rl = %ReinforcementLearning{
+    rl = %Rein{
       random_key: 1,
       agent_state: 1,
       iteration: 1,

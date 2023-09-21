@@ -1,6 +1,6 @@
 defmodule BoatLearner do
   @moduledoc """
-  Collection of `ReinforcementLearning` agents and environments
+  Collection of `Rein` agents and environments
   for sailboat navigation.
   """
 end

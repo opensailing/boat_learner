@@ -7,7 +7,7 @@ defmodule BoatLearner.Environments.MultiMark do
   import Nx.Defn
   import Nx.Constants
 
-  @behaviour ReinforcementLearning.Environment
+  @behaviour Rein.Environment
 
   @derive {Inspect, except: [:polar_chart]}
   @derive {Nx.Container,
@@ -283,7 +283,7 @@ defmodule BoatLearner.Environments.MultiMark do
       |> is_terminal_state()
       |> calculate_reward()
 
-    %ReinforcementLearning{rl_state | environment_state: next_env}
+    %Rein{rl_state | environment_state: next_env}
   end
 
   defn turn_and_move(env, dtheta) do
@@ -436,7 +436,8 @@ defmodule BoatLearner.Environments.MultiMark do
       has_tacked: has_tacked,
       is_terminal: is_terminal,
       distance: distance,
-      initial_distance: initial_distance
+      initial_distance: initial_distance,
+      vmg: vmg
     } = env
 
     [one, _] = Nx.broadcast_vectors([1, is_terminal])
@@ -453,7 +454,7 @@ defmodule BoatLearner.Environments.MultiMark do
           -0.1 * one
 
         true ->
-          -0.01 * one
+          -0.01 * vmg / @max_speed
       end
 
     %__MODULE__{env | reward: reward}

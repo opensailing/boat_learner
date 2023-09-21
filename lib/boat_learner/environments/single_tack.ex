@@ -6,7 +6,7 @@ defmodule BoatLearner.Environments.SingleTack do
   import Nx.Defn
   import Nx.Constants
 
-  @behaviour ReinforcementLearning.Environment
+  @behaviour Rein.Environment
 
   @derive {Nx.Container,
            keep: [],
@@ -191,7 +191,7 @@ defmodule BoatLearner.Environments.SingleTack do
       |> is_terminal_state()
       |> calculate_reward()
 
-    %ReinforcementLearning{rl_state | environment_state: new_env}
+    %Rein{rl_state | environment_state: new_env}
   end
 
   defnp turn(env, angle_inc, remaining_iterations_penalty \\ 1) do

@@ -575,7 +575,7 @@ end
 ```
 
 ```elixir
-model_name = "sac_multi_mark_v6"
+model_name = "sac_multi_mark_v1"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
 export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
@@ -722,19 +722,8 @@ normalize_angle = fn a ->
 end
 
 environment_to_state_features_fn = fn env_state ->
-  norm_x = normalize_x.(env_state.x)
-  norm_y = normalize_y.(env_state.y)
-  target_x = normalize_x.(env_state.target_x)
-  target_y = normalize_y.(env_state.target_y)
-
   [
-    Nx.greater(norm_x, target_x),
-    Nx.less_equal(norm_x, target_x),
-    Nx.greater(norm_y, target_y),
-    Nx.less_equal(norm_y, target_y),
-    Nx.greater(env_state.distance, env_state.prev_distance),
     Nx.divide(env_state.distance, :math.sqrt((max_x - min_x) ** 2 + (max_y - min_y) ** 2)),
-    Nx.divide(env_state.prev_distance, :math.sqrt((max_x - min_x) ** 2 + (max_y - min_y) ** 2)),
     normalize_speed.(env_state.vmg),
     normalize_angle.(env_state.heading),
     normalize_angle.(env_state.angle_to_target),
@@ -878,7 +867,7 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
 
 {t, result} =
   :timer.tc(fn ->
-    ReinforcementLearning.train(
+    Rein.train(
       {
         BoatLearner.Environments.MultiMark,
         max_remaining_seconds: 500,
@@ -887,7 +876,7 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         max_tacks: 1
       },
       {
-        ReinforcementLearning.Agents.SAC,
+        Rein.Agents.SAC,
         tau: 0.001,
         gamma: 0.99,
         actor_net: actor_net,

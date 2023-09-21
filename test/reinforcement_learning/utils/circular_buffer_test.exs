@@ -1,7 +1,7 @@
-defmodule ReinforcementLearning.Utils.CircularBufferTest do
+defmodule Rein.Utils.CircularBufferTest do
   use ExUnit.Case
 
-  alias ReinforcementLearning.Utils.CircularBuffer
+  alias Rein.Utils.CircularBuffer
 
   test "persists data and reorders correctly" do
     Nx.default_backend(Nx.BinaryBackend)
