@@ -416,13 +416,13 @@ defmodule BoatLearner.Environments.MultiMark do
     has_reached_target = has_reached_target(env)
     has_collided = x < @min_x or x > @max_x or y < @min_y or y > @max_y
 
-    # is_terminal = env.is_terminal or has_reached_target or has_collided or remaining_seconds < 1
+    is_terminal = env.is_terminal or has_reached_target or has_collided or remaining_seconds <= 2
 
     %__MODULE__{
       env
       | has_reached_target: has_reached_target,
         has_collided: has_collided,
-        is_terminal: has_reached_target or remaining_seconds <= 1
+        is_terminal: is_terminal
     }
   end
 

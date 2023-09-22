@@ -275,7 +275,7 @@ defmodule AccumulateAndExportData do
     Nx.select(angle > 180, angle - 360, angle)
   end
 
-  def state_to_trajectory_entry(%{environment_state: env, agent_state: agent}) do
+  def state_to_trajectory_entry(%{environment_state: env, agent_state: _agent}) do
     distance_to_mark =
       Nx.sqrt(
         Nx.pow(Nx.subtract(env.target_y, env.y), 2)
@@ -377,201 +377,232 @@ end
 ```
 
 ```elixir
+defmodule PlotData do
+  def run(state) do
+    IO.puts("1")
+    episode = state.epoch
+    IO.puts("2")
+    trajectory = state.step_state.trajectory
+    IO.puts("3")
+    env_state = state.step_state.environment_state
+    IO.puts("4")
+    agent_state = state.step_state.agent_state
+    IO.puts("5")
+    IO.inspect("Episode #{episode} ended")
+  end
+end
+
 # 250 max_iter * 15 episodes
-max_points = 1000
+# max_points = 1000
 
-target_data = %{
-  x: Enum.map(valid_points, &Enum.at(&1, 0)),
-  y: Enum.map(valid_points, &Enum.at(&1, 1))
-}
+# target_data = %{
+#   x: Enum.map(valid_points, &Enum.at(&1, 0)),
+#   y: Enum.map(valid_points, &Enum.at(&1, 1))
+# }
 
-to_number = fn
-  %{vectorized_axes: []} = t, _index -> Nx.to_number(t)
-  t, index -> t |> Nx.devectorize() |> Nx.take(index) |> Nx.to_number()
-end
+# to_number = fn
+#   %{vectorized_axes: []} = t, _index -> Nx.to_number(t)
+#   t, index -> t |> Nx.devectorize() |> Nx.take(index) |> Nx.to_number()
+# end
 
-plot_fn = fn axon_state ->
-  episode = axon_state.epoch
-  IO.inspect("Episode #{episode} ended")
-  devec_trajectory = Nx.devectorize(axon_state.step_state.trajectory) |> Nx.to_list()
+# plot_fn = fn state ->
+#   IO.puts("1")
+#   episode = state.epoch
+#   IO.puts("2")
+#   # trajectory = state.step_state.trajectory
+#   IO.puts("3")
+#   # env_state = state.step_state.environment_state
+#   IO.puts("4")
+#   # agent_state = state.step_state.agent_state
+#   IO.puts("5")
+#   # IO.inspect("Episode #{episode} ended")
 
-  num_vectors = length(devec_trajectory)
+#   # devec_trajectory = Nx.devectorize(trajectory) |> Nx.to_list()
 
-  {{_, iteration}, index} =
-    devec_trajectory
-    |> Enum.map(fn traj ->
-      {traj, _nan_rows} =
-        Enum.split_while(traj, fn row ->
-          hd(row) != :nan
-        end)
+#   # axon_state = nil
 
-      Enum.reduce_while(traj, {0, 0}, fn row, {reward_acc, len_acc} ->
-        is_terminal = Enum.at(row, 10)
-        reward = Enum.at(row, 3)
+#   # devec_trajectory =
+#   #   if trajectory.vectorized_axes == [] do
+#   #     [devec_trajectory]
+#   #   else
+#   #     devec_trajectory
+#   #   end
 
-        if is_terminal == 1 do
-          {:halt, {reward_acc + reward, len_acc + 1}}
-        else
-          {:cont, {reward_acc + reward, len_acc + 1}}
-        end
-      end)
-    end)
-    |> Enum.with_index()
-    |> Enum.max_by(fn {{sum, _len}, _idx} -> sum end)
+#   # num_vectors = length(devec_trajectory)
 
-  trajectory = axon_state.step_state.trajectory
+#   # {{_, iteration}, index} =
+#   #   devec_trajectory
+#   #   |> Enum.map(fn traj ->
+#   #     {traj, _nan_rows} =
+#   #       Enum.split_while(traj, fn row ->
+#   #         hd(row) != :nan
+#   #       end)
 
-  if rem(episode, 25) == 0 do
-    GenServer.cast(
-      AccumulateAndExportData,
-      {:add_epoch, episode, iteration, trajectory}
-    )
-  end
+#   #     Enum.reduce_while(traj, {0, 0}, fn row, {reward_acc, len_acc} ->
+#   #       is_terminal = Enum.at(row, 10)
+#   #       reward = Enum.at(row, 3)
 
-  if rem(episode, 1) == 0 and iteration > 0 do
-    Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
-    Kino.VegaLite.clear(grid_widget, dataset: "target")
+#   #       if is_terminal == 1 do
+#   #         {:halt, {reward_acc + reward, len_acc + 1}}
+#   #       else
+#   #         {:cont, {reward_acc + reward, len_acc + 1}}
+#   #       end
+#   #     end)
+#   #   end)
+#   #   |> Enum.with_index()
+#   #   |> Enum.max_by(fn {{sum, _len}, _idx} -> sum end)
 
-    traj =
-      trajectory
-      |> Nx.revectorize([x: :auto], target_shape: trajectory.shape)
-      |> Nx.devectorize()
-      |> then(& &1[[index, 0..(iteration - 1)//1, 0..10]])
+#   # if rem(episode, 25) == 0 do
+#   #   GenServer.cast(
+#   #     AccumulateAndExportData,
+#   #     {:add_epoch, episode, iteration, trajectory}
+#   #   )
+#   # end
 
-    {points, terminal_points} =
-      traj
-      |> Nx.to_list()
-      |> Enum.with_index(fn [
-                              x,
-                              y,
-                              remaining_time,
-                              reward,
-                              heading,
-                              _speed,
-                              vmg,
-                              distance_to_mark,
-                              target_x,
-                              target_y,
-                              is_terminal
-                            ],
-                            index ->
-        %{
-          x: x,
-          y: y,
-          heading: heading,
-          index: index,
-          episode: episode,
-          remaining_time: remaining_time,
-          reward: reward,
-          distance: distance_to_mark,
-          vmg: vmg,
-          target_x: target_x,
-          target_y: target_y,
-          is_terminal: is_terminal == 1
-        }
-      end)
-      |> Enum.split_while(fn row -> not row.is_terminal end)
+#   # if rem(episode, 1) == 0 and iteration > 0 do
+#   #   Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
+#   #   Kino.VegaLite.clear(grid_widget, dataset: "target")
 
-    points = points ++ Enum.take(terminal_points, 1)
+#   #   traj =
+#   #     trajectory
+#   #     |> Nx.revectorize([x: :auto], target_shape: trajectory.shape)
+#   #     |> Nx.devectorize()
+#   #     |> then(& &1[[index, 0..(iteration - 1)//1, 0..10]])
 
-    total_reward = Enum.reduce(points, 0, fn row, acc -> acc + row.reward end)
+#   #   {points, terminal_points} =
+#   #     traj
+#   #     |> Nx.to_list()
+#   #     |> Enum.with_index(fn [
+#   #                             x,
+#   #                             y,
+#   #                             remaining_time,
+#   #                             reward,
+#   #                             heading,
+#   #                             _speed,
+#   #                             vmg,
+#   #                             distance_to_mark,
+#   #                             target_x,
+#   #                             target_y,
+#   #                             is_terminal
+#   #                           ],
+#   #                           index ->
+#   #       %{
+#   #         x: x,
+#   #         y: y,
+#   #         heading: heading,
+#   #         index: index,
+#   #         episode: episode,
+#   #         remaining_time: remaining_time,
+#   #         reward: reward,
+#   #         distance: distance_to_mark,
+#   #         vmg: vmg,
+#   #         target_x: target_x,
+#   #         target_y: target_y,
+#   #         is_terminal: is_terminal == 1
+#   #       }
+#   #     end)
+#   #     |> Enum.split_while(fn row -> not row.is_terminal end)
 
-    Kino.VegaLite.push_many(grid_widget, points, dataset: "trajectory")
+#   #   points = points ++ Enum.take(terminal_points, 1)
 
-    target_x = to_number.(axon_state.step_state.environment_state.target_x, index)
-    target_y = to_number.(axon_state.step_state.environment_state.target_y, index)
+#   #   total_reward = Enum.reduce(points, 0, fn row, acc -> acc + row.reward end)
 
-    target_data =
-      Enum.zip_with(target_data.x, target_data.y, fn x, y ->
-        is_target =
-          if abs(x - target_x) < 0.05 and abs(y - target_y) < 0.05 do
-            1
-          else
-            0
-          end
+#   #   Kino.VegaLite.push_many(grid_widget, points, dataset: "trajectory")
 
-        %{x: x, y: y, is_target: is_target}
-      end)
+#   #   target_x = to_number.(env_state.target_x, index)
+#   #   target_y = to_number.(env_state.target_y, index)
 
-    Kino.VegaLite.push_many(grid_widget, target_data, dataset: "target")
+#   #   target_data =
+#   #     Enum.zip_with(target_data.x, target_data.y, fn x, y ->
+#   #       is_target =
+#   #         if abs(x - target_x) < 0.05 and abs(y - target_y) < 0.05 do
+#   #           1
+#   #         else
+#   #           0
+#   #         end
 
-    critic_loss = to_number.(axon_state.step_state.agent_state.critic_loss, index)
-    critic_loss_den = to_number.(axon_state.step_state.agent_state.critic_loss_denominator, index)
+#   #       %{x: x, y: y, is_target: is_target}
+#   #     end)
 
-    if critic_loss_den > 0 do
-      critic_loss = if is_number(critic_loss), do: critic_loss / critic_loss_den, else: -1
+#   #   Kino.VegaLite.push_many(grid_widget, target_data, dataset: "target")
 
-      Kino.VegaLite.push(
-        critic_loss_widget,
-        %{
-          x: episode,
-          y: critic_loss
-        },
-        dataset: "values"
-      )
-    end
+#   #   critic_loss = to_number.(agent_state.critic_loss, index)
+#   #   critic_loss_den = to_number.(agent_state.critic_loss_denominator, index)
 
-    actor_loss = to_number.(axon_state.step_state.agent_state.actor_loss, index)
-    actor_loss_den = to_number.(axon_state.step_state.agent_state.actor_loss_denominator, index)
+#   #   if critic_loss_den > 0 do
+#   #     critic_loss = if is_number(critic_loss), do: critic_loss / critic_loss_den, else: -1
 
-    if actor_loss_den > 0 do
-      actor_loss = if is_number(actor_loss), do: actor_loss / actor_loss_den, else: -1
+#   #     Kino.VegaLite.push(
+#   #       critic_loss_widget,
+#   #       %{
+#   #         x: episode,
+#   #         y: critic_loss
+#   #       },
+#   #       dataset: "values"
+#   #     )
+#   #   end
 
-      Kino.VegaLite.push(
-        actor_loss_widget,
-        %{
-          x: episode,
-          y: actor_loss
-        },
-        dataset: "values"
-      )
-    end
+#   #   actor_loss = to_number.(agent_state.actor_loss, index)
+#   #   actor_loss_den = to_number.(agent_state.actor_loss_denominator, index)
 
-    Kino.VegaLite.push(
-      reward_widget,
-      %{
-        x: axon_state.epoch,
-        y: total_reward,
-        iterations: axon_state.iteration
-      },
-      dataset: "values"
-    )
+#   #   if actor_loss_den > 0 do
+#   #     actor_loss = if is_number(actor_loss), do: actor_loss / actor_loss_den, else: -1
 
-    log_entropy_coefficient =
-      to_number.(axon_state.step_state.agent_state.log_entropy_coefficient, index)
+#   #     Kino.VegaLite.push(
+#   #       actor_loss_widget,
+#   #       %{
+#   #         x: episode,
+#   #         y: actor_loss
+#   #       },
+#   #       dataset: "values"
+#   #     )
+#   #   end
 
-    exp_buf_index =
-      to_number.(axon_state.step_state.agent_state.experience_replay_buffer.index, index)
+#   #   Kino.VegaLite.push(
+#   #     reward_widget,
+#   #     %{
+#   #       x: state.epoch,
+#   #       y: total_reward,
+#   #       iterations: axon_state.iteration
+#   #     },
+#   #     dataset: "values"
+#   #   )
 
-    Kino.VegaLite.push_many(
-      misc_value_widget,
-      [
-        %{
-          x: axon_state.epoch,
-          y: :math.exp(log_entropy_coefficient),
-          source: "log_entropy_coefficient",
-          iterations: axon_state.iteration
-        },
-        %{
-          x: axon_state.epoch,
-          y: exp_buf_index,
-          source: "IDX(exp. replay buffer)",
-          iterations: axon_state.iteration
-        }
-      ],
-      dataset: "values"
-    )
+#   #   log_entropy_coefficient =
+#   #     to_number.(agent_state.log_entropy_coefficient, index)
 
-    global_kv_key = :rl_training_metadata_key
+#   #   exp_buf_index =
+#   #     to_number.(agent_state.experience_replay_buffer.index, index)
 
-    :persistent_term.put(global_kv_key, %{
-      optimizer_steps: episode * num_vectors,
-      total_reward: total_reward
-    })
-  end
+#   #   Kino.VegaLite.push_many(
+#   #     misc_value_widget,
+#   #     [
+#   #       %{
+#   #         x: state.epoch,
+#   #         y: :math.exp(log_entropy_coefficient),
+#   #         source: "log_entropy_coefficient",
+#   #         iterations: state.iteration
+#   #       },
+#   #       %{
+#   #         x: state.epoch,
+#   #         y: exp_buf_index,
+#   #         source: "IDX(exp. replay buffer)",
+#   #         iterations: state.iteration
+#   #       }
+#   #     ],
+#   #     dataset: "values"
+#   #   )
 
-  axon_state
-end
+#   #   global_kv_key = :rl_training_metadata_key
+
+#   #   :persistent_term.put(global_kv_key, %{
+#   #     optimizer_steps: episode * num_vectors,
+#   #     total_reward: total_reward
+#   #   })
+#   # end
+
+#   state
+# end
 ```
 
 ```elixir
@@ -597,13 +628,7 @@ export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.da
   end
 
 fields = [
-  :left,
-  :right,
-  :down,
-  :up,
-  :distance_ration,
   :distance,
-  :prev_distance,
   :vmg,
   :heading,
   :angle_to_target,
@@ -633,7 +658,7 @@ defmodule PositionalEncoding do
   end
 end
 
-num_actions = BoatLearner.Environments.MultiMark.num_actions()
+num_actions = 1
 state_features_size = length(fields)
 state_features_memory_length = 1
 
@@ -649,12 +674,12 @@ actor_net_base =
   state_input
   |> Axon.namespace("actor")
   |> Axon.flatten()
-  |> Axon.nx(&(&1 |> Nx.new_axis(1) |> Nx.tile([1, 4 | List.duplicate(1, Nx.rank(&1) - 1)])))
-  |> Axon.dense(30, activation: :relu)
-  |> Axon.dropout()
-  |> Axon.dense(20, activation: :relu)
-  |> Axon.dropout()
-  |> Axon.flatten()
+  # |> Axon.nx(&(&1 |> Nx.new_axis(1) |> Nx.tile([1, 4 | List.duplicate(1, Nx.rank(&1) - 1)])))
+  # |> Axon.dense(30, activation: :relu)
+  # |> Axon.dropout()
+  # |> Axon.dense(20, activation: :relu)
+  # |> Axon.dropout()
+  # |> Axon.flatten()
   |> Axon.dense(400, activation: :relu)
   |> Axon.dropout()
   |> Axon.dense(300, activation: :relu)
@@ -683,11 +708,11 @@ critic_net =
   |> Axon.namespace("critic")
   |> Axon.flatten()
   |> then(&Axon.concatenate([&1, action_input], name: "critic_combined_input"))
-  |> Axon.nx(&(&1 |> Nx.new_axis(1) |> Nx.tile([1, 2 | List.duplicate(1, Nx.rank(&1) - 1)])))
-  |> Axon.dense(30, activation: :relu)
-  |> Axon.dropout()
-  |> Axon.dense(20, activation: :relu)
-  |> Axon.dropout()
+  # |> Axon.nx(&(&1 |> Nx.new_axis(1) |> Nx.tile([1, 2 | List.duplicate(1, Nx.rank(&1) - 1)])))
+  # |> Axon.dense(30, activation: :relu)
+  # |> Axon.dropout()
+  # |> Axon.dense(20, activation: :relu)
+  # |> Axon.dropout()
   |> Axon.flatten()
   |> Axon.dense(300, activation: :relu)
   |> Axon.dropout()
@@ -854,7 +879,7 @@ defmodule Exploration do
 end
 
 random_key_init = Nx.Random.key(42)
-num_vectors = 40
+num_vectors = 20
 
 random_key_devec =
   Nx.Random.randint_split(random_key_init, 0, Nx.Constants.max_finite(:u32),
@@ -882,34 +907,24 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         actor_net: actor_net,
         critic_net: critic_net,
         state_features_memory_length: state_features_memory_length,
-        experience_replay_buffer_max_size: 4_000_000,
+        experience_replay_buffer_max_size: 1_000_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
         training_frequency: 1,
-        batch_size: 2048,
+        batch_size: 32,
         entropy_coefficient: 0.2,
         saved_state: saved_state,
-        actor_optimizer:
-          Polaris.Updates.compose(
-            Polaris.Updates.clip(),
-            Polaris.Optimizers.rmsprop(learning_rate: 1.0e-5)
-          ),
-        critic_optimizer:
-          Polaris.Updates.compose(
-            Polaris.Updates.clip(),
-            Polaris.Optimizers.rmsprop(learning_rate: 1.0e-5)
-          )
+        actor_optimizer: Polaris.Optimizers.sgd(learning_rate: 1.0e-5),
+        critic_optimizer: Polaris.Optimizers.sgd(learning_rate: 1.0e-5)
       },
-      plot_fn,
+      &PlotData.run/1,
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter,
       accumulated_episodes: total_episodes,
       model_name: model_name,
-      checkpoint_path: checkpoint_path,
-      random_key: random_key,
-      checkpoint_serialization_fn: checkpoint_serialization_fn
+      random_key: random_key
     )
   end)
 
