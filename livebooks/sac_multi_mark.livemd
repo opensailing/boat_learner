@@ -36,7 +36,7 @@ valid_points = [[0, r], [0, 0]]
 #     start ++ target
 #   end
 
-points = [[0, 0, 0, r], [0, r, 0, 0]]
+points = [[0, 0, 0, r]]
 
 # for angle <- [0, theta, -theta, pi, pi + theta, pi - theta, pi / 2, -pi / 2] do
 #   [
@@ -375,21 +375,6 @@ end
 ```
 
 ```elixir
-# defmodule PlotData do
-#   def run(state) do
-#     IO.puts("1")
-#     episode = state.
-#     IO.puts("2")
-#     trajectory = state.step_state.trajectory
-#     IO.puts("3")
-#     env_state = state.step_state.environment_state
-#     IO.puts("4")
-#     agent_state = state.step_state.agent_state
-#     IO.puts("5")
-#     IO.inspect("Episode #{episode} ended")
-#   end
-# end
-
 # 250 max_iter * 15 episodes
 max_points = 1000
 
@@ -420,8 +405,7 @@ plot_fn = fn state ->
   devec_trajectory =
     Nx.devectorize(trajectory) |> Nx.backend_copy(Nx.BinaryBackend) |> Nx.to_list()
 
-  axon_state =
-    devec_trajectory =
+  devec_trajectory =
     if trajectory.vectorized_axes == [] do
       [devec_trajectory]
     else
@@ -451,13 +435,6 @@ plot_fn = fn state ->
     end)
     |> Enum.with_index()
     |> Enum.max_by(fn {{sum, _len}, _idx} -> sum end)
-
-  # if rem(episode, 25) == 0 do
-  #   GenServer.cast(
-  #     AccumulateAndExportData,
-  #     {:add_epoch, episode, iteration, trajectory}
-  #   )
-  # end
 
   if rem(episode, 1) == 0 and iteration > 0 do
     Kino.VegaLite.clear(grid_widget, dataset: "trajectory")
@@ -565,7 +542,7 @@ plot_fn = fn state ->
         %{
           x: state.episode,
           y: :math.exp(log_entropy_coefficient),
-          source: "log_entropy_coefficient",
+          source: "entropy_coefficient",
           iterations: state.iteration
         },
         %{
@@ -585,32 +562,22 @@ plot_fn = fn state ->
       total_reward: total_reward
     })
   end
-
-  IO.inspect(label: "finished plot fn")
-  state
 end
 ```
 
 ```elixir
 model_name = "sac_multi_mark_v1"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
-filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.nx")
-export_filename = Path.join(System.fetch_env!("HOME"), "Desktop/#{model_name}.dat")
+filename = Path.join(checkpoint_path, "#{model_name}_latest.ckpt")
 
-{saved_state, total_episodes} =
+saved_state =
   try do
-    contents = File.read!(filename)
-    File.write!(filename <> "_bak", contents)
+    serialized = File.read!(filename)
+    File.write!(filename <> "_bak", serialized)
 
-    %{serialized: serialized, total_episodes: total_episodes} = :erlang.binary_to_term(contents)
-
-    saved_state =
-      Nx.with_default_backend({EXLA.Backend, client: :host}, fn -> Nx.deserialize(serialized) end)
-
-    {saved_state, total_episodes}
+    Nx.with_default_backend({EXLA.Backend, client: :host}, fn -> Nx.deserialize(serialized) end)
   rescue
-    _ in [File.Error, MatchError] ->
-      {%{}, 0}
+    _ in [File.Error, MatchError] -> %{}
   end
 
 fields = [
@@ -637,8 +604,8 @@ state_size = state_features_size * state_features_memory_length
 actor_net_base =
   state_input
   |> Axon.flatten()
-  |> Axon.dense(400, activation: :relu)
-  |> Axon.dense(300, activation: :relu)
+  |> Axon.dense(256, activation: :relu)
+  |> Axon.dense(256, activation: :relu)
 
 actor_net_mean_out =
   actor_net_base
@@ -648,10 +615,8 @@ actor_net_mean_out =
 actor_net_stddev_out =
   actor_net_base
   |> Axon.dense(num_actions, activation: :linear)
+  |> Axon.nx(&Nx.clip(&1, -20, 2))
   |> Axon.reshape({:batch, num_actions, 1})
-  |> Axon.nx(fn rectified ->
-    Nx.clip(rectified, -20, 2)
-  end)
 
 actor_net =
   [actor_net_mean_out, actor_net_stddev_out]
@@ -663,9 +628,9 @@ critic_net =
   |> Axon.flatten()
   |> then(&Axon.concatenate([&1, action_input], name: "critic_combined_input"))
   |> Axon.flatten()
-  |> Axon.dense(400, activation: :relu)
+  |> Axon.dense(256, activation: :relu)
   |> Axon.dropout()
-  |> Axon.dense(300, activation: :relu)
+  |> Axon.dense(256, activation: :relu)
   |> Axon.dropout()
   |> Axon.dense(1, activation: :linear)
   |> Axon.MixedPrecision.apply_policy(policy, except: [:batch_norm])
@@ -717,7 +682,7 @@ end
 # total_episodes = 0
 saved_state = %{}
 # saved_state = Map.delete(saved_state, :log_entropy_coefficient)
-IO.inspect({saved_state, total_episodes}, label: "{saved_state, total_episodes}")
+IO.inspect(saved_state, label: "{saved_state, total_episodes}")
 
 Kino.Layout.grid(
   [
@@ -761,73 +726,17 @@ Kino.VegaLite.clear(loss_widget, dataset: "values")
 Kino.VegaLite.clear(reward_widget, dataset: "values")
 Kino.VegaLite.clear(misc_value_widget, dataset: "values")
 
-AccumulateAndExportData.start_link([])
-AccumulateAndExportData.reset()
-
 checkpoint_serialization_fn = fn loop_state ->
-  to_serialize =
-    Map.take(loop_state.step_state.agent_state, [
-      :actor_params,
-      :actor_target_params,
-      :critic1_params,
-      :critic2_params,
-      :critic1_target_params,
-      :critic2_target_params,
-      :experience_replay_buffer,
-      :state_features_memory,
-      :log_entropy_coefficient
-    ])
-
-  :erlang.term_to_binary(%{
-    total_episodes: total_episodes + loop_state.episode,
-    serialized: Nx.serialize(to_serialize)
-  })
+  to_serialize = loop_state.agent_state
+  Nx.serialize(to_serialize)
 end
 
-episodes = 4000
+episodes = 10_000
 
 max_iter = 10000
 
-defmodule Exploration do
-  import Nx.Defn
-
-  defn run(episode, warmup \\ 1000) do
-    cond do
-      episode < warmup ->
-        1
-
-      true ->
-        Nx.remainder(episode, 500) < 200
-    end
-  end
-
-  def attention_is_all_you_need_lr_schedule(opts \\ []) do
-    &attention_is_all_you_need_lr_schedule_n(&1, opts)
-  end
-
-  defnp attention_is_all_you_need_lr_schedule_n(step, opts \\ []) do
-    amplitude = opts[:amplitude]
-    warmup_steps = opts[:warmup_steps]
-
-    lr = amplitude * Nx.min(Nx.rsqrt(step), step * Nx.rsqrt(warmup_steps ** 3))
-    Nx.max(lr, opts[:min_value])
-  end
-
-  def resetting_linear_schedule(start, stop, steps) do
-    &apply_linear_decay(&1, start: start, stop: stop, steps: steps)
-  end
-
-  defnp apply_linear_decay(step, opts \\ []) do
-    start = opts[:start]
-    stop = opts[:stop]
-    steps = opts[:steps]
-
-    start + (stop - start) / steps * Nx.remainder(step, steps)
-  end
-end
-
 random_key_init = Nx.Random.key(42)
-num_vectors = 32
+num_vectors = 20
 
 random_key_devec =
   Nx.Random.randint_split(random_key_init, 0, Nx.Constants.max_finite(:u32),
@@ -837,7 +746,7 @@ random_key_devec =
 
 vectorized_axes = [vectors: num_vectors]
 random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2})
-
+# random_key = Nx.Random.key(42)
 {t, result} =
   :timer.tc(fn ->
     Rein.train(
@@ -847,33 +756,34 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
       },
       {
         Rein.Agents.SAC,
-        tau: 0.001,
+        tau: 0.005,
         gamma: 0.99,
         actor_net: actor_net,
         critic_net: critic_net,
         state_features_memory_length: state_features_memory_length,
-        experience_replay_buffer_max_size: 2_000_000,
+        experience_replay_buffer_max_size: 1_000_000,
         environment_to_state_features_fn: environment_to_state_features_fn,
         state_features_memory_to_input_fn: state_features_memory_to_input_fn,
         state_features_size: state_features_size,
         training_frequency: 1,
         batch_size: 32,
-        entropy_coefficient: 0.2,
+        entropy_coefficient: 5,
         saved_state: saved_state,
-        actor_optimizer: Polaris.Optimizers.adam(learning_rate: 3.0e-4),
-        critic_optimizer: Polaris.Optimizers.adam(learning_rate: 3.0e-4)
+        actor_optimizer: Polaris.Optimizers.sgd(learning_rate: 3.0e-4),
+        critic_optimizer: Polaris.Optimizers.sgd(learning_rate: 3.0e-4)
+        # entropy_coefficient_optimizer: Polaris.Optimizers.sgd(learning_rate: 1.0e-3)
       },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,
       num_episodes: episodes,
       max_iter: max_iter,
-      accumulated_episodes: total_episodes,
-      model_name: model_name,
-      random_key: random_key
+      accumulated_episodes: 0,
+      random_key: random_key,
+      checkpoint_serialization_fn: checkpoint_serialization_fn,
+      checkpoint_path: checkpoint_path,
+      model_name: model_name
     )
   end)
-
-GenServer.call(AccumulateAndExportData, {:save, export_filename})
 
 "#{Float.round(t / 1_000_000, 3)} s" |> IO.puts()
 

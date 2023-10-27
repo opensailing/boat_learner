@@ -63,10 +63,10 @@ defmodule BoatLearner.Environments.MultiMark do
     :penalty_queue
   ]
 
-  @min_x -400
-  @max_x 400
-  @min_y -400
-  @max_y 400
+  @min_x -250
+  @max_x 250
+  @min_y -0
+  @max_y 250
 
   @one_deg_in_rad 1 * :math.pi() / 180
 
@@ -164,8 +164,8 @@ defmodule BoatLearner.Environments.MultiMark do
       Scholar.Interpolation.BezierSpline.predict(spline_model, Nx.subtract(min_theta, dtheta))
 
     # Fit {0, 0}, {@dead_zone_angle, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
-    dead_zone_thetas = Nx.tensor([0, @dead_zone_angle])
-    dead_zone_speeds = Nx.tensor([0, 0])
+    dead_zone_thetas = Nx.tensor([0])
+    dead_zone_speeds = Nx.tensor([0])
 
     linear_model =
       Scholar.Interpolation.Linear.fit(
@@ -267,7 +267,7 @@ defmodule BoatLearner.Environments.MultiMark do
     penalty = calculate_momentum_penalty(actual_heading_change)
     penalty_queue = CircularBuffer.append(env.penalty_queue, penalty)
 
-    cumulative_penalty = env.penalty_queue.data |> Nx.sum(axes: [0]) |> Nx.min(1)
+    cumulative_penalty = env.penalty_queue.data |> Nx.sum() |> Nx.min(1)
 
     speed = speed_from_heading(env.polar_chart, heading) * (1 - cumulative_penalty)
 
@@ -327,8 +327,16 @@ defmodule BoatLearner.Environments.MultiMark do
       |> Nx.reshape(Nx.devectorize(angle) |> Nx.shape())
       |> Nx.vectorize(angle.vectorized_axes)
 
-    (angle <= cutoff_angle)
-    |> Nx.select(linear_pred, spline_pred)
+    cond do
+      angle <= @dead_zone_angle ->
+        0
+
+      angle <= cutoff_angle ->
+        linear_pred
+
+      true ->
+        spline_pred
+    end
     |> Nx.clip(0, @max_speed)
   end
 
