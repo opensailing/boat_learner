@@ -10,7 +10,8 @@ Mix.install(
   config_path: Path.join(my_app_root, "config/config.exs"),
   lockfile: Path.join(my_app_root, "mix.lock"),
   consolidate_protocols: false,
-  system_env: %{"XLA_TARGET" => System.get_env("XLA_TARGET", "cpu")}
+  system_env: %{"XLA_TARGET" => System.get_env("XLA_TARGET", "cpu")},
+  force: true
 )
 ```
 
@@ -566,7 +567,7 @@ end
 ```
 
 ```elixir
-model_name = "sac_multi_mark_v1"
+model_name = "sac_multi_mark_v2"
 checkpoint_path = Path.join(System.fetch_env!("HOME"), "Desktop/checkpoints/")
 filename = Path.join(checkpoint_path, "#{model_name}_latest.ckpt")
 
@@ -770,8 +771,8 @@ random_key = Nx.revectorize(random_key_devec, vectorized_axes, target_shape: {2}
         entropy_coefficient: 5,
         saved_state: saved_state,
         actor_optimizer: Polaris.Optimizers.sgd(learning_rate: 3.0e-4),
-        critic_optimizer: Polaris.Optimizers.sgd(learning_rate: 3.0e-4)
-        # entropy_coefficient_optimizer: Polaris.Optimizers.sgd(learning_rate: 1.0e-3)
+        critic_optimizer: Polaris.Optimizers.sgd(learning_rate: 3.0e-4),
+        entropy_coefficient_optimizer: Polaris.Optimizers.sgd(learning_rate: 1.0e-3)
       },
       plot_fn,
       &AccumulateAndExportData.state_to_trajectory_entry/1,
