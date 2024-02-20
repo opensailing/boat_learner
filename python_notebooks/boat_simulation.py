@@ -42,7 +42,7 @@ class Boat:
         self.rudder_angle = 0
 
     def estimate_moment_of_inertia(self):
-        return self.mass * (self.length**2 + (self.beam * 0.25)**2) / 12
+        return self.mass * self.length ** 2 / 12
 
     def step(self, wind_speed, wind_angle, rudder_angle, dt):
         dt_int = int(dt)
