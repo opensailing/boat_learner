@@ -1,10 +1,12 @@
 from random import randint, random
-from boat_simulation import Boat, wrap_phase
+from boat_simulation import Boat, PIDController, wrap_phase, angle_difference
 from gymnasium import spaces, Env
 import numpy as np
 
+
+
 class MultiMarkEnv(Env):
-    def __init__(self, config, dt=15, seq_size=2, bounds=None, phase_steps=8):
+    def __init__(self, config, dt=15, seq_size=2, bounds=None, target_phase_steps=4, heading_phase_steps=4, radius_multipliers=[1], target_phase_probabilities=None, heading_phase_probabilities=None):
         if bounds is None:
             self.MIN_X = -250
             self.MAX_X = 250
@@ -16,7 +18,7 @@ class MultiMarkEnv(Env):
             self.MIN_Y = bounds[2]
             self.MAX_Y = bounds[3]
         self.MAX_SPEED = 10
-        self.boat = Boat(mass=960+320, drag_coefficient=0.003, sail_area=67+25)
+        self.boat = Boat(mass=960+320, sail_area=67+25)
         self.MAX_MARKS = config['max_marks']
         self.MAX_REMAINING_SECONDS = config['max_seconds_per_leg']
         self.LEG_RADIUS = config['leg_radius']
@@ -28,7 +30,12 @@ class MultiMarkEnv(Env):
         self.vmg = 0
         self.heading = 0
         self.target_tolerance_multiplier = config['target_tolerance_multiplier']
-        self.PHASE_STEPS = phase_steps
+        self.TARGET_PHASE_STEPS = target_phase_steps
+        self.HEADING_PHASE_STEPS = heading_phase_steps
+        self.radius_multipliers = radius_multipliers
+        self.target_phase_probabilities = target_phase_probabilities
+        self.heading_phase_probabilities = heading_phase_probabilities
+        self.MAX_EFFECTIVE_TACKS = 3
 
         self.actions = np.array(config['actions'])
 
@@ -43,15 +50,18 @@ class MultiMarkEnv(Env):
 
         self.observation = np.zeros((self.seq_size, self.obs_size,))
         num_actions = self.actions.shape[0]
-        self.action_space = spaces.Discrete(num_actions)
+        self.action_space = spaces.Box(low=-1, high=1) # spaces.Discrete(num_actions)
 
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.seq_size, self.obs_size,))
-        self.reward_range = spaces.Box(low=-100, high=100, shape=())
+        self.reward_range = spaces.Box(low=-10, high=10, shape=())
         self.dt = dt
+        self.pid_controller = PIDController(2, 0.1, 0.001)
 
     def reset(self, seed = None, options = None, heading=None, speed=None, vmg=None):
         super().reset(seed=seed)
         self.observation = np.zeros((self.seq_size, self.obs_size,))
+
+        self.pid_controller.reset()
         # Initialization logic
         # Initialize state variables: x, y, speed, etc.
         # Return the initial observation
@@ -70,8 +80,8 @@ class MultiMarkEnv(Env):
         current_x = 0
         current_y = 0
         for i in range(self.MAX_MARKS):
-            radius_multiplier = np.random.choice([1, 1.5, 2])
-            phase = self.random_phase()
+            radius_multiplier = np.random.choice(self.radius_multipliers)
+            phase = self.random_phase(self.TARGET_PHASE_STEPS, offset=np.pi/2, probabilities=self.target_phase_probabilities)
             current_x = current_x + np.cos(phase) * self.LEG_RADIUS * radius_multiplier
             current_y = current_y + np.sin(phase) * self.LEG_RADIUS * radius_multiplier
             self.target_x[i] = current_x
@@ -79,7 +89,7 @@ class MultiMarkEnv(Env):
 
         self.current_mark = 0
         self.tack_count = 0
-        self.heading = self.random_phase() if heading is None else heading
+        self.heading = self.random_phase(self.HEADING_PHASE_STEPS, probabilities=self.heading_phase_probabilities) if heading is None else heading
         self.prev_heading = self.heading
         self.angle_to_mark = 0
         self.speed = 0 if speed is None else speed
@@ -94,6 +104,7 @@ class MultiMarkEnv(Env):
         self.boat.y = self.y
         self.boat.speed = self.speed
         self.boat.heading = self.heading
+        self.target_heading = self.heading
 
         self.distance = np.sqrt((self.target_x[0] - self.x) ** 2 + self.target_y[0] ** 2)
         self.initial_distance = self.distance
@@ -117,11 +128,12 @@ class MultiMarkEnv(Env):
 
         return self.observation, {}
 
-    def random_phase(self):
-        phase_step = randint(0, self.PHASE_STEPS)
-        return 2 * np.pi / (1.0 * self.PHASE_STEPS) * phase_step
+    def random_phase(self, phase_steps, offset=0, probabilities=None):
+        phase_step = np.random.choice(np.arange(0, phase_steps), p=probabilities)
+        return 2 * np.pi / (1.0 * phase_steps) * phase_step + offset
 
     def append_to_trajectory(self):
+        target_heading_def = self.target_heading * 180 / np.pi
         heading_deg = self.boat.heading * 180 / np.pi
         if heading_deg > 180:
             heading_deg = heading_deg - 360
@@ -154,13 +166,11 @@ class MultiMarkEnv(Env):
 
         return (x_b - x_a) * (y - y_a) - (y_b - y_a) * (x - x_a)
 
-    def step(self, action_idx):
+    def step(self, action):
         min_reward = self.reward_range.low
         max_reward = self.reward_range.high
-        action = self.actions[action_idx]
 
         orientation_coeff = self.calculate_boat_relative_orientation()
-
 
         self.apply_action(action, self.dt)
         self.is_terminal_state().calculate_reward()
@@ -174,7 +184,8 @@ class MultiMarkEnv(Env):
             self.has_collided,
             (self.reward - min_reward) * 2 / (max_reward - min_reward) - 1,
             np.sign(orientation_coeff),
-            np.tanh(orientation_coeff)
+            np.tanh(orientation_coeff),
+            # self.tack_count / self.MAX_EFFECTIVE_TACKS
         ])
 
         self.append_to_trajectory()
@@ -185,9 +196,13 @@ class MultiMarkEnv(Env):
         pass
 
     def apply_action(self, action, dt):
-        rudder_angle = action * np.pi
+        out_min = -np.pi/2
+        out_max = np.pi/2
+        target_heading = np.squeeze(action[0] * np.pi)
         self.prev_heading = self.heading
+        self.target_heading = target_heading
 
+        rudder_angle = self.pid_controller.step(self.heading, target_heading, dt, out_min, out_max)
         self.boat.step(6.17, 0, rudder_angle, dt)
 
         heading = self.boat.heading
@@ -213,7 +228,8 @@ class MultiMarkEnv(Env):
         self.vmg = (target_unit @ heading_unit) * self.speed
 
         self.distance = np.sqrt(dx ** 2 + dy ** 2)
-        self.tack_count = 1 if self.has_tacked else 0
+        self.tack_count += 1 if self.has_tacked else 0
+        self.tack_count = np.minimum(self.tack_count, self.MAX_EFFECTIVE_TACKS)
         self.remaining_seconds -= dt
         self.delta_t = dt
 
@@ -242,5 +258,6 @@ class MultiMarkEnv(Env):
         return self
 
     def calculate_reward(self):
-        self.reward = 0.1 * self.vmg
+        self.reward = self.vmg ** 3 / self.initial_distance
+        # self.reward = np.where(self.vmg > 0, self.reward / (1 + self.tack_count), self.reward)
         return self
