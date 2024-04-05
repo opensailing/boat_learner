@@ -130,7 +130,7 @@ class Boat:
 
     def get_speed_from_polar_chart(self, apparent_wind_angle, dead_zone_angle):
         if apparent_wind_angle < dead_zone_angle or apparent_wind_angle > 2 * np.pi - dead_zone_angle:
-            return 0
+            return 0.1
         return speed_interp(apparent_wind_angle)
 
     def calculate_propulsive_force(self, apparent_wind_speed):
