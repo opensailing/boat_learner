@@ -216,14 +216,21 @@ class MultiMarkNoModelEnv(Env):
     def render(self, mode='human'):
         pass
 
-    def get_speed_from_polar_chart(self, twa, dead_zone_angle):
+    def get_speed_from_polar_chart(self, twa, heading_change, dead_zone_angle):
         speed = speed_interp(twa)
         if twa < dead_zone_angle or twa > 2 * np.pi - dead_zone_angle:
-            speed *= 0.7
+            speed = 0
+            self.speeds.append(speed)
+            return speed
+
+        speed -= self.calculate_drag(speed, heading_change)
 
         self.speeds.append(speed)
 
         return np.min(self.speeds)
+
+    def calculate_drag(self, base_speed, heading_change):
+        return base_speed * np.abs(np.sin(heading_change)) ** 0.5 * 2.5
 
 
     def apply_action(self, action, dt):
@@ -236,7 +243,7 @@ class MultiMarkNoModelEnv(Env):
         true_wind_direction = 0
         true_wind_angle = wrap_phase(angle_difference(true_wind_direction, heading))
         self.twa = true_wind_angle
-        self.speed = self.get_speed_from_polar_chart(true_wind_angle, np.pi/6)
+        self.speed = self.get_speed_from_polar_chart(true_wind_angle, heading_change, 40 * np.pi/180)
 
         self.x += self.speed * np.sin(heading) * dt
         self.y += self.speed * np.cos(heading) * dt
@@ -314,19 +321,13 @@ class MultiMarkNoModelEnv(Env):
         # vmg_reward = np.where(vmg_reward < 0, 20 * vmg_reward, tack_scaling * vmg_reward)
         vmg_reward = 5 * vmg_reward
 
-        smoothness_reward = 0
         terminal_bonus = 0
         if self.is_terminal and self.has_reached_mark:
-            # vmg_smoothness = np.std(np.diff(self.vmg_history))
-            # vmg_smoothness_reward = np.exp(-vmg_smoothness)
-
-            smoothness_reward = np.exp(-np.sum(np.abs(self.heading_change_history)))
             terminal_bonus = 100
 
 
         distance_scaling = 1 / self.current_radius_multiplier[min(self.current_mark, self.MAX_MARKS - 1)]
 
-        # self.reward = (vmg_reward + smoothness_reward * tack_scaling) * distance_scaling + terminal_bonus * smoothness_reward * self.remaining_seconds / self.MAX_REMAINING_SECONDS
-        self.reward = (vmg_reward + smoothness_reward) * distance_scaling + terminal_bonus * smoothness_reward * self.remaining_seconds / self.MAX_REMAINING_SECONDS
+        self.reward = vmg_reward * distance_scaling + terminal_bonus * self.remaining_seconds / self.MAX_REMAINING_SECONDS
 
         return self
