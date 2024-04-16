@@ -1,7 +1,7 @@
-defmodule ReinforcementLearning.Utils.Noise.OUProcessTest do
+defmodule Rein.Utils.Noise.OUProcessTest do
   use ExUnit.Case, async: true
 
-  alias ReinforcementLearning.Utils.Noise.OUProcess
+  alias Rein.Utils.Noise.OUProcess
 
   test "generates samples with given shape" do
     Nx.Defn.default_options(compiler: Nx.Defn.Evaluator)

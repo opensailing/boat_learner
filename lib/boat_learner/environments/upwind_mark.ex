@@ -6,7 +6,7 @@ defmodule BoatLearner.Environments.UpwindMark do
   import Nx.Defn
   import Nx.Constants
 
-  @behaviour ReinforcementLearning.Environment
+  @behaviour Rein.Environment
 
   @derive {Nx.Container,
            keep: [],
@@ -207,7 +207,7 @@ defmodule BoatLearner.Environments.UpwindMark do
       |> is_terminal_state()
       |> calculate_reward()
 
-    %ReinforcementLearning{rl_state | environment_state: new_env}
+    %Rein{rl_state | environment_state: new_env}
   end
 
   defnp turn_and_move(env, angle_inc, fuel_penalty) do

@@ -6,7 +6,7 @@ defmodule BoatLearner.Environments.DoubleTackDiscrete do
   import Nx.Defn
   import Nx.Constants
 
-  @behaviour ReinforcementLearning.Environment
+  @behaviour Rein.Environment
 
   @derive {Nx.Container,
            keep: [],
@@ -219,7 +219,7 @@ defmodule BoatLearner.Environments.DoubleTackDiscrete do
       |> is_terminal_state()
       |> calculate_reward()
 
-    %ReinforcementLearning{rl_state | environment_state: new_env}
+    %Rein{rl_state | environment_state: new_env}
   end
 
   defn turn_and_move(env, dtheta) do
