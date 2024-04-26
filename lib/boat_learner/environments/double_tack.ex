@@ -97,7 +97,6 @@ defmodule BoatLearner.Environments.DoubleTack do
 
   # We have a single action in the interval [-1, 1]
   # that maps linearly to angles [-pi, pi]
-  @impl true
   def num_actions, do: 1
 
   @impl true

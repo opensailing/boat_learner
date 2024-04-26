@@ -88,7 +88,6 @@ defmodule BoatLearner.Environments.UpwindMark do
 
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
-  @impl true
   def num_actions, do: 5
 
   @impl true

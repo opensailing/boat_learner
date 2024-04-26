@@ -4,6 +4,37 @@ defmodule BoatLearner.AStar do
   path planning in a sailboat course.
   """
 
+  import Nx.Defn
+  import Nx.Constants, only: [pi: 0]
+
+  @one_deg_in_rad 1 * :math.pi() / 180
+
+  @kts_to_meters_per_sec 0.514444
+  @speed_kts [
+    4.4,
+    5.1,
+    5.59,
+    5.99,
+    6.2,
+    6.37,
+    6.374,
+    6.25,
+    6.02,
+    5.59,
+    4.82,
+    4.11,
+    3.57,
+    3.22,
+    3.08
+  ]
+
+  @dead_zone_angle 30 * @one_deg_in_rad
+
+  @speed_kts [4.62, 5.02 | @speed_kts]
+  @theta_deg [42.7, 137.6 | Enum.to_list(40..180//10)]
+  @theta Enum.map(@theta_deg, &(&1 * @one_deg_in_rad))
+  @speed Enum.map(@speed_kts, &(&1 * @kts_to_meters_per_sec))
+
   defmodule PriorityQueue do
     def new do
       :gb_trees.empty()
@@ -52,7 +83,7 @@ defmodule BoatLearner.AStar do
     end
 
     def pop(queue) do
-      PriorityQueue.pop(queue, :empty)
+      PriorityQueue.pop(queue)
     end
 
     def close(closed_list, node) do
@@ -72,13 +103,14 @@ defmodule BoatLearner.AStar do
     opts = Keyword.validate!(opts, [:start_heading])
     open_list = :ets.new(:open_list, [:ordered_set])
     closed_list = MapSet.new()
+    polar_chart = init_polar_chart()
 
     start_node = %Node{x: start_x, y: start_y, heading: opts[:start_heading]}
     goal_node = %Node{x: goal_x, y: goal_y}
 
     open_list = Node.push(open_list, start_node)
 
-    solve_loop(open_list, closed_list, goal_node, opts)
+    solve_loop(open_list, closed_list, goal_node, [{:polar_chart, polar_chart} | opts])
   end
 
   defp solve_loop(open_list, closed_list, goal_node, opts) do
@@ -117,8 +149,9 @@ defmodule BoatLearner.AStar do
         []
 
       angles ->
+        dt = opts[:dt]
         angles_t = Nx.tensor(angles)
-        speeds = speed_interpolation(angles_t)
+        speeds = speed_from_heading(opts[:polar_chart], angles_t)
         water_current = get_water_current(node.x, node.y, opts)
         vmgs = vmg(node.position, goal_node.position, angles_t, speeds, water_current)
         idx = Nx.argsort(vmgs, direction: :desc)[0..(min(Nx.size(vmgs), 2) - 1)]
@@ -174,6 +207,10 @@ defmodule BoatLearner.AStar do
     end
   end
 
+  defp get_water_current(_x, _y, _opts) do
+    Nx.tensor([0.0, 0.0])
+  end
+
   defp valid_position?(x, y, opts) do
     x >= opts[:min_x] and x <= opts[:max_x] and y >= opts[:min_y] and y <= opts[:max_y]
   end
@@ -221,4 +258,79 @@ defmodule BoatLearner.AStar do
   defp get_path(node, path \\ [])
   defp get_path(%Node{parent: nil} = node, path), do: Enum.reverse([node | path])
   defp get_path(node, path), do: get_path(node.parent, [node | path])
+
+  def init_polar_chart do
+    # data for the boat at TWS=6
+    theta = Nx.tensor(@theta)
+    speed = Nx.tensor(@speed)
+
+    spline_model = Scholar.Interpolation.BezierSpline.fit(theta, speed)
+    # use the tail-end of the spline prediction as part of our linear model
+    dtheta = 0.1
+    min_theta = theta |> Nx.reduce_min() |> Nx.new_axis(0)
+
+    dspeed =
+      Scholar.Interpolation.BezierSpline.predict(spline_model, Nx.subtract(min_theta, dtheta))
+
+    # Fit {0, 0}, {@dead_zone_angle, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
+    dead_zone_thetas = Nx.tensor([0])
+    dead_zone_speeds = Nx.tensor([0])
+
+    linear_model =
+      Scholar.Interpolation.Linear.fit(
+        Nx.concatenate([dead_zone_thetas, min_theta, theta]),
+        Nx.concatenate([dead_zone_speeds, dspeed, speed])
+      )
+
+    cutoff_angle = Nx.reduce_min(spline_model.k, axes: [0])[0]
+
+    {linear_model, spline_model, cutoff_angle}
+  end
+
+  defnp speed_from_heading({linear_model, spline_model, cutoff_angle}, angle) do
+    # angle is already maintained between 0 and 2pi
+    # so we only need to calculate the "absolute value"
+    # (as if the angle was between -pi and pi)
+    angle = Nx.select(angle > pi(), 2 * pi() - angle, angle)
+
+    linear_pred = Scholar.Interpolation.Linear.predict(linear_model, angle)
+
+    spline_pred =
+      Scholar.Interpolation.BezierSpline.predict(
+        spline_model,
+        angle |> Nx.devectorize() |> Nx.flatten()
+      )
+      |> Nx.reshape(Nx.devectorize(angle) |> Nx.shape())
+      |> Nx.vectorize(angle.vectorized_axes)
+
+    cond do
+      angle <= @dead_zone_angle ->
+        0
+
+      angle <= cutoff_angle ->
+        linear_pred
+
+      true ->
+        spline_pred
+    end
+    |> Nx.clip(0, @speed_over_ground_max)
+  end
+
+  defn vmg(current_pos, goal_pos, headings, speeds, water_current) do
+    headings = Nx.vectorize(headings, :headings)
+    speeds = Nx.vectorize(speeds, :speeds)
+
+    velocity_vector =
+      Nx.stack([speeds * Nx.sin(headings), speeds * Nx.cos(headings)]) + water_current
+
+    velocity_vector = Nx.revectorize(velocity_vector, [collapsed: :auto], target_shape: {2})
+
+    direction_vector = goal_pos - current_pos
+    dot_product = Nx.dot(velocity_vector, direction_vector)
+
+    direction_magnitude = Nx.LinAlg.norm(direction_vector)
+
+    Nx.devectorize(dot_product / direction_magnitude)
+    |> Nx.reshape({:auto})
+  end
 end

@@ -88,7 +88,6 @@ defmodule BoatLearner.Environments.SingleTack do
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
   # move, turn +-5
-  @impl true
   def num_actions, do: 3
 
   @impl true

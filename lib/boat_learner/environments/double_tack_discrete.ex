@@ -103,7 +103,6 @@ defmodule BoatLearner.Environments.DoubleTackDiscrete do
   def bounding_box, do: {@min_x, @max_x, @min_y, @max_y}
 
   # 0, +- 1, +- 10, +- 30
-  @impl true
   def num_actions, do: 7
 
   @impl true
