@@ -39,55 +39,59 @@ defmodule BoatLearner.AStar do
   @speed_over_ground_max Enum.max(@speed)
 
   defmodule PriorityQueue do
-    defstruct [:f_tree, :node_tree]
+    defstruct [:ets, keys: []]
 
+    @spec new() :: %PriorityQueue{}
     def new do
-      %__MODULE__{f_tree: :gb_trees.empty(), node_tree: :gb_trees.empty()}
+      %PriorityQueue{ets: :ets.new(:queue, [:set, :protected, read_concurrency: true])}
     end
 
-    def put(queue, key, {f, node}) do
-      %__MODULE__{
-        f_tree: :gb_trees.insert(key, f, queue.f_tree),
-        node_tree: :gb_trees.insert(key, node, queue.node_tree)
-      }
-    end
-
-    def put_if_cheaper(queue, key, {f, node}) do
-      case :gb_trees.lookup(key, queue.node_tree) do
-        :none ->
-          put(queue, key, {f, node})
-
-        {:value, %{g: current_g}} ->
-          if node.g <= current_g do
-            %__MODULE__{
-              f_tree: :gb_trees.update(key, f, queue.f_tree),
-              node_tree: :gb_trees.update(key, node, queue.node_tree)
-            }
-          else
-            queue
-          end
+    @spec put(%PriorityQueue{}, any, {integer, any}) :: %PriorityQueue{}
+    def put(%PriorityQueue{ets: ets, keys: keys} = queue, key, {f, node}) do
+      if :ets.lookup(ets, key) == [] do
+        :ets.insert(ets, {key, f, node})
+        new_keys = [{f, key} | keys] |> Enum.sort()
+        %PriorityQueue{queue | keys: new_keys}
+      else
+        queue
       end
     end
 
-    def pop(queue) do
-      if :gb_trees.is_empty(queue.f_tree) do
-        {:error, :empty}
-      else
-        {key, f, f_tree} = :gb_trees.take_smallest(queue.f_tree)
-        {node, node_tree} = :gb_trees.take(key, queue.node_tree)
+    @spec put_if_cheaper(%PriorityQueue{}, any, {integer, any}) :: %PriorityQueue{}
+    def put_if_cheaper(%PriorityQueue{ets: ets, keys: keys} = queue, key, {f, node}) do
+      case :ets.lookup(ets, key) do
+        [{_, existing_f, _}] when existing_f <= f ->
+          queue
 
-        queue = %__MODULE__{
-          f_tree: f_tree,
-          node_tree: node_tree
-        }
+        _ ->
+          :ets.insert(ets, {key, f, node})
+          new_keys = [{f, key} | keys] |> Enum.sort()
+          %PriorityQueue{queue | keys: new_keys}
+      end
+    end
 
-        {:ok, {key, {f, node}, queue}}
+    @spec pop(%PriorityQueue{}) ::
+            {{any, {integer, any}}, %PriorityQueue{}} | {:empty, %PriorityQueue{}}
+    def pop(%PriorityQueue{ets: ets, keys: keys} = queue) do
+      case keys do
+        [] ->
+          {:empty, queue}
+
+        [{_f, key} | rest_keys] ->
+          case :ets.lookup(ets, key) do
+            [{_key, f, node}] ->
+              :ets.delete(ets, key)
+              {:ok, {key, {f, node}, %PriorityQueue{queue | keys: rest_keys}}}
+
+            _ ->
+              pop(%PriorityQueue{queue | keys: rest_keys})
+          end
       end
     end
   end
 
   defmodule Node do
-    @derive {Inspect, only: [:x, :y, :f, :g, :heading, :tacking, :speed]}
+    @derive {Inspect, only: [:x, :y]}
     defstruct [:x, :y, :parent, f: 0, g: 0, h: 0, tacking: false, heading: 0, speed: 0]
 
     def equal?(this, that) do
@@ -111,10 +115,10 @@ defmodule BoatLearner.AStar do
     end
 
     def closed?(closed_list, node) do
-      MapSet.member?(closed_list, key(node))
+      key(node) in closed_list
     end
 
-    def key(node), do: {node.x, node.y, node.tacking}
+    def key(node), do: {node.x, node.y}
   end
 
   def solve({start_x, start_y}, {goal_x, goal_y}, opts \\ []) do
@@ -159,6 +163,7 @@ defmodule BoatLearner.AStar do
             |> neighbors(goal_node, opts)
             |> Enum.reject(&Node.closed?(closed_list, &1))
             |> Enum.map(&update_neighbor_cost(&1, current_node, goal_node, opts))
+            |> dbg()
 
           open_list = Enum.reduce(neighbors, open_list, &Node.push_if_cheaper(&2, &1))
           solve_loop(open_list, closed_list, goal_node, opts)
@@ -195,7 +200,8 @@ defmodule BoatLearner.AStar do
         end)
       end
 
-    angles = wrap_phase(angles ++ Enum.map(angles, &(2 * :math.pi() - &1)))
+    angles =
+      wrap_phase(Enum.flat_map(angles, &[&1, 2 * :math.pi() - &1]))
 
     case angles do
       [] ->
@@ -246,11 +252,11 @@ defmodule BoatLearner.AStar do
             if valid_position?(x, y, opts) do
               [
                 %Node{
-                  x: x,
-                  y: y,
+                  x: trunc(x),
+                  y: trunc(y),
                   speed: speed,
                   heading: angle,
-                  tacking: angle != node.heading,
+                  tacking: abs(angle - node.heading) > @one_deg_in_rad / 2,
                   parent: node
                 }
                 | acc
@@ -303,7 +309,7 @@ defmodule BoatLearner.AStar do
     :math.sqrt(dx ** 2 + dy ** 2)
   end
 
-  defp update_neighbor_cost(next_node, current_node, goal_node, opts) do
+  def update_neighbor_cost(next_node, current_node, goal_node, opts) do
     penalty = if(next_node.tacking, do: opts[:tacking_penalty], else: 0)
 
     g = current_node.g + opts[:dt] + penalty
@@ -318,33 +324,20 @@ defmodule BoatLearner.AStar do
 
   def init_polar_chart do
     # data for the boat at TWS=6
-    theta = Nx.tensor(@theta, type: :f64)
-    speed = Nx.tensor(@speed, type: :f64)
-
-    spline_model = Scholar.Interpolation.BezierSpline.fit(theta, speed)
-    # use the tail-end of the spline prediction as part of our linear model
-    dtheta = Nx.f64(0.1)
-    min_theta = theta |> Nx.reduce_min() |> Nx.new_axis(0)
-
-    dspeed =
-      Scholar.Interpolation.BezierSpline.predict(spline_model, Nx.subtract(min_theta, dtheta))
-
-    # Fit {0, 0}, {@dead_zone_angle, 0} and {min_theta, dspeed} as points for the linear "extrapolation"
-    dead_zone_thetas = Nx.tensor([0], type: :f64)
-    dead_zone_speeds = Nx.tensor([0], type: :f64)
+    %{theta: theta, speed: speed} = BoatLearner.AStar.Polars.data()
+    theta = Nx.tensor(theta, type: :f64)
+    speed = Nx.tensor(speed, type: :f64)
 
     linear_model =
       Scholar.Interpolation.Linear.fit(
-        Nx.concatenate([dead_zone_thetas, min_theta, theta]),
-        Nx.concatenate([dead_zone_speeds, dspeed, speed])
+        Nx.concatenate([theta]),
+        Nx.concatenate([speed])
       )
 
-    cutoff_angle = Nx.reduce_min(spline_model.k, axes: [0])[0]
-
-    {linear_model, spline_model, cutoff_angle}
+    linear_model
   end
 
-  defn speed_from_heading({linear_model, spline_model, cutoff_angle}, angle) do
+  defn speed_from_heading(linear_model, angle) do
     # angle is already maintained between 0 and 2pi
     # so we only need to calculate the "absolute value"
     # (as if the angle was between -pi and pi)
@@ -353,16 +346,8 @@ defmodule BoatLearner.AStar do
 
     linear_pred = Scholar.Interpolation.Linear.predict(linear_model, angle)
 
-    spline_pred =
-      Scholar.Interpolation.BezierSpline.predict(
-        spline_model,
-        angle |> Nx.devectorize() |> Nx.flatten()
-      )
-      |> Nx.reshape(Nx.devectorize(angle) |> Nx.shape())
-      |> Nx.vectorize(angle.vectorized_axes)
-
     (angle <= @dead_zone_angle)
-    |> Nx.select(0, Nx.select(angle <= cutoff_angle, linear_pred, spline_pred))
+    |> Nx.select(0, linear_pred)
     |> Nx.clip(0, @speed_over_ground_max)
   end
 

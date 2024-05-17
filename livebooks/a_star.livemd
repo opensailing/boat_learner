@@ -1,11 +1,14 @@
 # A Star
 
 ```elixir
-Mix.install([
-  {:boat_learner, path: "#{__DIR__}/.."},
-  {:kino_vega_lite, "~> 0.1"},
-  {:tucan, "~> 0.3"}
-])
+Mix.install(
+  [
+    {:boat_learner, path: "#{__DIR__}/.."},
+    {:kino_vega_lite, "~> 0.1"},
+    {:tucan, "~> 0.3"}
+  ],
+  consolidate_protocols: false
+)
 ```
 
 ## A Star Boat Planning Demo
@@ -20,7 +23,7 @@ target_x = 0
 target_y = 250
 min_x = -300
 max_x = 300
-min_y = -10
+min_y = -300
 max_y = 300
 
 {time, result} =
@@ -32,7 +35,7 @@ max_y = 300
       min_x: min_x,
       min_y: min_y,
       max_y: max_y,
-      dt: 5,
+      dt: 10,
       grid_resolution: 4,
       tacking_penalty: 10
     )
@@ -55,13 +58,6 @@ Tucan.new(x: angles_i ++ Enum.map(angles_i, &(-&1)), y: Nx.cos(angles_t) |> Nx.m
 |> Tucan.lineplot("x", "y", points: true, tooltip: :data)
 |> Tucan.set_height(600)
 |> Tucan.set_width(600)
-```
-
-```elixir
-angles_t = Nx.tensor([-45, -40, 40, -45]) |> Nx.multiply(:math.pi() / 180)
-speeds = BoatLearner.AStar.speed_from_heading(polar, angles_t)
-
-BoatLearner.AStar.vmg(0, 0, 0, 250, angles_t, speeds, Nx.tensor([0, 0]))
 ```
 
 ```elixir
@@ -106,4 +102,130 @@ Tucan.new(x: xs, y: ys, index: Enum.to_list(0..length(xs)), headings: headings, 
     point_shape: "cross"
   )
 ])
+```
+
+```elixir
+a = Nx.tensor([:math.pi() / 4, -:math.pi() / 4])
+polar = BoatLearner.AStar.init_polar_chart()
+s = BoatLearner.AStar.speed_from_heading(polar, a)
+
+v = BoatLearner.AStar.vmg(0, 0, 0, 250, a, s, Nx.tensor([0, 0]))
+
+{a, s, v}
+```
+
+```elixir
+start_node = %BoatLearner.AStar.Node{x: 0, y: 0, heading: 0, speed: 0}
+
+start_node = %BoatLearner.AStar.Node{
+  x: -20,
+  y: 20,
+  heading: 5.515240436302081,
+  speed: 2.689679361538719,
+  f: 99.05424233496183,
+  g: 35,
+  parent: start_node,
+  tacking: true
+}
+
+start_node = %BoatLearner.AStar.Node{
+  x: -40,
+  y: 40,
+  heading: 5.515240436302081,
+  speed: 2.689679361538719,
+  f: 110.19404599158813,
+  g: 45,
+  parent: start_node,
+  tacking: false
+}
+
+start_node = %BoatLearner.AStar.Node{
+  x: -60,
+  y: 60,
+  heading: 5.515240436302081,
+  speed: 2.689679361538719,
+  f: 115.76382270101873,
+  g: 55,
+  parent: start_node,
+  tacking: false
+}
+
+start_node = %BoatLearner.AStar.Node{
+  x: -80,
+  y: 80,
+  heading: 5.515240436302081,
+  speed: 2.689679361538719,
+  f: 133.55,
+  g: 65,
+  parent: start_node,
+  tacking: false
+}
+
+start_node = %BoatLearner.AStar.Node{
+  x: -100,
+  y: 100,
+  heading: 5.515240436302081,
+  speed: 2.689679361538719,
+  f: 129.97,
+  g: 75,
+  parent: start_node,
+  tacking: false
+}
+
+start_node = %BoatLearner.AStar.Node{
+  x: -120,
+  y: 120,
+  heading: 5.515240436302081,
+  speed: 2.689679361538719,
+  f: 138.95,
+  g: 85,
+  parent: start_node,
+  tacking: false
+}
+
+start_node = %BoatLearner.AStar.Node{
+  x: -140,
+  y: 140,
+  heading: 5.515240436302081,
+  speed: 2.689679361538719,
+  f: 149,
+  g: 95,
+  parent: start_node,
+  tacking: false
+}
+
+start_node = %BoatLearner.AStar.Node{
+  x: -160,
+  y: 160,
+  heading: 5.515240436302081,
+  speed: 2.689679361538719,
+  f: 160,
+  g: 105,
+  parent: start_node,
+  tacking: false
+}
+
+goal_node = %BoatLearner.AStar.Node{x: 0, y: 250}
+
+opts = [
+  polar_chart: polar,
+  start_heading: 0,
+  boat_length: 7,
+  max_x: max_x,
+  min_x: min_x,
+  min_y: min_y,
+  max_y: max_y,
+  dt: 10,
+  grid_resolution: 4,
+  tacking_penalty: 15
+]
+
+n =
+  BoatLearner.AStar.neighbors(start_node, goal_node, opts)
+  |> Enum.map(&BoatLearner.AStar.update_neighbor_cost(&1, start_node, goal_node, opts))
+
+Enum.map(
+  n,
+  &{&1.x, &1.y, &1.heading, &1.speed, &1.f, &1.g, &1.tacking, &1.heading - start_node.heading}
+)
 ```
